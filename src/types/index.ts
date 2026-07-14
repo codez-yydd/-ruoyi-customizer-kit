@@ -56,12 +56,22 @@ export interface CustomizeParams {
   original_project_name: string
   new_project_name: string
   frontend_title: string
+  /** 版权年份（如 2024-2026），留空跳过版权替换 */
+  copyright_year: string
+  /** 版权方名称（如 某某科技），留空跳过版权替换 */
+  copyright_holder: string
   enable_mybatis_plus: boolean
   enable_config_rewrite: boolean
   enable_logback_rewrite: boolean
   enable_generator_mybatis_plus: boolean
   enable_long_id_json_string: boolean
   enable_report: boolean
+  /** 清空若依前端首页为空白页 */
+  enable_clear_home: boolean
+  /** 移除顶部栏 github/gitee 外链 */
+  enable_remove_github: boolean
+  /** 移除顶部栏文档外链 */
+  enable_remove_docs: boolean
   /** 最终项目存储路径 */
   output_dir: string
   /** 是否生成 UniApp 小程序项目 */

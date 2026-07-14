@@ -272,6 +272,9 @@ where
     let default_site_names = ["若依管理系统", "若依后台管理系统", "RuoYi"];
     let old_prefix = &params.original_module_prefix;
     let new_prefix = &params.new_module_prefix;
+    // 是否启用版权替换（年份或版权方至少填一个）
+    let want_copyright = !params.copyright_year.is_empty() || !params.copyright_holder.is_empty();
+
     for fd in &template.module.frontend_modules {
         // 前端目录可能已被 do_rename_modules 重命名，优先查找新名称，回退到旧名称
         let new_fd = fd.replacen(&format!("{}-", old_prefix), &format!("{}-", new_prefix), 1);
@@ -282,6 +285,15 @@ where
         } else {
             continue;
         };
+        // 清空首页（在文本扫描前单独处理，避免被站点名替换干扰）
+        if params.enable_clear_home {
+            for rel in ["src/views/index.vue", "src/views/index_v1.vue", "src/views/dashboard/index.vue"] {
+                let home = frontend_dir.join(rel);
+                if clear_frontend_home(&home) {
+                    r.modified_files += 1;
+                }
+            }
+        }
         // 扫描前端目录下文本文件（排除 node_modules/dist）
         let scan = scanner::scan(&frontend_dir, engine);
         for path in &scan.text_files {
@@ -298,6 +310,20 @@ where
                     changed = true;
                 }
             }
+            // 替换版权信息（Copyright © 年份 版权方 All Rights Reserved）
+            if want_copyright {
+                if replace_copyright(&mut new_content, params) {
+                    changed = true;
+                }
+            }
+            // 移除顶部栏 github / gitee 外链
+            if params.enable_remove_github && remove_navbar_external_links(&mut new_content, "github") {
+                changed = true;
+            }
+            // 移除顶部栏文档外链
+            if params.enable_remove_docs && remove_navbar_external_links(&mut new_content, "docs") {
+                changed = true;
+            }
             if changed {
                 write_text(path, &new_content).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
                 r.modified_files += 1;
@@ -306,6 +332,90 @@ where
     }
     log(&format!("前端标题修改：{} 个文件", r.modified_files));
     Ok(())
+}
+
+/// 替换版权信息。匹配若依常见格式：`Copyright © 2018-2026 ruoyi All Rights Reserved`，
+/// 年份支持单年份或区间，版权方支持大小写 ruoyi。返回是否发生替换。
+pub fn replace_copyright(content: &mut String, params: &CustomizeParams) -> bool {
+    let re = match regex::Regex::new(r"(?i)Copyright\s*©\s*\d{4}(-\d{4})?\s*[Rr]uoYi\s*\.?\s*All Rights Reserved") {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    if !re.is_match(content) {
+        return false;
+    }
+    let year = if params.copyright_year.is_empty() { "2024" } else { &params.copyright_year };
+    let holder = if params.copyright_holder.is_empty() { &params.frontend_title } else { &params.copyright_holder };
+    let replacement = format!("Copyright © {year} {holder} All Rights Reserved");
+    let new = re.replace_all(content, replacement.as_str()).to_string();
+    if *content != new {
+        *content = new;
+        true
+    } else {
+        false
+    }
+}
+
+/// 移除若依顶部栏的外部链接。
+/// 逐个检查 <el-tooltip>...</el-tooltip> 块，按 kind 决定删除哪类：
+/// - "github"：含 github.com / gitee.com 的块
+/// - "docs"：含 doc.ruoyi / yiidian / 若依文档 的块
+/// 其他 tooltip（如「搜索」「全屏」）保留不动。返回是否发生删除。
+pub fn remove_navbar_external_links(content: &mut String, kind: &str) -> bool {
+    if !content.contains("el-tooltip") {
+        return false;
+    }
+    // 匹配单个 el-tooltip 块（非贪婪，到最近的 </el-tooltip>）
+    let block_re = match regex::Regex::new(r"(?s)[ \t]*<el-tooltip\b.*?</el-tooltip>[ \t]*\n?") {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    let is_target = |block: &str| -> bool {
+        if kind == "github" {
+            block.contains("github.com") || block.contains("gitee.com")
+        } else if kind == "docs" {
+            block.contains("doc.ruoyi")
+                || block.contains("yiidian")
+                || block.contains("若依文档")
+        } else {
+            false
+        }
+    };
+    let mut changed = false;
+    let mut result = String::with_capacity(content.len());
+    let mut last_end = 0usize;
+    for m in block_re.find_iter(content) {
+        let block = &content[m.range()];
+        if is_target(block) {
+            // 跳过此块（删除），保留之前的未匹配文本
+            result.push_str(&content[last_end..m.start()]);
+            last_end = m.end();
+            changed = true;
+        }
+    }
+    if changed {
+        result.push_str(&content[last_end..]);
+        *content = result;
+    }
+    changed
+}
+
+/// 清空若依前端首页（views/index.vue）为空白页。
+/// 覆盖被改项目的 `src/views/index.vue`、`src/views/index_v1.vue`、`src/views/dashboard/index.vue`，
+/// 内容替换为最小空模板。返回是否发生替换。
+pub fn clear_frontend_home(path: &Path) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    let empty = "<template>\n  <div class=\"app-container-home\" />\n</template>\n\n<script>\nexport default {\n  name: 'Index'\n}\n</script>\n";
+    let content = match read_text(path) {
+        Some(c) => c,
+        None => return false,
+    };
+    if content.trim() == empty.trim() {
+        return false;
+    }
+    write_text(path, empty).is_ok()
 }
 
 /// 6. 配置文件重构（三件套）

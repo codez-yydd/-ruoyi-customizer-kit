@@ -16,6 +16,11 @@ pub mod report;
 
 use serde::{Deserialize, Serialize};
 
+/// serde 默认值辅助：返回 true（用于新增开关字段兼容旧参数）
+fn default_true() -> bool {
+    true
+}
+
 /// 用户改造参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomizeParams {
@@ -26,12 +31,27 @@ pub struct CustomizeParams {
     pub original_project_name: String,
     pub new_project_name: String,
     pub frontend_title: String,
+    /// 版权年份（如 2024-2026），留空则跳过版权替换
+    #[serde(default)]
+    pub copyright_year: String,
+    /// 版权方名称（如 某某科技），留空则跳过版权替换
+    #[serde(default)]
+    pub copyright_holder: String,
     pub enable_mybatis_plus: bool,
     pub enable_config_rewrite: bool,
     pub enable_logback_rewrite: bool,
     pub enable_generator_mybatis_plus: bool,
     pub enable_long_id_json_string: bool,
     pub enable_report: bool,
+    /// 清空若依前端首页（views/index.vue）为空白页
+    #[serde(default = "default_true")]
+    pub enable_clear_home: bool,
+    /// 移除顶部栏 github/gitee 外链
+    #[serde(default = "default_true")]
+    pub enable_remove_github: bool,
+    /// 移除顶部栏文档外链（doc.ruoyi/yiidian 等）
+    #[serde(default = "default_true")]
+    pub enable_remove_docs: bool,
     /// 最终项目存储路径（执行时解压/复制到该目录再改造）
     #[serde(default)]
     pub output_dir: String,
@@ -50,12 +70,17 @@ impl Default for CustomizeParams {
             original_project_name: "ruoyi".into(),
             new_project_name: String::new(),
             frontend_title: String::new(),
+            copyright_year: String::new(),
+            copyright_holder: String::new(),
             enable_mybatis_plus: true,
             enable_config_rewrite: true,
             enable_logback_rewrite: true,
             enable_generator_mybatis_plus: true,
             enable_long_id_json_string: true,
             enable_report: true,
+            enable_clear_home: true,
+            enable_remove_github: true,
+            enable_remove_docs: true,
             output_dir: String::new(),
             enable_uniapp: false,
         }

@@ -74,6 +74,8 @@ fn make_params() -> CustomizeParams {
         original_project_name: "ruoyi".into(),
         new_project_name: "demo".into(),
         frontend_title: "测试系统".into(),
+        copyright_year: String::new(),
+        copyright_holder: String::new(),
         // 核心任务相关开关
         enable_mybatis_plus: false,
         enable_config_rewrite: false,
@@ -81,6 +83,9 @@ fn make_params() -> CustomizeParams {
         enable_generator_mybatis_plus: false,
         enable_long_id_json_string: false,
         enable_report: false,
+        enable_clear_home: false,
+        enable_remove_github: false,
+        enable_remove_docs: false,
         output_dir: String::new(),
         enable_uniapp: false,
     }

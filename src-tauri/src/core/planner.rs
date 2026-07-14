@@ -118,11 +118,29 @@ pub fn plan(
         error_message: String::new(),
     });
 
-    // 5. 修改前端标题
+    // 5. 修改前端标题（含版权信息替换、顶部栏外链移除、首页清空）
     let frontend_files = existing_frontend_files(root, &info.frontend_dirs);
+    let mut frontend_task_name = format!("修改前端标题 → {}", params.frontend_title);
+    let want_copyright = !params.copyright_year.is_empty() || !params.copyright_holder.is_empty();
+    if want_copyright {
+        frontend_task_name.push_str(&format!("，替换版权（{} {}）", params.copyright_year, params.copyright_holder));
+    }
+    if params.enable_clear_home {
+        frontend_task_name.push_str("，清空首页");
+    }
+    let mut link_removed = vec![];
+    if params.enable_remove_github {
+        link_removed.push("github");
+    }
+    if params.enable_remove_docs {
+        link_removed.push("文档");
+    }
+    if !link_removed.is_empty() {
+        frontend_task_name.push_str(&format!("，移除顶部栏{}外链", link_removed.join("/")));
+    }
     tasks.push(Task {
         id: next_id(&tasks),
-        name: format!("修改前端标题 → {}", params.frontend_title),
+        name: frontend_task_name,
         task_type: TaskType::UpdateFrontendTitle,
         risk_level: RiskLevel::Low,
         affected_files: frontend_files,

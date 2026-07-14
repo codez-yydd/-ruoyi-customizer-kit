@@ -20,12 +20,17 @@ const defaults = (): CustomizeParams => ({
   original_project_name: projectInfo.value?.original_module_prefix || 'ruoyi',
   new_project_name: '',
   frontend_title: '',
+  copyright_year: '',
+  copyright_holder: '',
   enable_mybatis_plus: true,
   enable_config_rewrite: true,
   enable_logback_rewrite: true,
   enable_generator_mybatis_plus: true,
   enable_long_id_json_string: true,
   enable_report: true,
+  enable_clear_home: true,
+  enable_remove_github: true,
+  enable_remove_docs: true,
   output_dir: store.outputDir || '',
   enable_uniapp: false
 })
@@ -117,6 +122,12 @@ async function chooseOutputDir() {
         <el-form-item label="前端标题" :error="errors.frontend_title">
           <el-input v-model="form.frontend_title" placeholder="如 某某管理系统" />
         </el-form-item>
+        <el-form-item label="版权年份">
+          <el-input v-model="form.copyright_year" placeholder="如 2024-2026，留空则跳过版权替换" />
+        </el-form-item>
+        <el-form-item label="版权方名称">
+          <el-input v-model="form.copyright_holder" placeholder="如 某某科技，留空则用前端标题" />
+        </el-form-item>
 
         <el-divider content-position="left">输出</el-divider>
         <el-form-item label="输出目录" :error="errors.output_dir">
@@ -130,34 +141,83 @@ async function chooseOutputDir() {
         </el-form-item>
 
         <el-divider content-position="left">改造开关</el-divider>
-        <el-form-item label="集成 MyBatis-Plus">
-          <el-switch v-model="form.enable_mybatis_plus" />
-        </el-form-item>
-        <el-form-item label="重构配置文件">
-          <el-switch v-model="form.enable_config_rewrite" />
-          <span class="hint muted">application → base/dev/prod 三件套</span>
-        </el-form-item>
-        <el-form-item label="修正 logback 路径">
-          <el-switch v-model="form.enable_logback_rewrite" />
-          <span class="hint muted">log.path = logs</span>
-        </el-form-item>
-        <el-form-item label="代码生成器适配">
-          <el-switch v-model="form.enable_generator_mybatis_plus" />
-          <span class="hint muted">Mapper/Service/Domain 模板适配 MyBatis-Plus</span>
-        </el-form-item>
-        <el-form-item label="Long 主键序列化">
-          <el-switch v-model="form.enable_long_id_json_string" />
-          <span class="hint muted">避免前端精度丢失</span>
-        </el-form-item>
-        <el-form-item label="生成执行报告">
-          <el-switch v-model="form.enable_report" />
-        </el-form-item>
-        <el-form-item label="生成 UniApp 小程序">
-          <el-switch v-model="form.enable_uniapp" />
-          <div v-if="form.enable_uniapp" class="hint muted">
-            将生成：{{ form.new_module_prefix ? `${form.new_module_prefix}-uniapp` : '请先填写新模块前缀' }}
+        <div class="switch-grid">
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">集成 MyBatis-Plus</span>
+              <el-switch v-model="form.enable_mybatis_plus" />
+            </div>
+            <div class="switch-item__hint muted">自动加依赖、分页配置类、改造源码继承体系</div>
           </div>
-        </el-form-item>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">重构配置文件</span>
+              <el-switch v-model="form.enable_config_rewrite" />
+            </div>
+            <div class="switch-item__hint muted">application → base/dev/prod 三件套</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">修正 logback 路径</span>
+              <el-switch v-model="form.enable_logback_rewrite" />
+            </div>
+            <div class="switch-item__hint muted">log.path = logs（相对路径）</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">代码生成器适配</span>
+              <el-switch v-model="form.enable_generator_mybatis_plus" />
+            </div>
+            <div class="switch-item__hint muted">Mapper/Service/Domain 模板适配</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">Long 主键序列化</span>
+              <el-switch v-model="form.enable_long_id_json_string" />
+            </div>
+            <div class="switch-item__hint muted">避免前端精度丢失</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">清空首页</span>
+              <el-switch v-model="form.enable_clear_home" />
+            </div>
+            <div class="switch-item__hint muted">清空若依默认首页仪表盘</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">移除 GitHub 外链</span>
+              <el-switch v-model="form.enable_remove_github" />
+            </div>
+            <div class="switch-item__hint muted">移除顶部栏 github/gitee 链接</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">移除文档外链</span>
+              <el-switch v-model="form.enable_remove_docs" />
+            </div>
+            <div class="switch-item__hint muted">移除顶部栏若依文档链接</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">生成执行报告</span>
+              <el-switch v-model="form.enable_report" />
+            </div>
+            <div class="switch-item__hint muted">改造后输出 Markdown 报告</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">生成 UniApp 小程序</span>
+              <el-switch v-model="form.enable_uniapp" />
+            </div>
+            <div class="switch-item__hint muted">
+              <template v-if="form.enable_uniapp">
+                将生成：{{ form.new_module_prefix ? `${form.new_module_prefix}-uniapp` : '请先填写新模块前缀' }}
+              </template>
+              <template v-else>含请求封装、登录框架、环境配置</template>
+            </div>
+          </div>
+        </div>
       </el-form>
 
       <div class="actions">
@@ -186,5 +246,34 @@ async function chooseOutputDir() {
   justify-content: flex-end;
   gap: 12px;
   margin-top: 16px;
+}
+
+/* 改造开关：两列网格，紧凑排列 */
+.switch-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 16px;
+  margin-left: 140px;
+}
+.switch-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  background: #f7f8fa;
+  border-radius: 6px;
+}
+.switch-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.switch-item__label {
+  font-size: 14px;
+  color: #303133;
+}
+.switch-item__hint {
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>
