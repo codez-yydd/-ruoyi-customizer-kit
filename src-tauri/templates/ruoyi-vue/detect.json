@@ -1,0 +1,34 @@
+{
+  "name": "RuoYi-Vue",
+  "required_files": [
+    "pom.xml",
+    "ruoyi-admin/pom.xml",
+    "ruoyi-framework/pom.xml",
+    "ruoyi-system/pom.xml",
+    "ruoyi-common/pom.xml"
+  ],
+  "optional_files": [
+    "ruoyi-ui/package.json",
+    "ruoyi-generator/pom.xml",
+    "ruoyi-quartz/pom.xml",
+    "ruoyi-generator/src/main/resources/vm/java/domain.java.vm"
+  ],
+  "config_files": [
+    "ruoyi-admin/src/main/resources/application.yml",
+    "ruoyi-admin/src/main/resources/application.yaml",
+    "ruoyi-admin/src/main/resources/application-druid.yml",
+    "ruoyi-admin/src/main/resources/application-druid.yaml"
+  ],
+  "logback_files": [
+    "ruoyi-admin/src/main/resources/logback.xml",
+    "ruoyi-admin/src/main/resources/logback-spring.xml"
+  ],
+  "generator_template_files": [
+    "ruoyi-generator/src/main/resources/vm/java/domain.java.vm",
+    "ruoyi-generator/src/main/resources/vm/java/mapper.java.vm",
+    "ruoyi-generator/src/main/resources/vm/java/service.java.vm",
+    "ruoyi-generator/src/main/resources/vm/java/serviceImpl.java.vm",
+    "ruoyi-generator/src/main/resources/vm/java/controller.java.vm",
+    "ruoyi-generator/src/main/resources/vm/xml/mapper.xml.vm"
+  ]
+}

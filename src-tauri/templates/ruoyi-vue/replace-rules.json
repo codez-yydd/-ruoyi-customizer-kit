@@ -1,0 +1,46 @@
+{
+  "exclude_dirs": [
+    ".git",
+    ".idea",
+    ".vscode",
+    "node_modules",
+    "dist",
+    "target",
+    "logs",
+    "log"
+  ],
+  "text_extensions": [
+    ".java",
+    ".xml",
+    ".yml",
+    ".yaml",
+    ".properties",
+    ".sql",
+    ".md",
+    ".vue",
+    ".js",
+    ".ts",
+    ".json",
+    ".bat",
+    ".sh",
+    ".vm",
+    ".html"
+  ],
+  "binary_extensions": [
+    ".class",
+    ".jar",
+    ".war",
+    ".zip",
+    ".7z",
+    ".rar",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot"
+  ]
+}

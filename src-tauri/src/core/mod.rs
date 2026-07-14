@@ -1,0 +1,173 @@
+// 核心引擎模块：项目扫描、识别、任务规划、执行、校验、报告
+// 本轮实现 scanner（扫描）与 detector（识别）。
+
+pub mod scanner;
+pub mod detector;
+pub mod config_rewrite;
+pub mod mybatis_plus;
+pub mod uniapp;
+
+// 以下模块为后续阶段预留，本轮仅声明，避免范围过大
+pub mod task;
+pub mod planner;
+pub mod executor;
+pub mod validator;
+pub mod report;
+
+use serde::{Deserialize, Serialize};
+
+/// 用户改造参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomizeParams {
+    pub original_package: String,
+    pub new_package: String,
+    pub original_module_prefix: String,
+    pub new_module_prefix: String,
+    pub original_project_name: String,
+    pub new_project_name: String,
+    pub frontend_title: String,
+    pub enable_mybatis_plus: bool,
+    pub enable_config_rewrite: bool,
+    pub enable_logback_rewrite: bool,
+    pub enable_generator_mybatis_plus: bool,
+    pub enable_long_id_json_string: bool,
+    pub enable_report: bool,
+    /// 最终项目存储路径（执行时解压/复制到该目录再改造）
+    #[serde(default)]
+    pub output_dir: String,
+    /// 是否生成 UniApp 小程序项目
+    #[serde(default)]
+    pub enable_uniapp: bool,
+}
+
+impl Default for CustomizeParams {
+    fn default() -> Self {
+        Self {
+            original_package: String::new(),
+            new_package: String::new(),
+            original_module_prefix: "ruoyi".into(),
+            new_module_prefix: String::new(),
+            original_project_name: "ruoyi".into(),
+            new_project_name: String::new(),
+            frontend_title: String::new(),
+            enable_mybatis_plus: true,
+            enable_config_rewrite: true,
+            enable_logback_rewrite: true,
+            enable_generator_mybatis_plus: true,
+            enable_long_id_json_string: true,
+            enable_report: true,
+            output_dir: String::new(),
+            enable_uniapp: false,
+        }
+    }
+}
+
+impl CustomizeParams {
+    /// 校验参数合法性，返回首个错误（无错误返回 None）。
+    /// 规则：新包名须符合 Java package 规范；新模块前缀须符合 Maven artifactId 规范；
+    /// 新包名不能与原包名相同；新模块前缀不能与原前缀相同。
+    pub fn validate(&self) -> Option<String> {
+        if !is_valid_java_package(&self.new_package) {
+            return Some(format!("新包名「{}」不合法：须为小写字母/数字/点号/下划线/$ 组成，每段以字母开头", self.new_package));
+        }
+        if self.new_package == self.original_package && !self.new_package.is_empty() {
+            return Some("新包名与原包名相同，无需修改".into());
+        }
+        if !is_valid_artifact_id(&self.new_module_prefix) {
+            return Some(format!(
+                "新模块前缀「{}」不合法：须为小写字母/数字/横线/下划线组成，以字母开头",
+                self.new_module_prefix
+            ));
+        }
+        if self.new_module_prefix == self.original_module_prefix && !self.new_module_prefix.is_empty()
+        {
+            return Some("新模块前缀与原前缀相同，无需修改".into());
+        }
+        if self.frontend_title.is_empty() {
+            return Some("前端标题不能为空".into());
+        }
+        // UniApp 模块前缀校验
+        if self.enable_uniapp {
+            if self.new_module_prefix.is_empty() {
+                return Some("生成 UniApp 项目时，新模块前缀不能为空".into());
+            }
+            if !is_valid_uniapp_prefix(&self.new_module_prefix) {
+                return Some(format!(
+                    "新模块前缀「{}」不适合作为 UniApp 目录名：只能包含小写字母、数字和短横线，不能以短横线开头或结尾",
+                    self.new_module_prefix
+                ));
+            }
+        }
+        None
+    }
+}
+
+/// Java 包名合法性：每段以字母开头，仅含字母/数字/下划线/$，至少两段（如 com.xxx）
+fn is_valid_java_package(pkg: &str) -> bool {
+    if pkg.is_empty() {
+        return false;
+    }
+    let re = regex::Regex::new(r"^[a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)+$").unwrap();
+    re.is_match(pkg) && !pkg.contains("..")
+}
+
+/// Maven artifactId 合法性：以字母开头，仅含字母/数字/横线/下划线/点号
+fn is_valid_artifact_id(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    let re = regex::Regex::new(r"^[a-zA-Z][\w\-.]*$").unwrap();
+    re.is_match(id)
+}
+
+/// UniApp 目录名合法性：小写字母/数字/短横线，不以短横线开头或结尾
+fn is_valid_uniapp_prefix(id: &str) -> bool {
+    if id.is_empty() {
+        return false;
+    }
+    let re = regex::Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$").unwrap();
+    re.is_match(id)
+}
+
+/// 识别结果：项目信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectInfo {
+    /// 项目根绝对路径
+    pub root_path: String,
+    /// 项目类型（识别到的模板名，如 "RuoYi-Vue"）
+    pub project_type: String,
+    /// 后端模块名清单（存在的，如 ruoyi-admin / ruoyi-common ...）
+    pub backend_modules: Vec<String>,
+    /// 前端目录名清单（如 ruoyi-ui）
+    pub frontend_dirs: Vec<String>,
+    /// 实际存在的配置文件（相对根路径）
+    pub config_files: Vec<String>,
+    /// 实际存在的 logback 文件（相对根路径）
+    pub logback_files: Vec<String>,
+    /// 实际存在的代码生成器模板文件（相对根路径）
+    pub generator_template_files: Vec<String>,
+    /// 识别到的原 Java 包名（如 com.ruoyi）
+    pub original_package: String,
+    /// 识别到的原模块前缀（如 ruoyi）
+    pub original_module_prefix: String,
+    /// 识别到的原 artifactId 前缀（如 ruoyi）
+    pub original_artifact_prefix: String,
+    /// 识别置信度说明（命中了哪些必备/可选文件）
+    pub confidence: Confidence,
+    /// 识别时间戳（RFC3339）
+    pub detected_at: String,
+}
+
+/// 识别置信度
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Confidence {
+    /// 必备文件命中数 / 总数
+    pub required_hit: usize,
+    pub required_total: usize,
+    /// 可选文件命中清单
+    pub optional_hit: Vec<String>,
+    /// 是否达到可识别门槛（必备文件全部命中）
+    pub recognized: bool,
+    /// 未命中的必备文件（用于 UI 给出明确原因）
+    pub missing_required: Vec<String>,
+}

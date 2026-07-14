@@ -1,0 +1,14 @@
+{
+  "default_prefix": "ruoyi",
+  "modules": [
+    "ruoyi-admin",
+    "ruoyi-common",
+    "ruoyi-framework",
+    "ruoyi-system",
+    "ruoyi-generator",
+    "ruoyi-quartz"
+  ],
+  "frontend_modules": [
+    "ruoyi-ui"
+  ]
+}

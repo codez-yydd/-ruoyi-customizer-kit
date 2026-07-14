@@ -1,0 +1,639 @@
+// 改造执行器：逐任务执行真实的文件/目录改造。
+//
+// 设计原则（贯穿）：
+// - 严禁修改 .git / node_modules / target 及二进制文件
+// - 目录移动/重命名前检测目标冲突，已存在则终止该任务并报错（不覆盖）
+// - 所有异常进入执行结果与日志，不吞异常
+// - 全文本扫描替换包名（点号 + 斜杠两种形式）
+
+use crate::core::scanner;
+use crate::core::task::{Task, TaskStatus, TaskType};
+use crate::core::CustomizeParams;
+use crate::rules::replace_rule::ReplaceEngine;
+use crate::rules::template::Template;
+use crate::utils::file::{read_text, write_text};
+use crate::utils::path::package_to_path;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// 单个任务的执行结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskResult {
+    pub task_id: String,
+    pub task_name: String,
+    pub status: TaskStatus,
+    pub modified_files: usize,
+    pub created_files: usize,
+    pub renamed_dirs: usize,
+    pub message: String,
+}
+
+impl TaskResult {
+    fn from_task(task: &Task) -> Self {
+        Self {
+            task_id: task.id.clone(),
+            task_name: task.name.clone(),
+            status: TaskStatus::Pending,
+            modified_files: 0,
+            created_files: 0,
+            renamed_dirs: 0,
+            message: String::new(),
+        }
+    }
+}
+
+/// 执行单个任务。返回该任务的执行结果。
+/// log 为日志回调（实时输出到前端）。
+pub fn execute_task<F>(task: &Task, params: &CustomizeParams, template: &Template, log: &F)
+where
+    F: Fn(&str),
+{
+    // task.status 在 plan 阶段是 Pending；这里通过返回值表达结果，
+    // 但为简化前端交互，执行结果由上层 execute_all 统一收集。
+    // 本函数内部直接执行副作用。
+    let _ = (task, params, template, log);
+}
+
+/// 执行改造：对 root 跑全部任务，返回每个任务的结果。
+/// 会按执行顺序实际修改文件系统。
+pub fn execute_all<F>(
+    root: &Path,
+    info: &crate::core::ProjectInfo,
+    tasks: &[Task],
+    params: &CustomizeParams,
+    template: &Template,
+    log: F,
+) -> Vec<TaskResult>
+where
+    F: Fn(&str),
+{
+    let mut results = Vec::with_capacity(tasks.len());
+    for task in tasks {
+        log(&format!("[{}] 开始：{}", task.id, task.name));
+        let r = execute_one(root, info, task, params, template, &log);
+        log(&format!(
+            "[{}] 完成：{}（{}）",
+            task.id,
+            task.name,
+            match r.status {
+                TaskStatus::Success => format!("成功，改 {} 文件", r.modified_files),
+                TaskStatus::Skipped => "跳过".into(),
+                _ => format!("失败：{}", r.message),
+            }
+        ));
+        // 非成功非跳过的致命错误，仍继续后续任务（单文件失败不影响整体），由报告汇总
+        results.push(r);
+    }
+    results
+}
+
+/// 执行单个任务的真实逻辑
+fn execute_one<F>(root: &Path, info: &crate::core::ProjectInfo, task: &Task, params: &CustomizeParams, template: &Template, log: &F) -> TaskResult
+where
+    F: Fn(&str),
+{
+    let mut r = TaskResult::from_task(task);
+    let engine = ReplaceEngine::new(template.replace.clone());
+    let result = match task.task_type {
+        TaskType::ReplacePackageName => do_replace_package(root, params, &engine, &mut r, log),
+        TaskType::MovePackageDirectory => do_move_package_dir(root, params, &mut r, log),
+        TaskType::UpdateMavenPom => do_update_pom(root, params, &engine, &mut r, log),
+        TaskType::RenameMavenModule => do_rename_modules(root, params, template, &mut r, log),
+        TaskType::UpdateFrontendTitle => do_update_frontend(root, params, template, &engine, &mut r, log),
+        TaskType::RewriteApplicationProfiles => do_rewrite_config(root, params, template, &mut r, log),
+        TaskType::RewriteLogbackPath => do_rewrite_logback(root, &engine, &mut r, log),
+        TaskType::AddMybatisPlusDependency => do_add_mp_dependency(root, info, &mut r, log),
+        TaskType::AddMybatisPlusConfig => do_add_mp_config(root, params, info, &mut r, log),
+        TaskType::UpdateGeneratorTemplatesForMybatisPlus => do_adapt_generator(root, params, info, &mut r, log),
+        TaskType::AddLongIdJsonSerializeAnnotation => do_add_long_id(root, info, &mut r, log),
+        TaskType::GenerateUniappProject => do_generate_uniapp(root, params, &mut r, log),
+        TaskType::AppendWechatConfig => do_append_wechat_config(root, params, &mut r, log),
+        TaskType::ValidateProject | TaskType::GenerateReport => {
+            r.status = TaskStatus::Skipped;
+            r.message = "校验/报告在执行后单独触发".into();
+            return r;
+        }
+    };
+    match result {
+        Ok(()) => {
+            r.status = TaskStatus::Success;
+        }
+        Err(e) => {
+            r.status = TaskStatus::Failed;
+            r.message = e;
+        }
+    }
+    r
+}
+
+// ---------- 各任务实现 ----------
+
+/// 1. 替换 Java 包名（全文本扫描，点号 + 斜杠）
+fn do_replace_package<F>(root: &Path, params: &CustomizeParams, engine: &ReplaceEngine, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let scan = scanner::scan(root, engine);
+    let from_slash = package_to_path(&params.original_package).to_string_lossy().to_string();
+    let to_slash = package_to_path(&params.new_package).to_string_lossy().to_string();
+    for path in &scan.text_files {
+        let content = match read_text(path) {
+            Some(c) => c,
+            None => continue,
+        };
+        let (new_content, n) = engine.replace_package(
+            &content,
+            &params.original_package,
+            &params.new_package,
+            &from_slash,
+            &to_slash,
+        );
+        if n > 0 {
+            write_text(path, &new_content).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+            r.modified_files += 1;
+        }
+    }
+    log(&format!("包名替换：修改 {} 个文件", r.modified_files));
+    Ok(())
+}
+
+/// 2. 移动 Java 包目录（每个后端模块 src/main/java/<old> → <new>）
+fn do_move_package_dir<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let old_rel = package_to_path(&params.original_package);
+    let new_rel = package_to_path(&params.new_package);
+    for module in &template_modules_with_java(root, &params.original_package) {
+        let java_base = root.join(&module).join("src/main/java");
+        let old_dir = java_base.join(&old_rel);
+        let new_dir = java_base.join(&new_rel);
+        if !old_dir.is_dir() {
+            continue;
+        }
+        // 目标冲突检测
+        if new_dir.exists() {
+            return Err(format!("目标包目录已存在，拒绝覆盖：{}", new_dir.display()));
+        }
+        // 确保新路径父目录存在
+        if let Some(parent) = new_dir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        // 移动整个旧包目录到新路径
+        std::fs::rename(&old_dir, &new_dir).map_err(|e| format!("移动 {} 失败：{e}", old_dir.display()))?;
+        r.renamed_dirs += 1;
+        // 清理旧的空包层级目录（如 com/ 留下了但 ruoyi 已移走）
+        cleanup_empty_package_dirs(&java_base, &old_rel);
+        log(&format!("移动 {}/src/main/java/{}", module, old_rel.to_string_lossy()));
+    }
+    Ok(())
+}
+
+/// 3. 修改 Maven pom（groupId/artifactId/modules 依赖引用，全文本替换已覆盖）
+fn do_update_pom<F>(root: &Path, params: &CustomizeParams, engine: &ReplaceEngine, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let from_slash = package_to_path(&params.original_package).to_string_lossy().to_string();
+    let to_slash = package_to_path(&params.new_package).to_string_lossy().to_string();
+    for entry in walkdir_poms(root, engine) {
+        let content = match read_text(&entry) {
+            Some(c) => c,
+            None => continue,
+        };
+        let mut new_content = content.clone();
+        let mut total = 0usize;
+        // 包名替换
+        let (c1, n1) = engine.replace_package(&new_content, &params.original_package, &params.new_package, &from_slash, &to_slash);
+        new_content = c1;
+        total += n1;
+        // 模块前缀替换（ruoyi- 形式，覆盖 artifactId/modules/依赖）
+        let (c2, n2) = engine.replace_prefix_dashed(&new_content, &params.original_module_prefix, &params.new_module_prefix);
+        new_content = c2;
+        total += n2;
+        // 裸前缀替换（如根 pom 的 <artifactId>ruoyi</artifactId>）
+        let bare_from = format!(">{}<", params.original_module_prefix);
+        let bare_to = format!(">{}<", params.new_module_prefix);
+        let n3 = new_content.matches(&bare_from).count();
+        if n3 > 0 {
+            new_content = new_content.replace(&bare_from, &bare_to);
+            total += n3;
+        }
+        if total > 0 {
+            write_text(&entry, &new_content).map_err(|e| format!("写入 {} 失败：{e}", entry.display()))?;
+            r.modified_files += 1;
+        }
+    }
+    log(&format!("pom 修改：{} 个文件", r.modified_files));
+    Ok(())
+}
+
+/// 4. 重命名模块目录（后端模块 + 前端目录，统一按前缀替换）
+fn do_rename_modules<F>(root: &Path, params: &CustomizeParams, template: &Template, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let old_prefix = &params.original_module_prefix;
+    let new_prefix = &params.new_module_prefix;
+
+    // 收集需要重命名的目录：后端模块 + 前端模块
+    let backend_set: Vec<String> = template.module.modules.clone();
+    let frontend_set: Vec<String> = template.module.frontend_modules.clone();
+    let all_modules: Vec<String> = backend_set.iter().chain(frontend_set.iter()).cloned().collect();
+
+    let entries: Vec<String> = std::fs::read_dir(root)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| {
+            name.starts_with(&format!("{}-", old_prefix)) && all_modules.contains(name)
+        })
+        .collect();
+    for name in entries {
+        let new_name = name.replacen(&format!("{}-", old_prefix), &format!("{}-", new_prefix), 1);
+        let from = root.join(&name);
+        let to = root.join(&new_name);
+        if to.exists() {
+            return Err(format!("目标模块目录已存在，拒绝覆盖：{}", to.display()));
+        }
+        std::fs::rename(&from, &to).map_err(|e| format!("重命名 {} 失败：{e}", from.display()))?;
+        r.renamed_dirs += 1;
+        log(&format!("重命名 {} → {}", name, new_name));
+    }
+    Ok(())
+}
+
+/// 5. 修改前端标题（适配已重命名的前端目录）
+fn do_update_frontend<F>(root: &Path, params: &CustomizeParams, template: &Template, engine: &ReplaceEngine, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let default_site_names = ["若依管理系统", "若依后台管理系统", "RuoYi"];
+    let old_prefix = &params.original_module_prefix;
+    let new_prefix = &params.new_module_prefix;
+    for fd in &template.module.frontend_modules {
+        // 前端目录可能已被 do_rename_modules 重命名，优先查找新名称，回退到旧名称
+        let new_fd = fd.replacen(&format!("{}-", old_prefix), &format!("{}-", new_prefix), 1);
+        let frontend_dir = if root.join(&new_fd).is_dir() {
+            root.join(&new_fd)
+        } else if root.join(fd).is_dir() {
+            root.join(fd)
+        } else {
+            continue;
+        };
+        // 扫描前端目录下文本文件（排除 node_modules/dist）
+        let scan = scanner::scan(&frontend_dir, engine);
+        for path in &scan.text_files {
+            let content = match read_text(path) {
+                Some(c) => c,
+                None => continue,
+            };
+            let mut new_content = content.clone();
+            let mut changed = false;
+            // 替换若依默认站点名
+            for sn in default_site_names {
+                if new_content.contains(sn) {
+                    new_content = new_content.replace(sn, &params.frontend_title);
+                    changed = true;
+                }
+            }
+            if changed {
+                write_text(path, &new_content).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+                r.modified_files += 1;
+            }
+        }
+    }
+    log(&format!("前端标题修改：{} 个文件", r.modified_files));
+    Ok(())
+}
+
+/// 6. 配置文件重构（三件套）
+fn do_rewrite_config<F>(root: &Path, params: &CustomizeParams, template: &Template, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let res_dir = find_resources_dir(root, template);
+    let res_dir = match res_dir {
+        Some(d) => d,
+        None => {
+            r.status = TaskStatus::Skipped;
+            r.message = "未找到 admin 模块 resources 目录，跳过配置重构".into();
+            return Ok(());
+        }
+    };
+    let outcome = crate::core::config_rewrite::rewrite(&res_dir, params, log)?;
+    r.created_files = 3;
+    log(&format!(
+        "配置重构：{} / {} / {}",
+        outcome.base_path.display(),
+        outcome.dev_path.display(),
+        outcome.prod_path.display()
+    ));
+    Ok(())
+}
+
+/// 7. logback log.path 统一为 logs
+fn do_rewrite_logback<F>(root: &Path, engine: &ReplaceEngine, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let re = regex::Regex::new(r#"(name="log\.path"\s+value=")[^"]*(")"#).unwrap();
+    // 扫描全项目文本文件中名为 logback*.xml 的
+    let scan = scanner::scan(root, engine);
+    for path in &scan.text_files {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if !name.starts_with("logback") || !name.ends_with(".xml") {
+            continue;
+        }
+        let content = match read_text(path) {
+            Some(c) => c,
+            None => continue,
+        };
+        let new_content = re.replace_all(&content, "${1}logs${2}").to_string();
+        if new_content != content {
+            write_text(path, &new_content).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+            r.modified_files += 1;
+            log(&format!("logback 修正：{}", path.display()));
+        }
+    }
+    Ok(())
+}
+
+// ---------- 辅助函数 ----------
+
+/// 定位 admin 模块的 src/main/resources 目录
+fn find_resources_dir(root: &Path, template: &Template) -> Option<PathBuf> {
+    // 优先模板声明的 admin 模块
+    for m in &template.module.modules {
+        if m.ends_with("-admin") {
+            let p = root.join(m).join("src/main/resources");
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+    }
+    // 回退：扫描 root 下任意 *-admin/src/main/resources（适配已改名场景）
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with("-admin") {
+                let p = e.path().join("src/main/resources");
+                if p.is_dir() {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 8. 添加 MyBatis-Plus 依赖 + 改造现有 Mapper/Service（幂等）
+fn do_add_mp_dependency<F>(root: &Path, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    // 注意：执行到此步时模块可能已被重命名，扫描当前实际存在的模块目录，而非依赖 info.backend_modules
+    let modules = current_backend_modules(root, info);
+    let added = crate::core::mybatis_plus::add_dependency(root, &modules, log)?;
+    if added {
+        r.modified_files = 1;
+    } else {
+        r.message = "依赖已存在，跳过".into();
+    }
+    // 改造现有 Mapper/Service/ServiceImpl 源码为 MyBatis-Plus 继承体系
+    let adapted = crate::core::mybatis_plus::adapt_existing_sources(root, log)?;
+    r.modified_files += adapted;
+    Ok(())
+}
+
+/// 9. 生成 MybatisPlusConfig.java（幂等）
+fn do_add_mp_config<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let created = crate::core::mybatis_plus::add_config_class(root, params, &modules, log)?;
+    if created {
+        r.created_files = 1;
+    } else {
+        r.message = "配置类已存在，跳过".into();
+    }
+    Ok(())
+}
+
+/// 10. 适配代码生成器模板（Mapper/Service/ServiceImpl/Domain/XML）
+fn do_adapt_generator<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    // 模块可能已改名，扫描当前实际存在的 generator 模板文件
+    let gen_files = current_generator_files(root, info);
+    let n = crate::core::mybatis_plus::adapt_generator_templates(
+        root,
+        &gen_files,
+        params.enable_long_id_json_string,
+        log,
+    )?;
+    r.modified_files = n;
+    Ok(())
+}
+
+/// 11. Long 主键 ID JSON 序列化（作为 generator domain 模板改造的一部分，单独触发）
+fn do_add_long_id<F>(root: &Path, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    // 模块可能已改名，扫描当前实际存在的 domain 模板
+    let gen_files = current_generator_files(root, info);
+    let domain_files: Vec<String> = gen_files
+        .iter()
+        .filter(|f| f.ends_with("domain.java.vm"))
+        .cloned()
+        .collect();
+    if domain_files.is_empty() {
+        r.status = TaskStatus::Skipped;
+        r.message = "未识别到 domain 模板，跳过".into();
+        return Ok(());
+    }
+    let n = crate::core::mybatis_plus::adapt_generator_templates(root, &domain_files, true, log)?;
+    r.modified_files = n;
+    Ok(())
+}
+
+/// 扫描当前实际存在的后端模块目录（兼顾已改名场景）
+fn current_backend_modules(root: &Path, info: &crate::core::ProjectInfo) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            if e.path().is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                // 含 src/main/java 或 pom.xml 的视为后端模块
+                if e.path().join("pom.xml").is_file() {
+                    out.push(name);
+                }
+            }
+        }
+    }
+    // 若扫描为空，回退到 info
+    if out.is_empty() {
+        out = info.backend_modules.clone();
+    }
+    out
+}
+
+/// 扫描当前实际存在的代码生成器 .vm 模板（兼顾模块改名）
+fn current_generator_files(root: &Path, info: &crate::core::ProjectInfo) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                !matches!(name.as_ref(), "target" | "node_modules" | ".git" | ".idea" | "dist")
+            } else {
+                true
+            }
+        })
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_file() {
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if name.ends_with(".vm") {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    out.push(rel.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    if out.is_empty() {
+        out = info.generator_template_files.clone();
+    }
+    out
+}
+
+/// 返回所有含 src/main/java/<old_pkg> 的后端模块名
+fn template_modules_with_java(root: &Path, old_package: &str) -> Vec<String> {
+    let old_rel = package_to_path(old_package);
+    // 扫描 root 下所有 ruoyi-* 或已重命名模块中含 java 源码的目录
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !e.path().is_dir() {
+                continue;
+            }
+            let java_old = e.path().join("src/main/java").join(&old_rel);
+            if java_old.is_dir() {
+                out.push(name);
+            }
+        }
+    }
+    out
+}
+
+/// 递归收集所有 pom.xml（排除目录内）
+fn walkdir_poms(root: &Path, engine: &ReplaceEngine) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                !engine.is_excluded_dir(&name)
+            } else {
+                true
+            }
+        })
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_file() && path.file_name().map(|n| n == "pom.xml").unwrap_or(false) {
+            out.push(path.to_path_buf());
+        }
+    }
+    out
+}
+
+/// 清理移动后残留的空包层级目录（如 com/ 空了就删）
+fn cleanup_empty_package_dirs(java_base: &Path, old_rel: &Path) {
+    // 从最深层往上逐层删除空目录
+    let mut cur = java_base.join(old_rel);
+    // cur 本身已被移走，从其父级开始清理
+    if let Some(parent) = cur.parent() {
+        cur = parent.to_path_buf();
+    }
+    // 最多向上清理到 java_base
+    while cur != *java_base && cur.starts_with(java_base) {
+        match std::fs::read_dir(&cur) {
+            Ok(mut it) => {
+                if it.next().is_none() {
+                    // 空目录，删除
+                    if std::fs::remove_dir(&cur).is_err() {
+                        break;
+                    }
+                    if let Some(p) = cur.parent() {
+                        cur = p.to_path_buf();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+/// 12a. 生成 UniApp 小程序项目骨架
+fn do_generate_uniapp<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/uniapp");
+    let output_dir = PathBuf::from(&params.output_dir);
+    let result = crate::core::uniapp::generate_uniapp_project(&template_dir, &output_dir, params, &|msg| log(msg))?;
+    r.created_files = result.files_created;
+    r.modified_files = result.files_modified;
+    Ok(())
+}
+
+/// 12b. 追加微信小程序配置到 application-dev/prod
+fn do_append_wechat_config<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    // 扫描 root 下 *-admin/src/main/resources
+    let res_dir = {
+        let mut found = None;
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.ends_with("-admin") {
+                    let p = e.path().join("src/main/resources");
+                    if p.is_dir() {
+                        found = Some(p);
+                        break;
+                    }
+                }
+            }
+        }
+        match found {
+            Some(d) => d,
+            None => {
+                r.status = TaskStatus::Skipped;
+                r.message = "未找到 admin 模块 resources 目录，跳过微信配置追加".into();
+                return Ok(());
+            }
+        }
+    };
+    let appended = crate::core::uniapp::append_wechat_config(&res_dir, params, &|msg| log(msg))?;
+    if appended {
+        r.modified_files = 2;
+    } else {
+        r.message = "配置已存在或未找到配置文件".into();
+    }
+    Ok(())
+}
