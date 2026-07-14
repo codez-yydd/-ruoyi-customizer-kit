@@ -34,6 +34,8 @@ export const useProjectStore = defineStore('project', () => {
   const sourceType = ref<'directory' | 'zip'>('directory')
   /** zip 文件的原始路径（仅 zip 模式） */
   const zipPath = ref<string>('')
+  /** zip 解压的临时根目录（仅 zip 模式，清理时使用） */
+  const extractRoot = ref<string>('')
   /** 用户选择的最终输出目录 */
   const outputDir = ref<string>('')
 
@@ -81,6 +83,7 @@ export const useProjectStore = defineStore('project', () => {
     executeResult.value = null
     sourceType.value = 'directory'
     zipPath.value = ''
+    extractRoot.value = ''
     outputDir.value = ''
   }
 
@@ -109,6 +112,11 @@ export const useProjectStore = defineStore('project', () => {
     zipPath.value = p
   }
 
+  /** 设置临时解压根目录 */
+  function setExtractRoot(p: string) {
+    extractRoot.value = p
+  }
+
   /** 设置输出目录 */
   function setOutputDir(d: string) {
     outputDir.value = d
@@ -124,6 +132,7 @@ export const useProjectStore = defineStore('project', () => {
     executeResult,
     sourceType,
     zipPath,
+    extractRoot,
     outputDir,
     log,
     clearLogs,
@@ -135,6 +144,7 @@ export const useProjectStore = defineStore('project', () => {
     setExecuteResult,
     setSourceType,
     setZipPath,
+    setExtractRoot,
     setOutputDir
   }
 })

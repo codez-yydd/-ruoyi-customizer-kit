@@ -11,7 +11,7 @@ import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
-const { projectInfo, params, sourceType, zipPath } = storeToRefs(store)
+const { projectInfo, params, sourceType, zipPath, extractRoot } = storeToRefs(store)
 
 const running = ref(false)
 const result = ref<ExecuteResponse | null>(null)
@@ -49,6 +49,10 @@ async function run() {
     result.value = resp
     store.setExecuteResult(resp)
     store.log(resp.message, resp.success ? 'SUCCESS' : 'WARN')
+    // 执行成功后清理 zip 识别用的临时解压目录（执行阶段已有独立的输出目录）
+    if (resp.success && sourceType.value === 'zip' && extractRoot.value) {
+      await cleanupTempDir()
+    }
   } catch (e) {
     store.log(`执行异常：${e}`, 'ERROR')
   } finally {
@@ -56,7 +60,22 @@ async function run() {
   }
 }
 
-function backHome() {
+/** 清理 zip 识别用的临时解压目录（静默失败，不阻断流程） */
+async function cleanupTempDir() {
+  if (!extractRoot.value) return
+  try {
+    await api.cleanupExtractDir(extractRoot.value)
+    store.setExtractRoot('')
+  } catch (e) {
+    store.log(`清理临时目录异常：${e}`, 'WARN')
+  }
+}
+
+async function backHome() {
+  // 兜底：若临时目录仍未清理（如执行失败未走成功分支），返回首页前清理
+  if (sourceType.value === 'zip' && extractRoot.value) {
+    await cleanupTempDir()
+  }
   store.resetFlow()
   router.push({ name: 'home' })
 }

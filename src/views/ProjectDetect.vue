@@ -5,17 +5,27 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
+import * as api from '@/api'
 import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
-const { rootPath, projectInfo } = storeToRefs(store)
+const { rootPath, projectInfo, sourceType, extractRoot } = storeToRefs(store)
 
 const hasResult = computed(() => projectInfo.value !== null)
 const recognized = computed(() => projectInfo.value?.confidence.recognized ?? false)
 
-/** 回首页重新选择项目 */
-function backToHome() {
+/** 回首页重新选择项目：清理 zip 临时目录并重置流程 */
+async function backToHome() {
+  // 若为 zip 模式，清理临时解压目录（静默失败）
+  if (sourceType.value === 'zip' && extractRoot.value) {
+    try {
+      await api.cleanupExtractDir(extractRoot.value)
+    } catch {
+      // 忽略清理失败，不阻断返回
+    }
+  }
+  store.resetFlow()
   router.push({ name: 'home' })
 }
 

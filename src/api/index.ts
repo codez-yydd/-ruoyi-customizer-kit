@@ -6,6 +6,7 @@ import type {
   CustomizeParams,
   DetectResponse,
   ExecuteResponse,
+  CleanupResponse,
   ExtractResponse,
   PreviewResponse,
   TemplateInfo,
@@ -36,11 +37,21 @@ export function detectProject(rootPath: string, template?: string): Promise<Dete
 
 /**
  * 解压 zip 压缩包并定位真正的项目根目录。
- * 解压到压缩包同级的同名目录（冲突时自动加后缀），并自动剥离多余的包装目录。
+ * 解压到系统临时目录下的唯一子目录（用户不可见），仅供识别/预览使用，
+ * 实际改造时由后端重新解压到输出目录。重新选择项目或执行成功后应调用 cleanupExtractDir 清理。
  * @param zipPath zip 文件绝对路径
  */
 export function extractZipProject(zipPath: string): Promise<ExtractResponse> {
   return invoke<ExtractResponse>('extract_zip_project', { zipPath })
+}
+
+/**
+ * 清理识别用的临时解压目录。
+ * 仅允许删除系统临时目录下的路径（后端有安全校验）。
+ * @param path 临时解压目录的绝对路径（即 extractZipProject 返回的 root_path 的解压根）
+ */
+export function cleanupExtractDir(path: string): Promise<CleanupResponse> {
+  return invoke<CleanupResponse>('cleanup_extract_dir', { path })
 }
 
 /**

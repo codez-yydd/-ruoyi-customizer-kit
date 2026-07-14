@@ -38,6 +38,13 @@ export interface ExtractResponse {
   message: string
   /** 解压后定位到的项目根目录绝对路径 */
   root_path: string
+  /** 临时解压根目录的绝对路径（清理时传给 cleanupExtractDir） */
+  extract_root: string
+}
+
+export interface CleanupResponse {
+  success: boolean
+  message: string
 }
 
 /** 用户改造参数 */

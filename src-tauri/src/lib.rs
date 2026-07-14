@@ -6,13 +6,13 @@
 
 #![allow(dead_code)]
 
-mod commands;
+pub mod commands;
 pub mod core;
 pub mod rules;
 pub mod utils;
 
 use commands::{
-    detect_project, extract_zip_project, list_templates, ping,
+    cleanup_extract_dir, detect_project, extract_zip_project, list_templates, ping,
 };
 use commands::execute::execute_transform;
 use commands::preview::preview_tasks;
@@ -27,6 +27,7 @@ pub fn run() {
             list_templates,
             detect_project,
             extract_zip_project,
+            cleanup_extract_dir,
             preview_tasks,
             execute_transform
         ])

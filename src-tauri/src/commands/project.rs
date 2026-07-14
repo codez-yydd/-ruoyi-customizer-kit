@@ -130,17 +130,44 @@ pub fn ping() -> String {
 pub struct ExtractResponse {
     pub success: bool,
     pub message: String,
-    /// 解压后定位到的项目根目录绝对路径
+    /// 解压后定位到的项目根目录绝对路径（供识别使用）
     pub root_path: String,
+    /// 临时解压根目录的绝对路径（清理时传给 cleanup_extract_dir）
+    pub extract_root: String,
+}
+
+/// 清理临时解压目录的响应
+#[derive(Debug, Clone, Serialize)]
+pub struct CleanupResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+/// 在系统临时目录下生成唯一的解压目标目录。
+/// 形如 `$TMPDIR/ruoyi-forge-extract-<时间戳>-<随机数>/`。
+fn make_extract_dest() -> PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // 简单的伪随机：取纳秒时间戳 + 线程 id 拼接，保证唯一性
+    let tid = std::thread::current()
+        .id();
+    let tid_hash = format!("{:?}", tid)
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    let dir_name = format!("ruoyi-forge-extract-{}-{}", now, tid_hash);
+    std::env::temp_dir().join(dir_name)
 }
 
 /// 解压 zip 压缩包并定位真正的项目根目录。
 ///
 /// 行为：
-/// - 把 `<zip>` 解压到其同级的同名目录（去掉 .zip 后缀），如
-///   `~/Downloads/RuoYi-springboot3.zip` → `~/Downloads/RuoYi-springboot3/`
-/// - 若同名目录已存在且非空，在目录名后追加 `_1`、`_2`... 避免覆盖
+/// - 把 `<zip>` 解压到系统临时目录下的唯一子目录（用户不可见）
 /// - 自动剥离 zip 内多余的包装目录，返回真正含 pom.xml 的那一层
+/// - 临时目录仅供识别/预览使用，执行改造时由后端重新解压到输出目录；
+///   识别临时目录应在重新选择项目或执行成功后调用 `cleanup_extract_dir` 清理
 /// - 支持的扩展名：.zip
 #[tauri::command]
 pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
@@ -152,6 +179,7 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
             success: false,
             message: format!("压缩包不存在或不是文件：{zip_path}"),
             root_path: String::new(),
+            extract_root: String::new(),
         };
     }
     let is_zip = zip
@@ -163,40 +191,18 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
             success: false,
             message: "目前仅支持 .zip 压缩包".into(),
             root_path: String::new(),
+            extract_root: String::new(),
         };
     }
 
-    // 计算解压目标目录（同级、去 .zip 后缀；冲突时加 _n）
-    let stem = zip
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "ruoyi-project".to_string());
-    let parent = match zip.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-        _ => PathBuf::from("."),
-    };
-    let mut dest = parent.join(&stem);
-    let mut suffix = 1u32;
-    loop {
-        if dest.is_dir() {
-            if let Ok(mut it) = std::fs::read_dir(&dest) {
-                if it.next().is_some() {
-                    // 已存在且非空，换名
-                    dest = parent.join(format!("{}_{}", stem, suffix));
-                    suffix += 1;
-                    continue;
-                }
-            }
-        }
-        break;
-    }
-
-    // 解压
+    // 解压到系统临时目录下的唯一子目录
+    let dest = make_extract_dest();
     if let Err(e) = crate::utils::archive::extract_zip(&zip, &dest) {
         return ExtractResponse {
             success: false,
             message: format!("解压失败：{e}"),
             root_path: String::new(),
+            extract_root: String::new(),
         };
     }
 
@@ -206,6 +212,40 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
         success: true,
         message: format!("解压完成，项目根目录：{}", root.display()),
         root_path: root.to_string_lossy().to_string(),
+        extract_root: dest.to_string_lossy().to_string(),
+    }
+}
+
+/// 清理识别用的临时解压目录。
+///
+/// 安全校验：仅允许删除系统临时目录（`std::env::temp_dir()`）下的路径，
+/// 防止前端误传任意路径导致误删用户数据。
+#[tauri::command]
+pub fn cleanup_extract_dir(path: String) -> CleanupResponse {
+    let target = PathBuf::from(&path);
+    if target.as_os_str().is_empty() || !target.is_dir() {
+        // 目录不存在视为已清理，不报错
+        return CleanupResponse {
+            success: true,
+            message: "目录不存在，无需清理".into(),
+        };
+    }
+    let temp_root = std::env::temp_dir();
+    if !target.starts_with(&temp_root) {
+        return CleanupResponse {
+            success: false,
+            message: format!("拒绝清理临时目录之外的路径：{path}"),
+        };
+    }
+    match std::fs::remove_dir_all(&target) {
+        Ok(()) => CleanupResponse {
+            success: true,
+            message: format!("已清理临时目录：{path}"),
+        },
+        Err(e) => CleanupResponse {
+            success: false,
+            message: format!("清理临时目录失败：{e}"),
+        },
     }
 }
 

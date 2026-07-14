@@ -54,6 +54,7 @@ export function useProjectFlow() {
     const navigate = opts?.navigate ?? true
     let projectRoot = ''
     let capturedZipPath = ''
+    let capturedExtractRoot = ''
 
     if (mode === 'directory') {
       const path = await pickDirectory()
@@ -76,6 +77,7 @@ export function useProjectFlow() {
         }
         store.log(resp.message, 'SUCCESS')
         projectRoot = resp.root_path
+        capturedExtractRoot = resp.extract_root
       } catch (e) {
         store.log(`解压异常：${e}`, 'ERROR')
         return false
@@ -84,14 +86,20 @@ export function useProjectFlow() {
       }
     }
 
-    // 重新选择项目：清空参数/预览/执行结果，避免旧状态干扰新流程
+    // 重新选择项目：先清理上一次 zip 模式遗留的临时解压目录，再重置状态
+    if (store.sourceType === 'zip' && store.extractRoot) {
+      await cleanupExtractRoot(store.extractRoot)
+    }
+
     // 用局部变量保存 zip 路径，resetFlow 会清空 store
     const savedZipPath = mode === 'zip' ? capturedZipPath : ''
+    const savedExtractRoot = mode === 'zip' ? capturedExtractRoot : ''
     store.resetFlow()
     store.setRootPath(projectRoot)
     store.setSourceType(mode)
     if (mode === 'zip' && savedZipPath) {
       store.setZipPath(savedZipPath)
+      store.setExtractRoot(savedExtractRoot)
     }
 
     const ok = await runDetect(projectRoot)
@@ -101,5 +109,16 @@ export function useProjectFlow() {
     return ok
   }
 
-  return { detecting, chooseAndDetect }
+  /** 清理 zip 识别用的临时解压目录（静默失败，不阻断流程） */
+  async function cleanupExtractRoot(extractRoot: string) {
+    if (!extractRoot) return
+    try {
+      await api.cleanupExtractDir(extractRoot)
+    } catch (e) {
+      // 清理失败不阻断主流程，仅记录日志
+      store.log(`清理临时目录异常：${e}`, 'WARN')
+    }
+  }
+
+  return { detecting, chooseAndDetect, cleanupExtractRoot }
 }
