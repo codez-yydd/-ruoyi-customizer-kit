@@ -262,9 +262,15 @@ pub fn plan(
             status: TaskStatus::Pending,
             error_message: String::new(),
         });
+        // 追加微信小程序配置（按是否引入支付动态调整文案）
+        let append_name = if params.pay_included {
+            "追加微信小程序 + 支付配置到 application-dev/prod"
+        } else {
+            "追加微信小程序配置到 application-dev/prod"
+        };
         tasks.push(Task {
             id: next_id(&tasks),
-            name: "追加微信小程序配置到 application-dev/prod".into(),
+            name: append_name.into(),
             task_type: TaskType::AppendWechatConfig,
             risk_level: RiskLevel::Low,
             affected_files: vec![
@@ -276,6 +282,58 @@ pub fn plan(
             status: TaskStatus::Pending,
             error_message: String::new(),
         });
+
+        // 引入微信支付：注入官方 SDK 依赖 + 生成配置类 + 创建证书目录
+        if params.pay_included {
+            let new_pkg_path = package_to_path(&params.new_package);
+            let config_pkg = new_pkg_path.join("framework/config").to_string_lossy().to_string();
+            let admin_module = info
+                .backend_modules
+                .iter()
+                .find(|m| m.ends_with("-admin"))
+                .or_else(|| info.backend_modules.first())
+                .cloned()
+                .unwrap_or_default();
+            tasks.push(Task {
+                id: next_id(&tasks),
+                name: format!(
+                    "注入微信支付官方 SDK 依赖（wechatpay-java:{}）",
+                    crate::core::wechat::WECHATPAY_JAVA_VERSION
+                ),
+                task_type: TaskType::AddWechatPayDependency,
+                risk_level: RiskLevel::Medium,
+                affected_files: vec![format!("{admin_module}/pom.xml")],
+                affected_dirs: vec![],
+                created_files: vec![],
+                status: TaskStatus::Pending,
+                error_message: String::new(),
+            });
+            tasks.push(Task {
+                id: next_id(&tasks),
+                name: "生成微信支付配置类（WxPayProperties + WechatPayConfig）".into(),
+                task_type: TaskType::AddWechatPayConfig,
+                risk_level: RiskLevel::Medium,
+                affected_files: vec![],
+                affected_dirs: vec![],
+                created_files: vec![
+                    format!("{config_pkg}/WxPayProperties.java"),
+                    format!("{config_pkg}/WechatPayConfig.java"),
+                ],
+                status: TaskStatus::Pending,
+                error_message: String::new(),
+            });
+            tasks.push(Task {
+                id: next_id(&tasks),
+                name: "创建证书目录 src/main/resources/cert/".into(),
+                task_type: TaskType::CreateWechatCertDir,
+                risk_level: RiskLevel::Low,
+                affected_files: vec![],
+                affected_dirs: vec![],
+                created_files: vec![format!("{admin_module}/src/main/resources/cert/.gitkeep")],
+                status: TaskStatus::Pending,
+                error_message: String::new(),
+            });
+        }
     }
 
     // 13. 执行后校验（始终）

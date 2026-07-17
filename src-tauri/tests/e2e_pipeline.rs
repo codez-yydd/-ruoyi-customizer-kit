@@ -103,6 +103,7 @@ fn full_params() -> CustomizeParams {
         enable_remove_docs: true,
         output_dir: String::new(),
         enable_uniapp: false,
+        ..CustomizeParams::default()
     }
 }
 

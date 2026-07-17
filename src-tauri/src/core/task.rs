@@ -20,6 +20,9 @@ pub enum TaskType {
     AddLongIdJsonSerializeAnnotation,
     GenerateUniappProject,
     AppendWechatConfig,
+    AddWechatPayDependency,
+    AddWechatPayConfig,
+    CreateWechatCertDir,
     ValidateProject,
     GenerateReport,
 }

@@ -28,6 +28,7 @@ fn test_params() -> CustomizeParams {
         enable_remove_docs: false,
         output_dir: String::new(),
         enable_uniapp: true,
+        ..CustomizeParams::default()
     }
 }
 
@@ -108,7 +109,11 @@ fn appends_wechat_config_idempotently() {
     fs::write(res_dir.join("application-dev.yaml"), "spring:\n  datasource:\n    url: jdbc:mysql://localhost/ry\n").unwrap();
     fs::write(res_dir.join("application-prod.yaml"), "spring:\n  datasource:\n    url: ${MYSQL_URL}\n").unwrap();
 
-    let params = test_params();
+    let mut params = test_params();
+    // 开启微信支付，验证 pay 块的追加
+    params.pay_included = true;
+    params.pay_enabled = true;
+    params.pay_mode = "public-key".into();
 
     // 第一次追加
     let appended = uniapp::append_wechat_config(&res_dir, &params, &|_| {}).unwrap();
@@ -117,11 +122,11 @@ fn appends_wechat_config_idempotently() {
     let dev = fs::read_to_string(res_dir.join("application-dev.yaml")).unwrap();
     assert!(dev.contains("demo:"), "dev 应含 demo 配置块");
     assert!(dev.contains("appid:"), "dev 应含 appid");
-    assert!(dev.contains("mock: true"), "dev mock 应为 true");
+    assert!(dev.contains("enabled: true"), "dev 应含 enabled");
 
     let prod = fs::read_to_string(res_dir.join("application-prod.yaml")).unwrap();
     assert!(prod.contains("demo:"), "prod 应含 demo 配置块");
-    assert!(prod.contains("mock: false"), "prod mock 应为 false");
+    assert!(prod.contains("enabled: true"), "prod 应含 enabled");
 
     // 第二次追加应幂等跳过
     let appended2 = uniapp::append_wechat_config(&res_dir, &params, &|_| {}).unwrap();

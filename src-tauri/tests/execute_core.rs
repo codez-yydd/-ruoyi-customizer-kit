@@ -88,6 +88,7 @@ fn make_params() -> CustomizeParams {
         enable_remove_docs: false,
         output_dir: String::new(),
         enable_uniapp: false,
+        ..CustomizeParams::default()
     }
 }
 

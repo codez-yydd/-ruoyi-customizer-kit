@@ -32,7 +32,21 @@ const defaults = (): CustomizeParams => ({
   enable_remove_github: true,
   enable_remove_docs: true,
   output_dir: store.outputDir || '',
-  enable_uniapp: false
+  enable_uniapp: false,
+  wx_appid: '',
+  wx_appsecret: '',
+  pay_included: false,
+  pay_enabled: false,
+  pay_mode: 'public-key',
+  pay_mch_id: '',
+  pay_mch_serial_no: '',
+  pay_api_v3_key: '',
+  pay_private_key_path: 'classpath:cert/apiclient_key.pem',
+  pay_public_key_id: '',
+  pay_public_key_path: 'classpath:cert/wxp_pub.pem',
+  pay_api_key: '',
+  pay_cert_path: 'classpath:cert/apiclient_cert.p12',
+  pay_notify_url: ''
 })
 
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
@@ -218,6 +232,72 @@ async function chooseOutputDir() {
             </div>
           </div>
         </div>
+
+        <!-- UniApp 小程序信息 + 微信支付（仅开启 UniApp 时显示） -->
+        <div v-if="form.enable_uniapp" class="uniapp-panel">
+          <el-divider content-position="left">小程序信息</el-divider>
+          <div class="uniapp-grid">
+            <el-form-item label="小程序 AppID">
+              <el-input v-model="form.wx_appid" placeholder="如 wx1234567890abcdef" />
+            </el-form-item>
+            <el-form-item label="小程序 AppSecret">
+              <el-input v-model="form.wx_appsecret" show-password placeholder="小程序密钥" />
+            </el-form-item>
+          </div>
+
+          <el-divider content-position="left">微信支付</el-divider>
+          <div class="uniapp-grid">
+            <el-form-item label="引入微信支付">
+              <el-switch v-model="form.pay_included" />
+              <span class="inline-hint muted">生成 wechat.pay 配置块、注入官方 SDK 依赖与配置类</span>
+            </el-form-item>
+            <el-form-item label="开启微信支付">
+              <el-switch v-model="form.pay_enabled" :disabled="!form.pay_included" />
+              <span class="inline-hint muted">对应 yml 的 enabled 字段</span>
+            </el-form-item>
+          </div>
+
+          <template v-if="form.pay_included">
+            <el-form-item label="支付模式" class="pay-mode-row">
+              <el-radio-group v-model="form.pay_mode">
+                <el-radio value="public-key">公钥模式（V3，推荐）</el-radio>
+                <el-radio value="certificate">平台证书模式（V3）</el-radio>
+                <el-radio value="v2">V2 旧模式</el-radio>
+              </el-radio-group>
+            </el-form-item>
+
+            <div class="uniapp-grid">
+              <el-form-item label="商户号">
+                <el-input v-model="form.pay_mch_id" placeholder="如 1900000109" />
+              </el-form-item>
+              <el-form-item v-if="form.pay_mode !== 'v2'" label="商户证书序列号">
+                <el-input v-model="form.pay_mch_serial_no" placeholder="merchantSerialNumber" />
+              </el-form-item>
+              <el-form-item v-if="form.pay_mode !== 'v2'" label="API V3 密钥">
+                <el-input v-model="form.pay_api_v3_key" show-password placeholder="32 位 APIv3 密钥" />
+              </el-form-item>
+              <el-form-item v-if="form.pay_mode !== 'v2'" label="商户 API 私钥路径">
+                <el-input v-model="form.pay_private_key_path" placeholder="classpath:cert/apiclient_key.pem" />
+              </el-form-item>
+              <el-form-item v-if="form.pay_mode === 'public-key'" label="平台公钥 ID">
+                <el-input v-model="form.pay_public_key_id" placeholder="如 PUB_KEY_ID_xxxx" />
+              </el-form-item>
+              <el-form-item v-if="form.pay_mode === 'public-key'" label="平台公钥路径">
+                <el-input v-model="form.pay_public_key_path" placeholder="classpath:cert/wxp_pub.pem" />
+              </el-form-item>
+              <el-form-item v-if="form.pay_mode === 'v2'" label="API V2 密钥">
+                <el-input v-model="form.pay_api_key" show-password placeholder="32 位 APIv2 密钥" />
+              </el-form-item>
+              <el-form-item v-if="form.pay_mode === 'v2'" label="商户证书路径">
+                <el-input v-model="form.pay_cert_path" placeholder="classpath:cert/apiclient_cert.p12" />
+              </el-form-item>
+              <el-form-item label="支付回调地址" class="notify-row">
+                <el-input v-model="form.pay_notify_url" placeholder="https://your-domain.com/app/xxx/payment/wechat/notify" />
+                <span class="inline-hint muted">dev/prod 共用；留空时 prod 用默认域名占位</span>
+              </el-form-item>
+            </div>
+          </template>
+        </div>
       </el-form>
 
       <div class="actions">
@@ -275,5 +355,33 @@ async function chooseOutputDir() {
 .switch-item__hint {
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* UniApp 嵌套面板：小程序信息 + 微信支付 */
+.uniapp-panel {
+  margin-left: 140px;
+  margin-top: 8px;
+  padding: 12px 20px 4px;
+  background: #f7f8fa;
+  border-radius: 6px;
+}
+.uniapp-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0 24px;
+}
+.uniapp-grid .el-form-item {
+  margin-bottom: 14px;
+}
+/* pay-mode 单独占满一行 */
+.uniapp-panel .pay-mode-row {
+  margin-bottom: 14px;
+}
+.uniapp-panel .notify-row {
+  grid-column: 1 / -1;
+}
+.inline-hint {
+  margin-left: 12px;
+  font-size: 12px;
 }
 </style>

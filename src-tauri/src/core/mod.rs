@@ -6,6 +6,7 @@ pub mod detector;
 pub mod config_rewrite;
 pub mod mybatis_plus;
 pub mod uniapp;
+pub mod wechat;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -19,6 +20,26 @@ use serde::{Deserialize, Serialize};
 /// serde 默认值辅助：返回 true（用于新增开关字段兼容旧参数）
 fn default_true() -> bool {
     true
+}
+
+/// serde 默认值辅助：微信支付模式默认 public-key（V3 公钥模式）
+fn default_pay_mode() -> String {
+    "public-key".into()
+}
+
+/// serde 默认值辅助：商户 API 私钥默认 classpath 路径
+fn default_pay_private_key_path() -> String {
+    "classpath:cert/apiclient_key.pem".into()
+}
+
+/// serde 默认值辅助：微信支付平台公钥默认 classpath 路径
+fn default_pay_public_key_path() -> String {
+    "classpath:cert/wxp_pub.pem".into()
+}
+
+/// serde 默认值辅助：V2 商户证书默认 classpath 路径
+fn default_pay_cert_path() -> String {
+    "classpath:cert/apiclient_cert.p12".into()
 }
 
 /// 用户改造参数
@@ -58,6 +79,50 @@ pub struct CustomizeParams {
     /// 是否生成 UniApp 小程序项目
     #[serde(default)]
     pub enable_uniapp: bool,
+    // ---- 小程序信息（仅 enable_uniapp=true 时有意义） ----
+    /// 微信小程序 AppID
+    #[serde(default)]
+    pub wx_appid: String,
+    /// 微信小程序 AppSecret
+    #[serde(default)]
+    pub wx_appsecret: String,
+    // ---- 微信支付配置（仅 enable_uniapp 且 pay_included=true 时生效） ----
+    /// 是否引入微信支付（生成 wechat.pay 配置块 + 注入 SDK 依赖 + 配置类）
+    #[serde(default)]
+    pub pay_included: bool,
+    /// 是否开启微信支付（对应 yml enabled 字段）
+    #[serde(default)]
+    pub pay_enabled: bool,
+    /// 支付模式：public-key(V3公钥) | certificate(V3平台证书) | v2(旧模式)
+    #[serde(default = "default_pay_mode")]
+    pub pay_mode: String,
+    /// 支付商户号
+    #[serde(default)]
+    pub pay_mch_id: String,
+    /// 商户证书序列号（V3）
+    #[serde(default)]
+    pub pay_mch_serial_no: String,
+    /// API V3 密钥（V3）
+    #[serde(default)]
+    pub pay_api_v3_key: String,
+    /// 商户 API 私钥路径（V3）
+    #[serde(default = "default_pay_private_key_path")]
+    pub pay_private_key_path: String,
+    /// 微信支付平台公钥 ID（V3 公钥模式）
+    #[serde(default)]
+    pub pay_public_key_id: String,
+    /// 微信支付平台公钥路径（V3 公钥模式）
+    #[serde(default = "default_pay_public_key_path")]
+    pub pay_public_key_path: String,
+    /// API V2 密钥（V2 旧模式）
+    #[serde(default)]
+    pub pay_api_key: String,
+    /// 商户证书路径 apiclient_cert.p12（V2）
+    #[serde(default = "default_pay_cert_path")]
+    pub pay_cert_path: String,
+    /// 支付回调地址（dev/prod 共用）
+    #[serde(default)]
+    pub pay_notify_url: String,
 }
 
 impl Default for CustomizeParams {
@@ -83,6 +148,20 @@ impl Default for CustomizeParams {
             enable_remove_docs: true,
             output_dir: String::new(),
             enable_uniapp: false,
+            wx_appid: String::new(),
+            wx_appsecret: String::new(),
+            pay_included: false,
+            pay_enabled: false,
+            pay_mode: "public-key".into(),
+            pay_mch_id: String::new(),
+            pay_mch_serial_no: String::new(),
+            pay_api_v3_key: String::new(),
+            pay_private_key_path: "classpath:cert/apiclient_key.pem".into(),
+            pay_public_key_id: String::new(),
+            pay_public_key_path: "classpath:cert/wxp_pub.pem".into(),
+            pay_api_key: String::new(),
+            pay_cert_path: "classpath:cert/apiclient_cert.p12".into(),
+            pay_notify_url: String::new(),
         }
     }
 }

@@ -1,12 +1,12 @@
 {
   "name": "{{UNIAPP_NAME}}",
-  "appid": "",
+  "appid": "{{WX_APPID}}",
   "description": "{{PROJECT_DESCRIPTION}}",
   "versionName": "1.0.0",
   "versionCode": "100",
   "transformPx": false,
   "mp-weixin": {
-    "appid": "",
+    "appid": "{{WX_APPID}}",
     "setting": {
       "urlCheck": false
     },

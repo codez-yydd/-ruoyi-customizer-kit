@@ -108,6 +108,9 @@ where
         TaskType::AddLongIdJsonSerializeAnnotation => do_add_long_id(root, info, &mut r, log),
         TaskType::GenerateUniappProject => do_generate_uniapp(root, params, &mut r, log),
         TaskType::AppendWechatConfig => do_append_wechat_config(root, params, &mut r, log),
+        TaskType::AddWechatPayDependency => do_add_wechat_pay_dependency(root, info, &mut r, log),
+        TaskType::AddWechatPayConfig => do_add_wechat_pay_config(root, params, info, &mut r, log),
+        TaskType::CreateWechatCertDir => do_create_wechat_cert_dir(root, params, info, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
             r.status = TaskStatus::Skipped;
             r.message = "校验/报告在执行后单独触发".into();
@@ -744,6 +747,51 @@ where
         r.modified_files = 2;
     } else {
         r.message = "配置已存在或未找到配置文件".into();
+    }
+    Ok(())
+}
+
+/// 12c. 注入微信支付官方 SDK 依赖（幂等）
+fn do_add_wechat_pay_dependency<F>(root: &Path, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let added = crate::core::wechat::add_wechat_dependency(root, &modules, &|msg| log(msg))?;
+    if added {
+        r.modified_files = 1;
+    } else {
+        r.message = "依赖已存在，跳过".into();
+    }
+    Ok(())
+}
+
+/// 12d. 生成微信支付配置类（WxPayProperties + WechatPayConfig，幂等）
+fn do_add_wechat_pay_config<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let created = crate::core::wechat::add_wechat_config_class(root, params, &modules, &|msg| log(msg))?;
+    if created > 0 {
+        r.created_files = created;
+    } else {
+        r.message = "配置类已存在，跳过".into();
+    }
+    Ok(())
+}
+
+/// 12e. 创建证书目录 src/main/resources/cert/（幂等）
+fn do_create_wechat_cert_dir<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let created = crate::core::wechat::create_cert_dir(root, params, &modules, &|msg| log(msg))?;
+    if created {
+        r.created_files = 2; // .gitkeep + README.md
+    } else {
+        r.message = "cert 目录已存在，跳过".into();
     }
     Ok(())
 }

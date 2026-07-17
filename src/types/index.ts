@@ -76,6 +76,36 @@ export interface CustomizeParams {
   output_dir: string
   /** 是否生成 UniApp 小程序项目 */
   enable_uniapp: boolean
+  // ---- 小程序信息（仅 enable_uniapp=true 时有意义） ----
+  /** 微信小程序 AppID */
+  wx_appid: string
+  /** 微信小程序 AppSecret */
+  wx_appsecret: string
+  // ---- 微信支付配置 ----
+  /** 是否引入微信支付（生成 wechat.pay 配置块 + 注入 SDK 依赖 + 配置类） */
+  pay_included: boolean
+  /** 是否开启微信支付（对应 yml enabled 字段） */
+  pay_enabled: boolean
+  /** 支付模式：public-key(V3公钥) | certificate(V3平台证书) | v2(旧模式) */
+  pay_mode: 'public-key' | 'certificate' | 'v2'
+  /** 支付商户号 */
+  pay_mch_id: string
+  /** 商户证书序列号（V3） */
+  pay_mch_serial_no: string
+  /** API V3 密钥（V3） */
+  pay_api_v3_key: string
+  /** 商户 API 私钥路径（V3），默认 classpath:cert/apiclient_key.pem */
+  pay_private_key_path: string
+  /** 微信支付平台公钥 ID（V3 公钥模式） */
+  pay_public_key_id: string
+  /** 微信支付平台公钥路径（V3 公钥模式），默认 classpath:cert/wxp_pub.pem */
+  pay_public_key_path: string
+  /** API V2 密钥（V2 旧模式） */
+  pay_api_key: string
+  /** 商户证书路径 apiclient_cert.p12（V2），默认 classpath:cert/apiclient_cert.p12 */
+  pay_cert_path: string
+  /** 支付回调地址（dev/prod 共用） */
+  pay_notify_url: string
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -91,6 +121,11 @@ export type TaskType =
   | 'AddMybatisPlusConfig'
   | 'UpdateGeneratorTemplatesForMybatisPlus'
   | 'AddLongIdJsonSerializeAnnotation'
+  | 'GenerateUniappProject'
+  | 'AppendWechatConfig'
+  | 'AddWechatPayDependency'
+  | 'AddWechatPayConfig'
+  | 'CreateWechatCertDir'
   | 'ValidateProject'
   | 'GenerateReport'
 
