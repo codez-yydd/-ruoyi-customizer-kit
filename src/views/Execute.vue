@@ -5,12 +5,14 @@ import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectStore } from '@/stores/project'
+import { useProfilesStore } from '@/stores/profiles'
 import * as api from '@/api'
 import type { ExecuteResponse } from '@/types'
 import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
+const profilesStore = useProfilesStore()
 const { projectInfo, params, sourceType, zipPath, extractRoot } = storeToRefs(store)
 
 const running = ref(false)
@@ -52,6 +54,10 @@ async function run() {
     // 执行成功后清理 zip 识别用的临时解压目录（执行阶段已有独立的输出目录）
     if (resp.success && sourceType.value === 'zip' && extractRoot.value) {
       await cleanupTempDir()
+    }
+    // 执行成功后保存配置到历史记录（store 内部会脱敏敏感字段）
+    if (resp.success && params.value) {
+      profilesStore.addHistory(params.value)
     }
   } catch (e) {
     store.log(`执行异常：${e}`, 'ERROR')

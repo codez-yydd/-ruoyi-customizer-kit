@@ -45,6 +45,26 @@ pub fn generate_report(
         md.push_str("- UniApp 小程序：未启用\n");
     }
 
+    // 安全加固 / SQL 定制结果（从相关任务的 message 中提取，集中展示）
+    let security_msgs: Vec<&String> = task_results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.task_name.split('：').next().unwrap_or(""),
+                "安全加固" | "定制 SQL 初始化脚本"
+            )
+        })
+        .map(|r| &r.message)
+        .filter(|m| !m.is_empty())
+        .collect();
+    if !security_msgs.is_empty() {
+        md.push_str("\n## 安全加固 & SQL 定制结果\n\n");
+        md.push_str("> ⚠️ admin 密码明文显示于此，请妥善保管，确认后建议删除本节。\n\n");
+        for m in &security_msgs {
+            md.push_str(&format!("- {}\n", m));
+        }
+    }
+
     // 任务执行结果
     md.push_str("\n## 任务执行结果\n\n");
     md.push_str("| 序号 | 任务 | 状态 | 修改文件 | 新增文件 | 重命名目录 | 说明 |\n");

@@ -10,7 +10,8 @@ import type {
   ExtractResponse,
   PreviewResponse,
   TemplateInfo,
-  ProjectInfo
+  ProjectInfo,
+  ConfigIoResponse
 } from '@/types'
 
 /** 健康检查 */
@@ -85,4 +86,22 @@ export function executeTransform(
     sourceType,
     zipPath: zipPath ?? null
   })
+}
+
+/**
+ * 导出当前配置到 JSON 文件。
+ * 注意：后端会自动清空敏感字段（密码/密钥）再落盘。
+ * @param path 目标文件绝对路径
+ * @param params 改造参数
+ */
+export function saveConfigJson(path: string, params: CustomizeParams): Promise<ConfigIoResponse> {
+  return invoke<ConfigIoResponse>('save_config_json', { path, params })
+}
+
+/**
+ * 从 JSON 文件导入配置。
+ * @param path JSON 文件绝对路径
+ */
+export function loadConfigJson(path: string): Promise<ConfigIoResponse> {
+  return invoke<ConfigIoResponse>('load_config_json', { path })
 }

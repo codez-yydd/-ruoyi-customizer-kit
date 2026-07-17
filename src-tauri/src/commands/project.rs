@@ -269,3 +269,78 @@ fn resolve_template_dir(app: &AppHandle, name: &str) -> Option<PathBuf> {
         None
     }
 }
+
+// ---------- 配置导入 / 导出 ----------
+
+/// 配置导入/导出响应
+#[derive(Debug, Clone, Serialize)]
+pub struct ConfigIoResponse {
+    pub success: bool,
+    pub message: String,
+    /// 导入时返回的参数（导出时为 None）
+    pub params: Option<crate::core::CustomizeParams>,
+}
+
+/// 导出配置到 JSON 文件。
+/// 安全处理：导出前清空敏感字段（admin_password、微信支付各类密钥），避免明文落盘。
+#[tauri::command]
+pub fn save_config_json(path: String, params: crate::core::CustomizeParams) -> ConfigIoResponse {
+    let dest = PathBuf::from(&path);
+    // 脱敏：克隆后清空敏感字段
+    let mut safe = params.clone();
+    safe.admin_password = String::new();
+    safe.wx_appsecret = String::new();
+    safe.pay_api_v3_key = String::new();
+    safe.pay_api_key = String::new();
+
+    let json = match serde_json::to_string_pretty(&safe) {
+        Ok(j) => j,
+        Err(e) => {
+            return ConfigIoResponse {
+                success: false,
+                message: format!("序列化失败：{e}"),
+                params: None,
+            }
+        }
+    };
+    match std::fs::write(&dest, json) {
+        Ok(()) => ConfigIoResponse {
+            success: true,
+            message: format!("配置已导出到：{}", dest.display()),
+            params: None,
+        },
+        Err(e) => ConfigIoResponse {
+            success: false,
+            message: format!("写入失败：{e}"),
+            params: None,
+        },
+    }
+}
+
+/// 从 JSON 文件导入配置。
+#[tauri::command]
+pub fn load_config_json(path: String) -> ConfigIoResponse {
+    let src = PathBuf::from(&path);
+    let content = match std::fs::read_to_string(&src) {
+        Ok(c) => c,
+        Err(e) => {
+            return ConfigIoResponse {
+                success: false,
+                message: format!("读取失败：{e}"),
+                params: None,
+            }
+        }
+    };
+    match serde_json::from_str::<crate::core::CustomizeParams>(&content) {
+        Ok(p) => ConfigIoResponse {
+            success: true,
+            message: "配置导入成功".into(),
+            params: Some(p),
+        },
+        Err(e) => ConfigIoResponse {
+            success: false,
+            message: format!("解析失败（文件格式不兼容）：{e}"),
+            params: None,
+        },
+    }
+}

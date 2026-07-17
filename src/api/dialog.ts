@@ -54,3 +54,44 @@ export async function pickSaveDirectory(): Promise<string | null> {
     return null
   }
 }
+
+/**
+ * 弹出「保存文件」对话框，用于导出配置 JSON；返回用户选择的目标路径；取消则返回 null。
+ */
+export async function pickSaveJsonFile(defaultName = 'ruoyi-forge-config.json'): Promise<string | null> {
+  try {
+    const { save } = await import('@tauri-apps/plugin-dialog')
+    const selected = await save({
+      defaultPath: defaultName,
+      filters: [{ name: 'JSON 配置', extensions: ['json'] }]
+    })
+    if (typeof selected === 'string' && selected.length > 0) {
+      return selected
+    }
+    return null
+  } catch (e) {
+    console.error('保存文件对话框失败', e)
+    return null
+  }
+}
+
+/**
+ * 弹出「打开文件」对话框，用于导入配置 JSON；返回选择的文件路径；取消则返回 null。
+ */
+export async function pickOpenJsonFile(): Promise<string | null> {
+  try {
+    const selected = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: 'JSON 配置', extensions: ['json'] }],
+      title: '选择配置文件'
+    })
+    if (typeof selected === 'string' && selected.length > 0) {
+      return selected
+    }
+    return null
+  } catch (e) {
+    console.error('打开文件对话框失败', e)
+    return null
+  }
+}

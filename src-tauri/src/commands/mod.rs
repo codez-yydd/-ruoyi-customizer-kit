@@ -4,7 +4,7 @@
 pub mod project;
 pub mod template;
 
-pub use project::{cleanup_extract_dir, detect_project, extract_zip_project, ping};
+pub use project::{cleanup_extract_dir, detect_project, extract_zip_project, load_config_json, ping, save_config_json};
 pub use template::list_templates;
 pub mod preview;
 pub mod execute;

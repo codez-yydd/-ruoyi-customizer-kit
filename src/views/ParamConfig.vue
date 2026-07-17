@@ -1,15 +1,21 @@
 <script setup lang="ts">
 // 参数配置页：填写改造参数（包名/模块名/标题/输出目录/开关），实时校验合法性。
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
-import { pickSaveDirectory } from '@/api/dialog'
+import { useProfilesStore } from '@/stores/profiles'
+import type { ProfileEntry } from '@/stores/profiles'
+import { pickSaveDirectory, pickSaveJsonFile, pickOpenJsonFile } from '@/api/dialog'
+import { saveConfigJson, loadConfigJson } from '@/api'
 import type { CustomizeParams } from '@/types'
 
 const router = useRouter()
 const store = useProjectStore()
+const profilesStore = useProfilesStore()
 const { projectInfo, params: storedParams, sourceType } = storeToRefs(store)
+const historyDialogVisible = ref(false)
 
 // 默认参数（从识别结果预填原值）
 const defaults = (): CustomizeParams => ({
@@ -46,7 +52,19 @@ const defaults = (): CustomizeParams => ({
   pay_public_key_path: 'classpath:cert/wxp_pub.pem',
   pay_api_key: '',
   pay_cert_path: 'classpath:cert/apiclient_cert.p12',
-  pay_notify_url: ''
+  pay_notify_url: '',
+  // 安全加固
+  enable_security: false,
+  admin_password: '',
+  clean_demo_users: false,
+  // SQL 定制
+  enable_sql_customize: false,
+  db_name: '',
+  clean_quartz: false,
+  // 项目结构
+  enable_frontend_split: false,
+  // AI 规范
+  enable_ai_rules: true
 })
 
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
@@ -110,11 +128,81 @@ async function chooseOutputDir() {
     form.output_dir = dir
   }
 }
+
+/** 导出当前配置到 JSON 文件 */
+async function exportConfig() {
+  const path = await pickSaveJsonFile(
+    `${form.new_module_prefix || 'ruoyi-forge'}-config.json`
+  )
+  if (!path) return
+  try {
+    const res = await saveConfigJson(path, { ...form })
+    if (res.success) {
+      ElMessage.success(res.message)
+    } else {
+      ElMessage.error(res.message)
+    }
+  } catch (e) {
+    ElMessage.error('导出失败：' + String(e))
+  }
+}
+
+/** 从 JSON 文件导入配置 */
+async function importConfig() {
+  const path = await pickOpenJsonFile()
+  if (!path) return
+  try {
+    const res = await loadConfigJson(path)
+    if (res.success && res.params) {
+      // 导入的参数覆盖到表单（保留当前识别出的 original_*，避免被旧配置覆盖）
+      const imported = res.params
+      Object.assign(form, imported)
+      // 重新从识别结果回填 original 值，确保和当前项目一致
+      if (projectInfo.value) {
+        form.original_package = projectInfo.value.original_package || form.original_package
+        form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
+      }
+      ElMessage.success('配置导入成功')
+    } else {
+      ElMessage.error(res.message)
+    }
+  } catch (e) {
+    ElMessage.error('导入失败：' + String(e))
+  }
+}
+
+/** 应用一条历史记录到当前表单 */
+function applyHistory(entry: ProfileEntry) {
+  ElMessageBox.confirm(`应用历史配置「${entry.name}」？当前未保存的填写将被覆盖。`, '确认', {
+    type: 'warning'
+  })
+    .then(() => {
+      Object.assign(form, entry.params)
+      if (projectInfo.value) {
+        form.original_package = projectInfo.value.original_package || form.original_package
+        form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
+      }
+      historyDialogVisible.value = false
+      ElMessage.success('已应用历史配置')
+    })
+    .catch(() => {})
+}
+
+/** 删除一条历史记录 */
+function removeHistory(id: string) {
+  profilesStore.removeHistory(id)
+}
 </script>
 
 <template>
   <div class="param-config">
     <h2 class="page-title">参数配置</h2>
+
+    <div class="toolbar">
+      <el-button size="small" @click="importConfig">导入配置</el-button>
+      <el-button size="small" @click="exportConfig">导出配置</el-button>
+      <el-button size="small" @click="historyDialogVisible = true">历史记录</el-button>
+    </div>
 
     <div class="rf-card">
       <el-form label-width="140px" label-position="right">
@@ -233,6 +321,81 @@ async function chooseOutputDir() {
           </div>
         </div>
 
+        <!-- 安全 & SQL 分区 -->
+        <el-divider content-position="left">安全 &amp; SQL</el-divider>
+        <div class="switch-grid">
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">安全加固</span>
+              <el-switch v-model="form.enable_security" />
+            </div>
+            <div class="switch-item__hint muted">admin 密码、关闭注册、关闭 demo 模式</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">SQL 脚本定制</span>
+              <el-switch v-model="form.enable_sql_customize" />
+            </div>
+            <div class="switch-item__hint muted">库名、admin 密码、清除演示/quartz 数据</div>
+          </div>
+        </div>
+
+        <!-- 安全加固详情 -->
+        <div v-if="form.enable_security" class="uniapp-panel">
+          <div class="uniapp-grid">
+            <el-form-item label="admin 新密码">
+              <el-input v-model="form.admin_password" show-password placeholder="留空则不修改 admin 密码" />
+            </el-form-item>
+            <el-form-item label="清除演示账号">
+              <el-switch v-model="form.clean_demo_users" />
+              <span class="inline-hint muted">删除 ry / ryadmin 等演示账号 SQL</span>
+            </el-form-item>
+          </div>
+          <div class="hint muted" style="margin-left:0;margin-top:-4px">
+            执行后新密码会明文回显到执行报告，便于查看；关闭注册、关闭 demo 模式将自动处理。
+          </div>
+        </div>
+
+        <!-- SQL 定制详情 -->
+        <div v-if="form.enable_sql_customize" class="uniapp-panel">
+          <div class="uniapp-grid">
+            <el-form-item label="新数据库名">
+              <el-input v-model="form.db_name" :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`" />
+            </el-form-item>
+            <el-form-item label="清除 quartz 数据">
+              <el-switch v-model="form.clean_quartz" />
+              <span class="inline-hint muted">删除 QRTZ_* 表和数据</span>
+            </el-form-item>
+            <el-form-item label="admin 密码" class="notify-row">
+              <el-input v-model="form.admin_password" show-password placeholder="留空则不修改（与安全加固共用）" />
+            </el-form-item>
+          </div>
+          <div class="hint muted" style="margin-left:0;margin-top:-4px">
+            自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+          </div>
+        </div>
+
+        <!-- 项目结构分区 -->
+        <el-divider content-position="left">项目结构</el-divider>
+        <div class="switch-grid">
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">前后端分离</span>
+              <el-switch v-model="form.enable_frontend_split" />
+            </div>
+            <div class="switch-item__hint muted">
+              {{ form.enable_frontend_split ? `前端将移至 ${form.new_module_prefix || 'demo'}-ui-frontend` : '前端目录拆出，与后端平级' }}
+            </div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">AI 规范文件</span>
+              <el-switch v-model="form.enable_ai_rules" />
+            </div>
+            <div class="switch-item__hint muted">生成 AGENTS.md + CLAUDE.md 编码规范</div>
+          </div>
+        </div>
+
         <!-- UniApp 小程序信息 + 微信支付（仅开启 UniApp 时显示） -->
         <div v-if="form.enable_uniapp" class="uniapp-panel">
           <el-divider content-position="left">小程序信息</el-divider>
@@ -300,6 +463,25 @@ async function chooseOutputDir() {
         </div>
       </el-form>
 
+      <!-- 历史记录对话框 -->
+      <el-dialog v-model="historyDialogVisible" title="改造历史记录" width="560px">
+        <div v-if="profilesStore.profiles.length === 0" class="muted">暂无历史记录（每次执行成功后会自动保存）</div>
+        <el-table v-else :data="profilesStore.profiles" size="small" max-height="360">
+          <el-table-column prop="name" label="配置" min-width="220" />
+          <el-table-column label="操作" width="160" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" link type="primary" @click="applyHistory(row as ProfileEntry)">应用</el-button>
+              <el-button size="small" link type="danger" @click="removeHistory(row.id)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <template v-if="profilesStore.profiles.length > 0">
+          <div style="margin-top:8px;text-align:right">
+            <el-button size="small" link type="danger" @click="profilesStore.clearHistory()">清空全部</el-button>
+          </div>
+        </template>
+      </el-dialog>
+
       <div class="actions">
         <el-button @click="back">上一步</el-button>
         <el-button type="primary" :disabled="!valid" @click="goPreview">下一步：预览</el-button>
@@ -309,6 +491,11 @@ async function chooseOutputDir() {
 </template>
 
 <style scoped>
+.toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 .hint {
   margin-left: 12px;
   font-size: 12.5px;

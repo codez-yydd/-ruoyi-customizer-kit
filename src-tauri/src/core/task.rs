@@ -23,6 +23,10 @@ pub enum TaskType {
     AddWechatPayDependency,
     AddWechatPayConfig,
     CreateWechatCertDir,
+    ApplySecurityHardening,
+    CustomizeSqlScripts,
+    GenerateAiRules,
+    SplitFrontend,
     ValidateProject,
     GenerateReport,
 }

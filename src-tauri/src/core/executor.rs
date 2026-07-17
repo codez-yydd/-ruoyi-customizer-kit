@@ -111,6 +111,10 @@ where
         TaskType::AddWechatPayDependency => do_add_wechat_pay_dependency(root, info, &mut r, log),
         TaskType::AddWechatPayConfig => do_add_wechat_pay_config(root, params, info, &mut r, log),
         TaskType::CreateWechatCertDir => do_create_wechat_cert_dir(root, params, info, &mut r, log),
+        TaskType::ApplySecurityHardening => do_apply_security(root, params, &mut r, log),
+        TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
+        TaskType::GenerateAiRules => do_generate_ai_rules(root, params, &mut r, log),
+        TaskType::SplitFrontend => do_split_frontend(root, params, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
             r.status = TaskStatus::Skipped;
             r.message = "校验/报告在执行后单独触发".into();
@@ -792,6 +796,61 @@ where
         r.created_files = 2; // .gitkeep + README.md
     } else {
         r.message = "cert 目录已存在，跳过".into();
+    }
+    Ok(())
+}
+
+/// 12f. 生成 AI 规范文件（AGENTS.md + CLAUDE.md）
+fn do_generate_ai_rules<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let created = crate::core::ai_rules::generate_ai_rules(root, params, &|msg| log(msg))?;
+    if created > 0 {
+        r.created_files = created;
+    } else {
+        r.message = "AI 规范文件已存在，跳过".into();
+    }
+    Ok(())
+}
+
+/// 12g. 安全加固：admin 密码、关闭注册、清除演示账号（不含 SQL 定制部分）
+fn do_apply_security<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::security::apply_security_hardening(root, params, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12h. SQL 初始化脚本定制：库名、admin 密码、清除演示/quartz
+fn do_customize_sql<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::sql_customize::customize_sql_scripts(root, params, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12i. 前后端分离：把前端目录移动到输出根目录同级
+fn do_split_frontend<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let moved = crate::core::frontend_split::split_frontend(root, params, &|msg| log(msg))?;
+    if moved {
+        r.renamed_dirs = 1;
+        r.created_files = 1; // 根 README
+    } else {
+        r.message = "未找到前端目录，跳过".into();
     }
     Ok(())
 }

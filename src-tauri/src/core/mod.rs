@@ -7,6 +7,10 @@ pub mod config_rewrite;
 pub mod mybatis_plus;
 pub mod uniapp;
 pub mod wechat;
+pub mod ai_rules;
+pub mod security;
+pub mod sql_customize;
+pub mod frontend_split;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -123,6 +127,34 @@ pub struct CustomizeParams {
     /// 支付回调地址（dev/prod 共用）
     #[serde(default)]
     pub pay_notify_url: String,
+    // ---- 安全加固 ----
+    /// 是否启用安全加固（admin 密码、关闭注册、清除演示账号等）
+    #[serde(default)]
+    pub enable_security: bool,
+    /// admin 新密码明文（留空则不修改密码；执行后明文会回显到报告）
+    #[serde(default)]
+    pub admin_password: String,
+    /// 是否清除演示账号数据（ry / ryadmin 等）
+    #[serde(default)]
+    pub clean_demo_users: bool,
+    // ---- SQL 初始化脚本定制 ----
+    /// 是否定制 SQL 初始化脚本（库名替换 / admin 密码 / 清演示 / 清 quartz）
+    #[serde(default)]
+    pub enable_sql_customize: bool,
+    /// 新数据库名（留空则用 new_module_prefix 推导）
+    #[serde(default)]
+    pub db_name: String,
+    /// 是否清除 quartz 定时任务相关表和数据
+    #[serde(default)]
+    pub clean_quartz: bool,
+    // ---- 项目结构 ----
+    /// 是否启用前后端分离（把前端目录拆出根目录，与后端平级）
+    #[serde(default)]
+    pub enable_frontend_split: bool,
+    // ---- AI 规范文件 ----
+    /// 是否生成 AI 规范文件（AGENTS.md + CLAUDE.md）
+    #[serde(default = "default_true")]
+    pub enable_ai_rules: bool,
 }
 
 impl Default for CustomizeParams {
@@ -162,6 +194,14 @@ impl Default for CustomizeParams {
             pay_api_key: String::new(),
             pay_cert_path: "classpath:cert/apiclient_cert.p12".into(),
             pay_notify_url: String::new(),
+            enable_security: false,
+            admin_password: String::new(),
+            clean_demo_users: false,
+            enable_sql_customize: false,
+            db_name: String::new(),
+            clean_quartz: false,
+            enable_frontend_split: false,
+            enable_ai_rules: true,
         }
     }
 }

@@ -336,6 +336,83 @@ pub fn plan(
         }
     }
 
+    // 安全加固（可选）：admin 密码、关闭注册、清除演示账号
+    if params.enable_security {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "安全加固：admin 密码{}、关闭注册、{}",
+                if params.admin_password.is_empty() { "（未修改）" } else { "修改" },
+                if params.clean_demo_users { "清除演示账号" } else { "保留演示账号" }
+            ),
+            task_type: TaskType::ApplySecurityHardening,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // SQL 初始化脚本定制（可选）：库名、admin 密码、清除演示/quartz 数据
+    if params.enable_sql_customize {
+        let db_name = if params.db_name.is_empty() {
+            params.new_module_prefix.as_str()
+        } else {
+            params.db_name.as_str()
+        };
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "定制 SQL 初始化脚本：库名 → {}{}{}",
+                db_name,
+                if params.admin_password.is_empty() { "" } else { "，admin 密码修改" },
+                if params.clean_quartz { "，清除 quartz" } else { "" }
+            ),
+            task_type: TaskType::CustomizeSqlScripts,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // AI 规范文件（默认开启）：AGENTS.md + CLAUDE.md
+    if params.enable_ai_rules {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "生成 AI 规范文件（AGENTS.md + CLAUDE.md）".into(),
+            task_type: TaskType::GenerateAiRules,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec!["AGENTS.md".into(), "CLAUDE.md".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // 前后端分离（可选，必须最后执行：移动目录）
+    if params.enable_frontend_split {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "前后端分离：前端目录移动到 {}-ui-frontend（与后端平级）",
+                params.new_module_prefix
+            ),
+            task_type: TaskType::SplitFrontend,
+            risk_level: RiskLevel::High,
+            affected_files: vec![],
+            affected_dirs: vec![format!("{}-ui", params.new_module_prefix)],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 13. 执行后校验（始终）
     tasks.push(Task {
         id: next_id(&tasks),

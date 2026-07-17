@@ -106,6 +106,26 @@ export interface CustomizeParams {
   pay_cert_path: string
   /** 支付回调地址（dev/prod 共用） */
   pay_notify_url: string
+  // ---- 安全加固 ----
+  /** 是否启用安全加固（admin 密码、关闭注册、清除演示账号等） */
+  enable_security: boolean
+  /** admin 新密码明文（留空则不修改；执行后明文会回显到报告） */
+  admin_password: string
+  /** 是否清除演示账号数据（ry / ryadmin 等） */
+  clean_demo_users: boolean
+  // ---- SQL 初始化脚本定制 ----
+  /** 是否定制 SQL 初始化脚本 */
+  enable_sql_customize: boolean
+  /** 新数据库名（留空则用 new_module_prefix 推导） */
+  db_name: string
+  /** 是否清除 quartz 定时任务相关表和数据 */
+  clean_quartz: boolean
+  // ---- 项目结构 ----
+  /** 是否启用前后端分离（前端目录拆出根目录，与后端平级） */
+  enable_frontend_split: boolean
+  // ---- AI 规范文件 ----
+  /** 是否生成 AI 规范文件（AGENTS.md + CLAUDE.md） */
+  enable_ai_rules: boolean
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -126,6 +146,10 @@ export type TaskType =
   | 'AddWechatPayDependency'
   | 'AddWechatPayConfig'
   | 'CreateWechatCertDir'
+  | 'ApplySecurityHardening'
+  | 'CustomizeSqlScripts'
+  | 'GenerateAiRules'
+  | 'SplitFrontend'
   | 'ValidateProject'
   | 'GenerateReport'
 
@@ -198,4 +222,12 @@ export interface ExecuteResponse {
 export interface TemplateInfo {
   name: string
   loadable: boolean
+}
+
+/** 配置导入/导出响应 */
+export interface ConfigIoResponse {
+  success: boolean
+  message: string
+  /** 导入时返回的参数（导出时为 null） */
+  params: CustomizeParams | null
 }
