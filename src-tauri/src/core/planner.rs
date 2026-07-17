@@ -336,15 +336,57 @@ pub fn plan(
         }
     }
 
-    // 安全加固（可选）：admin 密码、关闭注册、清除演示账号
-    if params.enable_security {
+    // OSS 对象存储（可选）：注入 SDK 依赖 + 配置类/Client/Controller + yml
+    if params.enable_oss {
+        let provider_cn = match params.oss_provider.as_str() {
+            "aliyun" => "阿里云 OSS",
+            "tencent" => "腾讯云 COS",
+            "minio" => "MinIO",
+            "qiniu" => "七牛云 Kodo",
+            _ => "OSS",
+        };
+        let new_pkg_path = package_to_path(&params.new_package);
+        let config_pkg = new_pkg_path.join("framework/config").to_string_lossy().to_string();
+        let admin_module = info
+            .backend_modules
+            .iter()
+            .find(|m| m.ends_with("-admin"))
+            .or_else(|| info.backend_modules.first())
+            .cloned()
+            .unwrap_or_default();
         tasks.push(Task {
             id: next_id(&tasks),
-            name: format!(
-                "安全加固：admin 密码{}、关闭注册、{}",
-                if params.admin_password.is_empty() { "（未修改）" } else { "修改" },
-                if params.clean_demo_users { "清除演示账号" } else { "保留演示账号" }
-            ),
+            name: format!("OSS 集成：{provider_cn}（依赖 + 配置类 + 上传接口）"),
+            task_type: TaskType::SetupOss,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![format!("{admin_module}/pom.xml")],
+            affected_dirs: vec![],
+            created_files: vec![
+                format!("{config_pkg}/OssProperties.java"),
+                format!("{config_pkg}/OssClient.java"),
+                format!("{config_pkg}/../web/controller/common/OssController.java"),
+            ],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // 安全加固（可选）：admin 密码、关闭注册、清除演示账号（含 JWT 定制）
+    if params.enable_security || params.enable_jwt {
+        let mut parts = vec!["安全加固".to_string()];
+        if params.enable_security {
+            parts.push(if params.admin_password.is_empty() { "admin 密码（未修改）".into() } else { "admin 密码修改".into() });
+            parts.push(if params.clean_demo_users { "清除演示账号".into() } else { "保留演示账号".into() });
+        }
+        if params.enable_jwt {
+            parts.push(format!(
+                "JWT secret{}",
+                if params.jwt_secret.is_empty() { "（随机生成）" } else { "（自定义）" }
+            ));
+        }
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: parts.join("："),
             task_type: TaskType::ApplySecurityHardening,
             risk_level: RiskLevel::Medium,
             affected_files: vec![],
@@ -354,6 +396,9 @@ pub fn plan(
             error_message: String::new(),
         });
     }
+
+    // 代码生成器配置定制（可选）：generator.yml + Vue3 模板
+    // （规划放在 SQL 定制之后）
 
     // SQL 初始化脚本定制（可选）：库名、admin 密码、清除演示/quartz 数据
     if params.enable_sql_customize {
@@ -371,6 +416,27 @@ pub fn plan(
                 if params.clean_quartz { "，清除 quartz" } else { "" }
             ),
             task_type: TaskType::CustomizeSqlScripts,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // 代码生成器配置定制（可选）：generator.yml 字段 + Vue3 模板升级
+    if params.enable_generator_config {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "定制代码生成器配置：作者={}、包名={}{}{}",
+                if params.generator_author.is_empty() { "（保留默认）".into() } else { params.generator_author.clone() },
+                params.new_package,
+                if params.generator_table_prefix.is_empty() { String::new() } else { format!("、表前缀={}", params.generator_table_prefix) },
+                if params.generator_vue3 { "、Vue3 模板升级" } else { "" }
+            ),
+            task_type: TaskType::CustomizeGeneratorConfig,
             risk_level: RiskLevel::Medium,
             affected_files: vec![],
             affected_dirs: vec![],

@@ -99,6 +99,26 @@ pub fn apply_security_hardening(
         summary.push("已关闭 demo 模式（ruoyi.demoEnabled=false）".into());
     }
 
+    // JWT 定制（token.secret / token.expireTime）
+    if params.enable_jwt {
+        let secret = if params.jwt_secret.is_empty() {
+            let s = generate_jwt_secret();
+            summary.push(format!("JWT secret 已随机生成（{s}），请妥善保管"));
+            s
+        } else {
+            summary.push(format!(
+                "JWT secret 已设置为「{}」",
+                params.jwt_secret
+            ));
+            params.jwt_secret.clone()
+        };
+        if customize_jwt_in_config(root, &secret, params.jwt_expire_minutes, log) {
+            modified += 1;
+            log("JWT 配置已写入 application.yaml");
+        }
+        summary.push(format!("token 有效期：{} 分钟", params.jwt_expire_minutes));
+    }
+
     if summary.is_empty() {
         if admin_hash.is_some() {
             // 已处理密码但没产生 summary 以外的信息
@@ -242,4 +262,100 @@ pub fn collect_sql_files(root: &Path) -> Vec<std::path::PathBuf> {
         }
     }
     out
+}
+
+// ---------- JWT ----------
+
+/// 生成 48 字节随机 JWT secret（Base64 编码后约 64 字符）。
+/// 每次调用结果不同，强度足够用于 HS256。
+pub fn generate_jwt_secret() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 48];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    base64_encode(&bytes)
+}
+
+/// 简易 Base64 编码（标准字母表，含 padding），避免引入额外 crate
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    let mut chunks = input.chunks_exact(3);
+    for c in chunks.by_ref() {
+        let n = ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | (c[2] as u32);
+        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+        out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
+        out.push(TABLE[(n & 0x3f) as usize] as char);
+    }
+    let rem = chunks.remainder();
+    match rem.len() {
+        1 => {
+            let n = (rem[0] as u32) << 16;
+            out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+            out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+            out.push('=');
+            out.push('=');
+        }
+        2 => {
+            let n = ((rem[0] as u32) << 16) | ((rem[1] as u32) << 8);
+            out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+            out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
+            out.push('=');
+        }
+        _ => {}
+    }
+    out
+}
+
+/// 在 application.yaml/yml 的 token 命名空间下替换 secret 与 expireTime。
+/// 保守正则匹配：secret 行 / expireTime 行，匹配不到跳过。返回是否修改。
+fn customize_jwt_in_config(
+    root: &Path,
+    secret: &str,
+    expire_minutes: i32,
+    log: &dyn Fn(&str),
+) -> bool {
+    let res_dir = match find_resources_dir(root) {
+        Some(d) => d,
+        None => return false,
+    };
+    let mut changed = false;
+    for name in &["application.yaml", "application.yml"] {
+        let path = res_dir.join(name);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let mut new_content = content;
+        // 替换 secret: xxx（token 命名空间下；保守匹配行内首个 secret: 后的值）
+        // 用 closures 替换，避免 secret 含 $ 被当捕获变量
+        let secret_re = regex::Regex::new(r"(?m)(secret\s*:\s*)(\S+)").unwrap();
+        let want_secret = secret.to_string();
+        let secret_changed = std::cell::Cell::new(false);
+        new_content = secret_re
+            .replace_all(&new_content, |caps: &regex::Captures| {
+                secret_changed.set(true);
+                format!("{}{}", &caps[1], want_secret)
+            })
+            .to_string();
+        if secret_changed.get() {
+            changed = true;
+        }
+        // 替换 expireTime: 30
+        let expire_re = regex::Regex::new(r"(?m)(expireTime\s*:\s*)\d+").unwrap();
+        let expire_new = expire_re
+            .replace_all(&new_content, format!("${{1}}{expire_minutes}"))
+            .to_string();
+        if expire_new != new_content {
+            new_content = expire_new;
+            changed = true;
+        }
+        if changed {
+            let _ = std::fs::write(&path, &new_content);
+            log(&format!("JWT 配置已更新：{}", path.display()));
+        }
+    }
+    changed
 }

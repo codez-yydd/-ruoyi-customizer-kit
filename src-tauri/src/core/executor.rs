@@ -111,8 +111,10 @@ where
         TaskType::AddWechatPayDependency => do_add_wechat_pay_dependency(root, info, &mut r, log),
         TaskType::AddWechatPayConfig => do_add_wechat_pay_config(root, params, info, &mut r, log),
         TaskType::CreateWechatCertDir => do_create_wechat_cert_dir(root, params, info, &mut r, log),
+        TaskType::SetupOss => do_setup_oss(root, params, info, &mut r, log),
         TaskType::ApplySecurityHardening => do_apply_security(root, params, &mut r, log),
         TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
+        TaskType::CustomizeGeneratorConfig => do_customize_generator(root, params, &mut r, log),
         TaskType::GenerateAiRules => do_generate_ai_rules(root, params, &mut r, log),
         TaskType::SplitFrontend => do_split_frontend(root, params, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
@@ -851,6 +853,34 @@ where
         r.created_files = 1; // 根 README
     } else {
         r.message = "未找到前端目录，跳过".into();
+    }
+    Ok(())
+}
+
+/// 12j. OSS 集成：注入 SDK 依赖 + 生成配置类/Client/Controller + 追加 yml
+fn do_setup_oss<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let outcome = crate::core::oss::setup_oss(root, params, &modules, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12k. 代码生成器配置定制：generator.yml + Vue3 模板升级
+fn do_customize_generator<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::generator_config::customize_generator(root, params, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
     }
     Ok(())
 }

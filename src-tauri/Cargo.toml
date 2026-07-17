@@ -28,6 +28,8 @@ zip = "2"
 serde_yaml = "0.9"
 # admin 密码 BCrypt 加密（与 Spring Security BCryptPasswordEncoder 兼容）
 bcrypt = "0.15"
+# JWT 随机 secret 生成
+rand = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

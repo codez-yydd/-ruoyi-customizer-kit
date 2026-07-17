@@ -11,6 +11,8 @@ pub mod ai_rules;
 pub mod security;
 pub mod sql_customize;
 pub mod frontend_split;
+pub mod oss;
+pub mod generator_config;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -44,6 +46,16 @@ fn default_pay_public_key_path() -> String {
 /// serde 默认值辅助：V2 商户证书默认 classpath 路径
 fn default_pay_cert_path() -> String {
     "classpath:cert/apiclient_cert.p12".into()
+}
+
+/// serde 默认值辅助：OSS 厂商默认阿里云
+fn default_oss_provider() -> String {
+    "aliyun".into()
+}
+
+/// serde 默认值辅助：JWT token 默认有效期 30 分钟
+fn default_jwt_expire() -> i32 {
+    30
 }
 
 /// 用户改造参数
@@ -155,6 +167,51 @@ pub struct CustomizeParams {
     /// 是否生成 AI 规范文件（AGENTS.md + CLAUDE.md）
     #[serde(default = "default_true")]
     pub enable_ai_rules: bool,
+    // ---- OSS 对象存储 ----
+    /// 是否引入 OSS 对象存储
+    #[serde(default)]
+    pub enable_oss: bool,
+    /// OSS 厂商：aliyun | tencent | minio | qiniu
+    #[serde(default = "default_oss_provider")]
+    pub oss_provider: String,
+    /// endpoint（阿里云/腾讯云区域、MinIO 地址、七牛域名）
+    #[serde(default)]
+    pub oss_endpoint: String,
+    /// bucket 名称
+    #[serde(default)]
+    pub oss_bucket: String,
+    /// accessKey
+    #[serde(default)]
+    pub oss_access_key: String,
+    /// secretKey
+    #[serde(default)]
+    pub oss_secret_key: String,
+    /// 自定义域名（CDN，留空用默认域名）
+    #[serde(default)]
+    pub oss_custom_domain: String,
+    // ---- JWT 定制 ----
+    /// 是否定制 JWT 配置
+    #[serde(default)]
+    pub enable_jwt: bool,
+    /// JWT secret（留空则一键生成随机强密钥）
+    #[serde(default)]
+    pub jwt_secret: String,
+    /// token 有效期（分钟），默认 30
+    #[serde(default = "default_jwt_expire")]
+    pub jwt_expire_minutes: i32,
+    // ---- 代码生成器配置 ----
+    /// 是否定制代码生成器配置（generator.yml）
+    #[serde(default)]
+    pub enable_generator_config: bool,
+    /// 生成代码作者名
+    #[serde(default)]
+    pub generator_author: String,
+    /// 表前缀（自动去除，逗号分隔，如 sys_,tb_）
+    #[serde(default)]
+    pub generator_table_prefix: String,
+    /// 是否升级 Vue3 模板
+    #[serde(default)]
+    pub generator_vue3: bool,
 }
 
 impl Default for CustomizeParams {
@@ -202,6 +259,20 @@ impl Default for CustomizeParams {
             clean_quartz: false,
             enable_frontend_split: false,
             enable_ai_rules: true,
+            enable_oss: false,
+            oss_provider: "aliyun".into(),
+            oss_endpoint: String::new(),
+            oss_bucket: String::new(),
+            oss_access_key: String::new(),
+            oss_secret_key: String::new(),
+            oss_custom_domain: String::new(),
+            enable_jwt: false,
+            jwt_secret: String::new(),
+            jwt_expire_minutes: 30,
+            enable_generator_config: false,
+            generator_author: String::new(),
+            generator_table_prefix: String::new(),
+            generator_vue3: false,
         }
     }
 }

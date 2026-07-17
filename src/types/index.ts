@@ -126,6 +126,37 @@ export interface CustomizeParams {
   // ---- AI 规范文件 ----
   /** 是否生成 AI 规范文件（AGENTS.md + CLAUDE.md） */
   enable_ai_rules: boolean
+  // ---- OSS 对象存储 ----
+  /** 是否引入 OSS 对象存储 */
+  enable_oss: boolean
+  /** OSS 厂商：aliyun | tencent | minio | qiniu */
+  oss_provider: 'aliyun' | 'tencent' | 'minio' | 'qiniu'
+  /** endpoint（阿里云/腾讯云区域、MinIO 地址、七牛域名） */
+  oss_endpoint: string
+  /** bucket 名称 */
+  oss_bucket: string
+  /** accessKey */
+  oss_access_key: string
+  /** secretKey */
+  oss_secret_key: string
+  /** 自定义域名（CDN，留空用默认域名） */
+  oss_custom_domain: string
+  // ---- JWT 定制 ----
+  /** 是否定制 JWT 配置 */
+  enable_jwt: boolean
+  /** JWT secret（留空则一键生成随机强密钥） */
+  jwt_secret: string
+  /** token 有效期（分钟），默认 30 */
+  jwt_expire_minutes: number
+  // ---- 代码生成器配置 ----
+  /** 是否定制代码生成器配置（generator.yml） */
+  enable_generator_config: boolean
+  /** 生成代码作者名 */
+  generator_author: string
+  /** 表前缀（自动去除，逗号分隔，如 sys_,tb_） */
+  generator_table_prefix: string
+  /** 是否升级 Vue3 模板 */
+  generator_vue3: boolean
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -146,8 +177,10 @@ export type TaskType =
   | 'AddWechatPayDependency'
   | 'AddWechatPayConfig'
   | 'CreateWechatCertDir'
+  | 'SetupOss'
   | 'ApplySecurityHardening'
   | 'CustomizeSqlScripts'
+  | 'CustomizeGeneratorConfig'
   | 'GenerateAiRules'
   | 'SplitFrontend'
   | 'ValidateProject'
