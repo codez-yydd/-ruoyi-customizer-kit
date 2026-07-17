@@ -2,6 +2,7 @@
 
 import { createRouter, createWebHashHistory, type RouteRecordRaw } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
+import { mark } from '@/utils/diagnostic'
 
 const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/home' },
@@ -48,8 +49,15 @@ router.beforeEach((to) => {
   const step = (to.meta.step as number) ?? 0
   if (step < 0) return true // home 始终放行
   const store = useProjectStore()
+  mark('guard.check', {
+    to: String(to.name),
+    step,
+    maxStep: store.maxStep,
+    recognized: store.projectInfo?.confidence?.recognized
+  })
   // 未选项目时（maxStep=0）禁止进入任何后续步骤
   if (step > store.maxStep) {
+    mark('guard.blocked', { to: String(to.name), step, maxStep: store.maxStep })
     return { name: 'home' }
   }
   return true

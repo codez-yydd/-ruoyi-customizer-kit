@@ -3,7 +3,14 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { ElMessage, ElMessageBox } from 'element-plus'
+// ElMessage/ElMessageBox 是函数式 API，ElementPlusResolver（只处理组件/指令）不自动注入，
+// 需手动 import。注意：
+// 1. 必须用完整 index.mjs 路径（该子目录无 package.json，bare import 无法解析）
+// 2. 必须单独 import 样式（函数式 API 不会自动带样式，否则弹窗无样式）
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
 import { useProjectStore } from '@/stores/project'
 import { useProfilesStore } from '@/stores/profiles'
 import type { ProfileEntry } from '@/stores/profiles'
@@ -64,7 +71,24 @@ const defaults = (): CustomizeParams => ({
   // 项目结构
   enable_frontend_split: false,
   // AI 规范
-  enable_ai_rules: true
+  enable_ai_rules: true,
+  // OSS 对象存储
+  enable_oss: false,
+  oss_provider: 'aliyun',
+  oss_endpoint: '',
+  oss_bucket: '',
+  oss_access_key: '',
+  oss_secret_key: '',
+  oss_custom_domain: '',
+  // JWT 定制
+  enable_jwt: false,
+  jwt_secret: '',
+  jwt_expire_minutes: 30,
+  // 代码生成器配置
+  enable_generator_config: false,
+  generator_author: '',
+  generator_table_prefix: '',
+  generator_vue3: false
 })
 
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
@@ -191,6 +215,18 @@ function applyHistory(entry: ProfileEntry) {
 /** 删除一条历史记录 */
 function removeHistory(id: string) {
   profilesStore.removeHistory(id)
+}
+
+/** 前端本地生成一个随机 JWT secret（64 位十六进制）。执行时若留空，后端也会生成。 */
+function generateRandomSecret(): string {
+  const chars = '0123456789abcdef'
+  let s = ''
+  const arr = new Uint8Array(32)
+  crypto.getRandomValues(arr)
+  for (let i = 0; i < arr.length; i++) {
+    s += chars[(arr[i] >> 4) & 0xf] + chars[arr[i] & 0xf]
+  }
+  return s
 }
 </script>
 
@@ -393,6 +429,104 @@ function removeHistory(id: string) {
               <el-switch v-model="form.enable_ai_rules" />
             </div>
             <div class="switch-item__hint muted">生成 AGENTS.md + CLAUDE.md 编码规范</div>
+          </div>
+        </div>
+
+        <!-- 对象存储 OSS 分区 -->
+        <el-divider content-position="left">对象存储 OSS</el-divider>
+        <div class="switch-grid">
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">引入 OSS</span>
+              <el-switch v-model="form.enable_oss" />
+            </div>
+            <div class="switch-item__hint muted">注入 SDK + 配置类 + 独立上传接口 /common/oss/upload</div>
+          </div>
+        </div>
+        <div v-if="form.enable_oss" class="uniapp-panel">
+          <el-form-item label="云厂商">
+            <el-radio-group v-model="form.oss_provider">
+              <el-radio value="aliyun">阿里云 OSS</el-radio>
+              <el-radio value="tencent">腾讯云 COS</el-radio>
+              <el-radio value="minio">MinIO</el-radio>
+              <el-radio value="qiniu">七牛云 Kodo</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <div class="uniapp-grid">
+            <el-form-item label="Endpoint">
+              <el-input v-model="form.oss_endpoint" :placeholder="form.oss_provider === 'minio' ? 'http://localhost:9000' : '如 oss-cn-hangzhou.aliyuncs.com'" />
+            </el-form-item>
+            <el-form-item label="Bucket">
+              <el-input v-model="form.oss_bucket" placeholder="bucket 名称" />
+            </el-form-item>
+            <el-form-item label="AccessKey">
+              <el-input v-model="form.oss_access_key" placeholder="accessKey" />
+            </el-form-item>
+            <el-form-item label="SecretKey">
+              <el-input v-model="form.oss_secret_key" show-password placeholder="secretKey" />
+            </el-form-item>
+            <el-form-item label="自定义域名" class="notify-row">
+              <el-input v-model="form.oss_custom_domain" placeholder="CDN 域名，留空用默认域名" />
+            </el-form-item>
+          </div>
+          <div class="hint muted" style="margin-left:0;margin-top:-4px">
+            将新增独立的 /common/oss/upload 上传接口，不改动若依原有本地上传逻辑。
+          </div>
+        </div>
+
+        <!-- JWT & 代码生成器 分区 -->
+        <el-divider content-position="left">JWT &amp; 代码生成器</el-divider>
+        <div class="switch-grid">
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">JWT 定制</span>
+              <el-switch v-model="form.enable_jwt" />
+            </div>
+            <div class="switch-item__hint muted">替换若依默认公开的 token secret + 有效期</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">代码生成器配置</span>
+              <el-switch v-model="form.enable_generator_config" />
+            </div>
+            <div class="switch-item__hint muted">作者名、生成包名、表前缀、Vue3 模板</div>
+          </div>
+        </div>
+
+        <div v-if="form.enable_jwt" class="uniapp-panel">
+          <div class="uniapp-grid">
+            <el-form-item label="JWT Secret">
+              <el-input v-model="form.jwt_secret" show-password placeholder="留空则执行时随机生成强密钥">
+                <template #append>
+                  <el-button @click="form.jwt_secret = generateRandomSecret()">随机生成</el-button>
+                </template>
+              </el-input>
+            </el-form-item>
+            <el-form-item label="Token 有效期">
+              <el-input-number v-model="form.jwt_expire_minutes" :min="1" :max="10080" />
+              <span class="inline-hint muted">分钟（默认 30）</span>
+            </el-form-item>
+          </div>
+        </div>
+
+        <div v-if="form.enable_generator_config" class="uniapp-panel">
+          <div class="uniapp-grid">
+            <el-form-item label="作者名">
+              <el-input v-model="form.generator_author" placeholder="留空保留默认 ruoyi" />
+            </el-form-item>
+            <el-form-item label="表前缀">
+              <el-input v-model="form.generator_table_prefix" placeholder="如 sys_, 逗号分隔" />
+            </el-form-item>
+            <el-form-item label="生成包名" class="notify-row">
+              <el-input :model-value="form.new_package" disabled />
+              <span class="inline-hint muted">联动新包名</span>
+            </el-form-item>
+          </div>
+          <div class="uniapp-grid">
+            <el-form-item label="Vue3 模板升级">
+              <el-switch v-model="form.generator_vue3" />
+              <span class="inline-hint muted">将生成器前端模板改为 Element Plus（Vue3）语法</span>
+            </el-form-item>
           </div>
         </div>
 

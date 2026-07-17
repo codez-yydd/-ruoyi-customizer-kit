@@ -29,6 +29,33 @@ export default defineConfig(async () => ({
   },
   // Tauri 要求的构建配置
   clearScreen: false,
+  optimizeDeps: {
+    // 预构建「仅在部分页面使用」的 Element Plus 组件样式依赖。
+    // 这些样式由 unplugin-vue-components 的 sideEffects 在运行时注入，
+    // 若不预构建，首次访问对应页面时 Vite 会发现新依赖 → 重新优化 → 强制
+    // full reload（曾导致「点下一步→白屏跳首页」）。
+    // 必须写 style/css 路径（组件 index.mjs 不引用样式，写主入口无效）。
+    // 生产构建不受影响。
+    include: [
+      // 基础样式（所有 EP 组件共用，必须最先）
+      'element-plus/es/components/base/style/css',
+      // 运行时新发现的组件样式（与 Vite 实际优化日志对齐）
+      'element-plus/es/components/dialog/style/css',
+      'element-plus/es/components/table/style/css',
+      'element-plus/es/components/table-column/style/css',
+      'element-plus/es/components/form/style/css',
+      'element-plus/es/components/form-item/style/css',
+      'element-plus/es/components/input/style/css',
+      'element-plus/es/components/input-number/style/css',
+      'element-plus/es/components/radio/style/css',
+      'element-plus/es/components/radio-group/style/css',
+      'element-plus/es/components/switch/style/css',
+      'element-plus/es/components/divider/style/css',
+      // 服务式 API（ElMessage/ElMessageBox）的样式
+      'element-plus/es/components/message/style/css',
+      'element-plus/es/components/message-box/style/css'
+    ]
+  },
   server: {
     port,
     strictPort: true,
