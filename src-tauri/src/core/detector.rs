@@ -132,35 +132,89 @@ fn detect_from_application_class(
         .filter(|m| m.ends_with("-admin"))
         .cloned()
         .collect();
-    let admin = admin_candidates
-        .first()
-        .or_else(|| rules.modules.iter().find(|m| m.ends_with("-admin")))
-        .or_else(|| rules.modules.first())?;
+    // 优先扫 admin 模块（单体若依）；没有 admin 时（Cloud 微服务）扫所有后端模块。
+    // Cloud 有多个 *Application.java（com.ruoyi.auth / com.ruoyi.system ...），
+    // 取它们的公共前缀（com.ruoyi）作为根包名，而非首个服务的子包名。
+    let modules_to_scan: Vec<&str> = if !admin_candidates.is_empty() {
+        admin_candidates.iter().map(|s| s.as_str()).collect()
+    } else {
+        // 无 admin：扫所有 backend_modules；若也为空则回退到 rules.modules
+        if backend_modules.is_empty() {
+            rules.modules.iter().map(|s| s.as_str()).collect()
+        } else {
+            backend_modules.iter().map(|s| s.as_str()).collect()
+        }
+    };
 
-    let java_dir = root.join(admin).join("src/main/java");
     let re_pkg = Regex::new(r"^\s*package\s+([\w.]+)\s*;").unwrap();
-    for entry in walkdir::WalkDir::new(&java_dir)
-        .max_depth(8)
-        .into_iter()
-        .filter_entry(|e| !is_excluded_dir_name(&e.file_name()))
-        .flatten()
-    {
-        let path = entry.path();
-        if !path.is_file() {
+    let mut found_packages: Vec<String> = Vec::new();
+    for m in &modules_to_scan {
+        let java_dir = root.join(m).join("src/main/java");
+        if !java_dir.is_dir() {
             continue;
         }
-        if !path.to_string_lossy().ends_with("Application.java") {
-            continue;
-        }
-        if let Ok(content) = std::fs::read_to_string(path) {
-            for line in content.lines() {
-                if let Some(caps) = re_pkg.captures(line) {
-                    return Some(caps[1].to_string());
+        for entry in walkdir::WalkDir::new(&java_dir)
+            .max_depth(8)
+            .into_iter()
+            .filter_entry(|e| !is_excluded_dir_name(&e.file_name()))
+            .flatten()
+        {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if !path.to_string_lossy().ends_with("Application.java") {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(path) {
+                for line in content.lines() {
+                    if let Some(caps) = re_pkg.captures(line) {
+                        let pkg = caps[1].to_string();
+                        if !found_packages.contains(&pkg) {
+                            found_packages.push(pkg);
+                        }
+                        break; // 同一文件只取一次
+                    }
                 }
             }
         }
     }
-    None
+
+    if found_packages.is_empty() {
+        return None;
+    }
+    if found_packages.len() == 1 {
+        return Some(found_packages[0].clone());
+    }
+    // 多个 package：取公共前缀（去掉末级，直到所有 package 共享）
+    Some(common_package_prefix(&found_packages))
+}
+
+/// 计算多个 Java package 的公共前缀。
+/// 如 ["com.ruoyi.auth", "com.ruoyi.system"] → "com.ruoyi"
+/// 至少保留两段（如 com.ruoyi），不返回单段（如 com）。
+fn common_package_prefix(packages: &[String]) -> String {
+    if packages.is_empty() {
+        return String::new();
+    }
+    let split: Vec<Vec<&str>> = packages.iter().map(|p| p.split('.').collect()).collect();
+    let min_len = split.iter().map(|s| s.len()).min().unwrap_or(0);
+    // 至少保留 2 段，所以最多比较到 min_len-1 段相同
+    let mut common = 0usize;
+    for i in 0..min_len.saturating_sub(1) {
+        let first = split[0].get(i);
+        if split.iter().all(|s| s.get(i) == first) {
+            common = i + 1;
+        } else {
+            break;
+        }
+    }
+    // common 是"相同的段数"，至少为 2（若至少 2 段相同）或退化情况
+    if common < 2 {
+        // 没有至少 2 段公共：回退到第一个 package（保守）
+        return packages[0].clone();
+    }
+    split[0][..common].join(".")
 }
 
 /// 扫描 admin 模块 src/main/java 下首个有效包目录路径，拼成包名。
@@ -228,4 +282,52 @@ fn is_excluded_dir_name(name: &std::ffi::OsStr) -> bool {
         n.as_ref(),
         "target" | "node_modules" | ".git" | ".idea" | ".vscode" | "dist" | "logs" | "log"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn common_prefix_two_services() {
+        // Cloud 场景：auth + system
+        let pkgs = vec!["com.ruoyi.auth".into(), "com.ruoyi.system".into()];
+        assert_eq!(common_package_prefix(&pkgs), "com.ruoyi");
+    }
+
+    #[test]
+    fn common_prefix_many_services() {
+        // Cloud 全部服务
+        let pkgs = vec![
+            "com.ruoyi.auth".into(),
+            "com.ruoyi.gateway".into(),
+            "com.ruoyi.system".into(),
+            "com.ruoyi.file".into(),
+            "com.ruoyi.gen".into(),
+            "com.ruoyi.job".into(),
+            "com.ruoyi.modules.monitor".into(),
+        ];
+        assert_eq!(common_package_prefix(&pkgs), "com.ruoyi");
+    }
+
+    #[test]
+    fn common_prefix_single_package_returns_itself() {
+        // 单体若依：只有一个 admin 的 Application.java
+        let pkgs = vec!["com.ruoyi".into()];
+        assert_eq!(common_package_prefix(&pkgs), "com.ruoyi");
+    }
+
+    #[test]
+    fn common_prefix_no_shared_returns_first() {
+        // 完全不相关：保守回退到第一个
+        let pkgs = vec!["com.foo".into(), "org.bar".into()];
+        assert_eq!(common_package_prefix(&pkgs), "com.foo");
+    }
+
+    #[test]
+    fn common_prefix_keeps_at_least_two_segments() {
+        // 仅一段相同（com）不构成有效包名，回退到第一个
+        let pkgs = vec!["com.foo".into(), "com.bar".into()];
+        assert_eq!(common_package_prefix(&pkgs), "com.foo");
+    }
 }

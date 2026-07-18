@@ -1,6 +1,6 @@
 {
   "name": "RuoYi-Cloud",
-  "_comment_required": "Cloud 标志：gateway + auth + modules/system 三件套（按官方文档推断；若你的版本路径不同，直接改这里即可，无需改代码）",
+  "_comment_required": "Cloud 标志：gateway + auth + modules/system 三件套（已对照官方 gitee.com/y_project/RuoYi-Cloud 校准）",
   "required_files": [
     "pom.xml",
     "ruoyi-gateway/pom.xml",
@@ -11,27 +11,32 @@
     "ruoyi-api/pom.xml",
     "ruoyi-common/pom.xml",
     "ruoyi-visual/pom.xml",
+    "ruoyi-modules/ruoyi-file/pom.xml",
     "ruoyi-modules/ruoyi-gen/pom.xml",
     "ruoyi-modules/ruoyi-job/pom.xml",
-    "ruoyi-modules/ruoyi-file/pom.xml",
     "ruoyi-ui/package.json",
     "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/domain.java.vm",
     "ruoyi-gateway/src/main/resources/bootstrap.yml"
   ],
-  "_comment_config": "Cloud 走 Nacos 配置中心，关键配置文件是各服务的 bootstrap.yml",
+  "_comment_config": "Cloud 走 Nacos 配置中心，每个服务用 bootstrap.yml（已核对真实路径）",
   "config_files": [
     "ruoyi-gateway/src/main/resources/bootstrap.yml",
     "ruoyi-auth/src/main/resources/bootstrap.yml",
     "ruoyi-modules/ruoyi-system/src/main/resources/bootstrap.yml",
-    "ruoyi-modules/ruoyi-file/src/main/resources/bootstrap.yml"
+    "ruoyi-modules/ruoyi-file/src/main/resources/bootstrap.yml",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/bootstrap.yml",
+    "ruoyi-modules/ruoyi-job/src/main/resources/bootstrap.yml"
   ],
+  "_comment_logback": "每个服务都有自己的 logback.xml（已核对真实路径）",
   "logback_files": [
     "ruoyi-gateway/src/main/resources/logback.xml",
-    "ruoyi-gateway/src/main/resources/logback-spring.xml",
+    "ruoyi-auth/src/main/resources/logback.xml",
     "ruoyi-modules/ruoyi-system/src/main/resources/logback.xml",
-    "ruoyi-modules/ruoyi-system/src/main/resources/logback-spring.xml"
+    "ruoyi-modules/ruoyi-file/src/main/resources/logback.xml",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/logback.xml",
+    "ruoyi-modules/ruoyi-job/src/main/resources/logback.xml"
   ],
-  "_comment_generator": "Cloud 的代码生成器模板在 ruoyi-modules/ruoyi-gen 下",
+  "_comment_generator": "Cloud 代码生成器在 ruoyi-modules/ruoyi-gen 下（路径已核对，模板文件名与 Vue 版一致）",
   "generator_template_files": [
     "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/domain.java.vm",
     "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/mapper.java.vm",

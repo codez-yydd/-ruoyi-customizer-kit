@@ -1,5 +1,5 @@
 {
-  "_comment": "RuoYi-Cloud 模块清单（按官方文档推断；Cloud 的业务服务在 ruoyi-modules/ 下）",
+  "_comment": "RuoYi-Cloud 模块清单（已对照官方 gitee.com/y_project/RuoYi-Cloud 校准；官方版无 ruoyi-demo，ruoyi-visual 下含 ruoyi-monitor）",
   "default_prefix": "ruoyi",
   "modules": [
     "ruoyi-auth",
@@ -10,10 +10,9 @@
     "ruoyi-modules/ruoyi-system",
     "ruoyi-modules/ruoyi-gen",
     "ruoyi-modules/ruoyi-job",
-    "ruoyi-modules/ruoyi-file",
-    "ruoyi-modules/ruoyi-demo"
+    "ruoyi-modules/ruoyi-file"
   ],
-  "_comment_frontend": "Cloud 也有前端 ruoyi-ui，结构同 Vue 版",
+  "_comment_frontend": "官方 Cloud 仓库自带 ruoyi-ui（package.json name 为 ruoyi），结构同 Vue 版",
   "frontend_modules": [
     "ruoyi-ui"
   ]
