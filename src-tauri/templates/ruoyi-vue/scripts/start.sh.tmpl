@@ -12,19 +12,28 @@ set -e
 APP_HOME="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$APP_HOME"
 
-# jar 包名（与模块前缀联动）
-JAR_FILE="{{MODULE_PREFIX}}-admin.jar"
-JAR_PATH="./{{MODULE_PREFIX}}-admin/target/$JAR_FILE"
+# jar 包名（与模块前缀联动）。用通配符匹配，兼容带/不带版本号：
+# 默认 ruoyi-admin.jar，若 finalName 带版本号（ruoyi-admin-4.7.0.jar）也能命中。
+find_jar() {
+  local dir="$1"
+  ls "$dir"/{{MODULE_PREFIX}}-admin*.jar 2>/dev/null | grep -v "\.original$" | head -1
+}
 
-# 如果 target 下没有，尝试根目录
-if [ ! -f "$JAR_PATH" ]; then
-  JAR_PATH="$JAR_FILE"
+JAR_PATH=""
+# 优先：模块 target 目录
+if [ -d "./{{MODULE_PREFIX}}-admin/target" ]; then
+  JAR_PATH=$(find_jar "./{{MODULE_PREFIX}}-admin/target")
+fi
+# 回退：项目根目录
+if [ -z "$JAR_PATH" ] && [ -n "$(find_jar .)" ]; then
+  JAR_PATH=$(find_jar .)
 fi
 
-if [ ! -f "$JAR_PATH" ]; then
-  echo "❌ 找不到 $JAR_FILE，请先执行 mvn package 打包"
+if [ -z "$JAR_PATH" ]; then
+  echo "❌ 找不到 {{MODULE_PREFIX}}-admin*.jar，请先在项目根执行 mvn package 打包"
   exit 1
 fi
+JAR_FILE=$(basename "$JAR_PATH")
 
 # 端口（与 Nginx 配置 / 配置文件保持一致）
 SERVER_PORT={{SERVER_PORT}}

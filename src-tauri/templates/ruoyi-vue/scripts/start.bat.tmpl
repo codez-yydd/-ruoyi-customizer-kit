@@ -1,21 +1,32 @@
 @echo off
+chcp 65001 >nul
 REM {{PROJECT_NAME}} 后端服务启动脚本（Windows）
 REM 由若依锻造台 RuoYi Forge 自动生成
 REM
 REM 用法：双击或 scripts\start.bat
 
-setlocal
+setlocal enabledelayedexpansion
 
 REM 切到项目根（脚本在 scripts\ 下）
 cd /d "%~dp0\.."
 
-set JAR_FILE={{MODULE_PREFIX}}-admin.jar
-set JAR_PATH=.\{{MODULE_PREFIX}}-admin\target\%JAR_FILE%
+REM jar 名匹配：兼容带/不带版本号（ruoyi-admin.jar 或 ruoyi-admin-x.y.z.jar）
+set JAR_PATH=
+REM 优先：模块 target 目录
+if exist ".\{{MODULE_PREFIX}}-admin\target" (
+  for %%f in (".\{{MODULE_PREFIX}}-admin\target\{{MODULE_PREFIX}}-admin*.jar") do (
+    echo %%f | findstr /v "\.original" >nul && set "JAR_PATH=%%f"
+  )
+)
+REM 回退：项目根目录
+if not defined JAR_PATH (
+  for %%f in (".\{{MODULE_PREFIX}}-admin*.jar") do (
+    echo %%f | findstr /v "\.original" >nul && set "JAR_PATH=%%f"
+  )
+)
 
-if not exist "%JAR_PATH%" set JAR_PATH=.\%JAR_FILE%
-
-if not exist "%JAR_PATH%" (
-  echo [ERROR] 找不到 %JAR_FILE%，请先执行 mvn package 打包
+if not defined JAR_PATH (
+  echo [ERROR] 找不到 {{MODULE_PREFIX}}-admin*.jar，请先执行 mvn package 打包
   pause
   exit /b 1
 )
@@ -33,8 +44,8 @@ if %errorlevel% equ 0 (
   exit /b 1
 )
 
-echo [INFO] 后台启动 %JAR_FILE%（端口 %SERVER_PORT%），日志输出到 logs\start.log
-start "RuoYi-{{MODULE_PREFIX}}" /B java %JAVA_OPTS% -jar "%JAR_PATH%" > logs\start.log 2>&1
+echo [INFO] 后台启动 !JAR_PATH!（端口 %SERVER_PORT%），日志输出到 logs\start.log
+start "RuoYi-{{MODULE_PREFIX}}" /B java %JAVA_OPTS% -jar "!JAR_PATH!" > logs\start.log 2>&1
 
 echo [OK] 已启动
 echo      查看日志：type logs\start.log
