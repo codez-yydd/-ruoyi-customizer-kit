@@ -1,0 +1,14 @@
+{
+  "_comment": "Cloud 配置重构规则（与 Vue 版一致；Cloud 各服务的 bootstrap.yml 由 Nacos 管理，本工具只处理本地 application 配置）",
+  "target_files": [
+    "application.yaml",
+    "application-dev.yaml",
+    "application-prod.yaml"
+  ],
+  "legacy_druid_files": [
+    "application-druid.yml",
+    "application-druid.yaml"
+  ],
+  "active_profile": "dev",
+  "log_path_value": "logs"
+}

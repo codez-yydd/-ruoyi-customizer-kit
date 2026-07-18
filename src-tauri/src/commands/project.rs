@@ -3,7 +3,7 @@
 use crate::core::detector;
 use crate::rules::template::{Template, TemplateSet};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::AppHandle;
 
@@ -48,40 +48,103 @@ pub fn detect_project(
         };
     }
 
-    let tpl_name = template.unwrap_or_else(|| "ruoyi-vue".to_string());
-    let tpl_dir = match resolve_template_dir(&app, &tpl_name) {
-        Some(d) => d,
-        None => {
-            return DetectResponse {
-                success: false,
-                message: format!("找不到模板：{tpl_name}"),
-                project: None,
-            }
-        }
+    // 模板选择策略：
+    // - 显式指定 template → 只用该模板
+    // - 未指定（None）→ 依次尝试所有可用模板（ruoyi-vue 优先），取首个识别成功的；
+    //   都不识别则回退到 ruoyi-vue 的结果（保持向后兼容）
+    let candidate_names: Vec<String> = match &template {
+        Some(name) => vec![name.clone()],
+        None => list_template_names(&app),
     };
+    diag(&format!("detect_project 候选模板：{:?}", candidate_names));
 
-    let set = match TemplateSet::load_from_dir(&tpl_dir) {
-        Ok(s) => s,
-        Err(e) => {
-            return DetectResponse {
-                success: false,
-                message: format!("加载模板失败：{e}"),
-                project: None,
+    let mut last_resp: Option<DetectResponse> = None;
+    for tpl_name in &candidate_names {
+        let tpl_dir = match resolve_template_dir(&app, tpl_name) {
+            Some(d) => d,
+            None => {
+                diag(&format!("detect_project 模板目录缺失，跳过：{tpl_name}"));
+                continue;
+            }
+        };
+        match build_template(&tpl_dir) {
+            Ok(template) => {
+                let project = detector::detect(&root, &template);
+                diag(&format!(
+                    "detect_project 识别完成：type={} recognized={} hit={}/{} backend={} frontend={} config={} logback={} gen={}",
+                    project.project_type,
+                    project.confidence.recognized,
+                    project.confidence.required_hit,
+                    project.confidence.required_total,
+                    project.backend_modules.len(),
+                    project.frontend_dirs.len(),
+                    project.config_files.len(),
+                    project.logback_files.len(),
+                    project.generator_template_files.len()
+                ));
+                let resp = build_detect_response(&project);
+                if resp.success {
+                    diag("detect_project 返回（即将序列化）");
+                    return resp;
+                }
+                last_resp = Some(resp);
+            }
+            Err(msg) => {
+                diag(&format!("detect_project 模板 {tpl_name} 构建失败：{msg}"));
+                last_resp = Some(DetectResponse {
+                    success: false,
+                    message: msg,
+                    project: None,
+                });
             }
         }
-    };
+    }
 
-    // 校验模板完整性：detect / module / replace 至少要存在
-    let detect = match set.detect {
-        Some(d) => d,
-        None => {
-            return DetectResponse {
-                success: false,
-                message: "模板缺少 detect.json".into(),
-                project: None,
-            }
+    // 所有候选都不识别：返回最后一个结果（或兜底错误）
+    diag("detect_project 无模板命中，返回最后结果");
+    last_resp.unwrap_or_else(|| DetectResponse {
+        success: false,
+        message: "无可用模板".into(),
+        project: None,
+    })
+}
+
+/// 列出所有可用模板名（按 ruoyi-vue 优先排序）。
+/// 复用 list_templates 的扫描策略，但只返回名字，避免循环依赖。
+fn list_template_names(app: &AppHandle) -> Vec<String> {
+    use tauri::Manager;
+    let base = if let Ok(rd) = app.path().resource_dir() {
+        let candidate = rd.join("templates");
+        if candidate.is_dir() {
+            candidate
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
         }
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
     };
+    let mut names: Vec<String> = std::fs::read_dir(&base)
+        .map(|it| {
+            it.flatten()
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().to_string_lossy().into_owned().into())
+                .collect()
+        })
+        .unwrap_or_default();
+    // ruoyi-vue 排最前（向后兼容的首选）
+    names.sort_by(|a, b| {
+        let av = (a == "ruoyi-vue") as u8;
+        let bv = (b == "ruoyi-vue") as u8;
+        bv.cmp(&av).then_with(|| a.cmp(b))
+    });
+    names
+}
+
+/// 加载模板目录并构造 Template（校验完整性）。失败返回错误消息。
+fn build_template(tpl_dir: &Path) -> Result<Template, String> {
+    let set = TemplateSet::load_from_dir(tpl_dir)
+        .map_err(|e| format!("加载模板失败：{e}"))?;
+    let detect = set.detect.ok_or_else(|| "模板缺少 detect.json".to_string())?;
     let module = set.module.unwrap_or_else(|| crate::rules::template::ModuleRules {
         default_prefix: "ruoyi".into(),
         modules: vec![],
@@ -104,30 +167,18 @@ pub fn detect_project(
         template_files: Default::default(),
         long_id_annotation: "@JsonSerialize(using = ToStringSerializer.class)".into(),
     });
-
-    let template = Template {
+    Ok(Template {
         name: detect.name.clone(),
         detect,
         replace,
         module,
         config,
         generator,
-    };
+    })
+}
 
-    let project = detector::detect(&root, &template);
-    diag(&format!(
-        "detect_project 识别完成：type={} recognized={} hit={}/{} backend={} frontend={} config={} logback={} gen={}",
-        project.project_type,
-        project.confidence.recognized,
-        project.confidence.required_hit,
-        project.confidence.required_total,
-        project.backend_modules.len(),
-        project.frontend_dirs.len(),
-        project.config_files.len(),
-        project.logback_files.len(),
-        project.generator_template_files.len()
-    ));
-
+/// 由识别结果构造 DetectResponse（含友好消息）
+fn build_detect_response(project: &crate::core::ProjectInfo) -> DetectResponse {
     let message = if project.confidence.recognized {
         format!("识别成功：{} 项目", project.project_type)
     } else if project.confidence.required_total == 0 {
@@ -138,12 +189,10 @@ pub fn detect_project(
             project.confidence.missing_required.join(", ")
         )
     };
-
-    diag("detect_project 返回（即将序列化）");
     DetectResponse {
         success: project.confidence.recognized,
         message,
-        project: Some(project),
+        project: Some(project.clone()),
     }
 }
 

@@ -1,0 +1,20 @@
+{
+  "_comment": "RuoYi-Cloud 模块清单（按官方文档推断；Cloud 的业务服务在 ruoyi-modules/ 下）",
+  "default_prefix": "ruoyi",
+  "modules": [
+    "ruoyi-auth",
+    "ruoyi-gateway",
+    "ruoyi-common",
+    "ruoyi-api",
+    "ruoyi-visual",
+    "ruoyi-modules/ruoyi-system",
+    "ruoyi-modules/ruoyi-gen",
+    "ruoyi-modules/ruoyi-job",
+    "ruoyi-modules/ruoyi-file",
+    "ruoyi-modules/ruoyi-demo"
+  ],
+  "_comment_frontend": "Cloud 也有前端 ruoyi-ui，结构同 Vue 版",
+  "frontend_modules": [
+    "ruoyi-ui"
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "_comment": "Cloud 代码生成器在 ruoyi-modules/ruoyi-gen 下，模板路径与 Vue 版结构一致",
+  "enable_mybatis_plus_templates": true,
+  "enable_long_id_json_string": true,
+  "template_files": {
+    "domain": "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/domain.java.vm",
+    "mapper": "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/mapper.java.vm",
+    "service": "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/service.java.vm",
+    "service_impl": "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/serviceImpl.java.vm",
+    "xml_mapper": "ruoyi-modules/ruoyi-gen/src/main/resources/vm/xml/mapper.xml.vm"
+  },
+  "long_id_annotation": "@JsonSerialize(using = ToStringSerializer.class)"
+}

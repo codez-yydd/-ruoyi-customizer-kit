@@ -1,0 +1,43 @@
+{
+  "name": "RuoYi-Cloud",
+  "_comment_required": "Cloud 标志：gateway + auth + modules/system 三件套（按官方文档推断；若你的版本路径不同，直接改这里即可，无需改代码）",
+  "required_files": [
+    "pom.xml",
+    "ruoyi-gateway/pom.xml",
+    "ruoyi-auth/pom.xml",
+    "ruoyi-modules/ruoyi-system/pom.xml"
+  ],
+  "optional_files": [
+    "ruoyi-api/pom.xml",
+    "ruoyi-common/pom.xml",
+    "ruoyi-visual/pom.xml",
+    "ruoyi-modules/ruoyi-gen/pom.xml",
+    "ruoyi-modules/ruoyi-job/pom.xml",
+    "ruoyi-modules/ruoyi-file/pom.xml",
+    "ruoyi-ui/package.json",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/domain.java.vm",
+    "ruoyi-gateway/src/main/resources/bootstrap.yml"
+  ],
+  "_comment_config": "Cloud 走 Nacos 配置中心，关键配置文件是各服务的 bootstrap.yml",
+  "config_files": [
+    "ruoyi-gateway/src/main/resources/bootstrap.yml",
+    "ruoyi-auth/src/main/resources/bootstrap.yml",
+    "ruoyi-modules/ruoyi-system/src/main/resources/bootstrap.yml",
+    "ruoyi-modules/ruoyi-file/src/main/resources/bootstrap.yml"
+  ],
+  "logback_files": [
+    "ruoyi-gateway/src/main/resources/logback.xml",
+    "ruoyi-gateway/src/main/resources/logback-spring.xml",
+    "ruoyi-modules/ruoyi-system/src/main/resources/logback.xml",
+    "ruoyi-modules/ruoyi-system/src/main/resources/logback-spring.xml"
+  ],
+  "_comment_generator": "Cloud 的代码生成器模板在 ruoyi-modules/ruoyi-gen 下",
+  "generator_template_files": [
+    "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/domain.java.vm",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/mapper.java.vm",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/service.java.vm",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/serviceImpl.java.vm",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/vm/java/controller.java.vm",
+    "ruoyi-modules/ruoyi-gen/src/main/resources/vm/xml/mapper.xml.vm"
+  ]
+}
