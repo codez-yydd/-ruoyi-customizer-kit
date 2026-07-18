@@ -136,6 +136,19 @@ const errors = computed(() => {
   if (!form.output_dir) {
     e.output_dir = '请选择输出目录'
   }
+  // 部署相关校验（仅当启用 Nginx 或脚本时）
+  if (form.enable_nginx_config || form.enable_startup_scripts) {
+    if (!form.server_port || form.server_port < 1 || form.server_port > 65535) {
+      e.server_port = '端口须在 1-65535 之间'
+    }
+  }
+  if (form.enable_nginx_config) {
+    // 域名留空合法（默认 localhost），但填了就不应带协议前缀
+    const sn = form.server_name.trim()
+    if (sn && /^https?:\/\//i.test(sn)) {
+      e.server_name = '域名不带 http(s):// 前缀，如 demo.example.com'
+    }
+  }
   return e
 })
 const valid = computed(() => Object.keys(errors.value).length === 0)
