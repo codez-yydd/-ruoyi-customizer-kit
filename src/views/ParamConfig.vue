@@ -88,7 +88,14 @@ const defaults = (): CustomizeParams => ({
   enable_generator_config: false,
   generator_author: '',
   generator_table_prefix: '',
-  generator_vue3: false
+  generator_vue3: false,
+  // 部署：Nginx
+  enable_nginx_config: false,
+  server_port: 8080,
+  server_name: '',
+  use_https: false,
+  // 部署：启动脚本
+  enable_startup_scripts: false
 })
 
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
@@ -527,6 +534,46 @@ function generateRandomSecret(): string {
               <el-switch v-model="form.generator_vue3" />
               <span class="inline-hint muted">将生成器前端模板改为 Element Plus（Vue3）语法</span>
             </el-form-item>
+          </div>
+        </div>
+
+        <!-- 部署分区 -->
+        <el-divider content-position="left">部署</el-divider>
+        <div class="switch-grid">
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">Nginx 配置</span>
+              <el-switch v-model="form.enable_nginx_config" />
+            </div>
+            <div class="switch-item__hint muted">生成反向代理配置（前端静态托管 + /prod-api 反代后端）</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">启动脚本</span>
+              <el-switch v-model="form.enable_startup_scripts" />
+            </div>
+            <div class="switch-item__hint muted">start/stop 脚本（.sh + .bat），端口与 Nginx 共用</div>
+          </div>
+        </div>
+
+        <div v-if="form.enable_nginx_config || form.enable_startup_scripts" class="uniapp-panel">
+          <div class="uniapp-grid">
+            <el-form-item label="后端端口">
+              <el-input-number v-model="form.server_port" :min="1" :max="65535" />
+              <span class="inline-hint muted">jar 监听端口（Nginx 反代目标 + 脚本停止端口）</span>
+            </el-form-item>
+            <el-form-item label="对外域名">
+              <el-input v-model="form.server_name" placeholder="留空用 localhost，如 demo.example.com" />
+            </el-form-item>
+          </div>
+          <div v-if="form.enable_nginx_config" class="uniapp-grid">
+            <el-form-item label="启用 HTTPS" class="notify-row">
+              <el-switch v-model="form.use_https" />
+              <span class="inline-hint muted">生成证书占位段（需自行替换正式证书）</span>
+            </el-form-item>
+          </div>
+          <div class="hint muted" style="margin-left:0;margin-top:-4px">
+            输出到 output_dir/nginx/（配置）和 output_dir/scripts/（脚本）。
           </div>
         </div>
 

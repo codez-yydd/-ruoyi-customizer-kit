@@ -1,0 +1,52 @@
+#!/bin/bash
+# {{PROJECT_NAME}} 后端服务停止脚本（Linux/macOS）
+# 由若依锻造台 RuoYi Forge 自动生成
+#
+# 用法：./stop.sh
+# 优先用 PID 文件停止；找不到则按端口杀进程。
+
+APP_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$APP_HOME"
+
+SERVER_PORT={{SERVER_PORT}}
+PID_FILE="logs/{{MODULE_PREFIX}}.pid"
+
+# 方式 1：通过 PID 文件停止
+if [ -f "$PID_FILE" ]; then
+  PID=$(cat "$PID_FILE")
+  if kill -0 "$PID" >/dev/null 2>&1; then
+    echo "⏹ 通过 PID 文件停止进程 $PID"
+    kill "$PID"
+    for i in $(seq 1 10); do
+      kill -0 "$PID" >/dev/null 2>&1 || break
+      sleep 1
+    done
+    # 仍未退出则强杀
+    if kill -0 "$PID" >/dev/null 2>&1; then
+      echo "⚠️  进程未响应，强制结束"
+      kill -9 "$PID" >/dev/null 2>&1
+    fi
+    rm -f "$PID_FILE"
+    echo "✅ 已停止"
+    exit 0
+  else
+    rm -f "$PID_FILE"
+  fi
+fi
+
+# 方式 2：按端口查进程并停止
+PIDS=$(lsof -ti :$SERVER_PORT -sTCP:LISTEN 2>/dev/null || true)
+if [ -n "$PIDS" ]; then
+  echo "⏹ 按端口 $SERVER_PORT 停止进程：$PIDS"
+  echo "$PIDS" | xargs kill
+  sleep 2
+  # 残留则强杀
+  REMAIN=$(lsof -ti :$SERVER_PORT -sTCP:LISTEN 2>/dev/null || true)
+  if [ -n "$REMAIN" ]; then
+    echo "⚠️  残留进程，强制结束：$REMAIN"
+    echo "$REMAIN" | xargs kill -9 >/dev/null 2>&1
+  fi
+  echo "✅ 已停止"
+else
+  echo "ℹ️  端口 $SERVER_PORT 无进程在监听"
+fi

@@ -117,6 +117,8 @@ where
         TaskType::CustomizeGeneratorConfig => do_customize_generator(root, params, &mut r, log),
         TaskType::GenerateAiRules => do_generate_ai_rules(root, params, &mut r, log),
         TaskType::SplitFrontend => do_split_frontend(root, params, &mut r, log),
+        TaskType::GenerateNginxConfig => do_generate_nginx_config(root, params, &mut r, log),
+        TaskType::GenerateStartupScripts => do_generate_startup_scripts(root, params, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
             r.status = TaskStatus::Skipped;
             r.message = "校验/报告在执行后单独触发".into();
@@ -853,6 +855,46 @@ where
         r.created_files = 1; // 根 README
     } else {
         r.message = "未找到前端目录，跳过".into();
+    }
+    Ok(())
+}
+
+/// 12l. 生成 Nginx 反向代理配置到 output_dir/nginx/
+fn do_generate_nginx_config<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let output_dir = PathBuf::from(&params.output_dir);
+    if !output_dir.is_dir() {
+        return Err(format!(
+            "输出目录不存在：{}（Nginx 配置需写入输出目录）",
+            output_dir.display()
+        ));
+    }
+    let outcome = crate::core::nginx::generate_nginx_config(&output_dir, params, &|msg| log(msg))?;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12m. 生成启动/停止脚本到 output_dir/scripts/
+fn do_generate_startup_scripts<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let output_dir = PathBuf::from(&params.output_dir);
+    if !output_dir.is_dir() {
+        return Err(format!(
+            "输出目录不存在：{}（脚本需写入输出目录）",
+            output_dir.display()
+        ));
+    }
+    let outcome = crate::core::scripts::generate_scripts(&output_dir, params, &|msg| log(msg))?;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
     }
     Ok(())
 }

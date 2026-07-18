@@ -29,6 +29,8 @@ pub enum TaskType {
     CustomizeGeneratorConfig,
     GenerateAiRules,
     SplitFrontend,
+    GenerateNginxConfig,
+    GenerateStartupScripts,
     ValidateProject,
     GenerateReport,
 }

@@ -1,0 +1,42 @@
+@echo off
+REM {{PROJECT_NAME}} 后端服务启动脚本（Windows）
+REM 由若依锻造台 RuoYi Forge 自动生成
+REM
+REM 用法：双击或 scripts\start.bat
+
+setlocal
+
+REM 切到项目根（脚本在 scripts\ 下）
+cd /d "%~dp0\.."
+
+set JAR_FILE={{MODULE_PREFIX}}-admin.jar
+set JAR_PATH=.\{{MODULE_PREFIX}}-admin\target\%JAR_FILE%
+
+if not exist "%JAR_PATH%" set JAR_PATH=.\%JAR_FILE%
+
+if not exist "%JAR_PATH%" (
+  echo [ERROR] 找不到 %JAR_FILE%，请先执行 mvn package 打包
+  pause
+  exit /b 1
+)
+
+set SERVER_PORT={{SERVER_PORT}}
+set JAVA_OPTS=-Xms512m -Xmx1024m -Dfile.encoding=UTF-8 -Dserver.port=%SERVER_PORT%
+
+if not exist logs mkdir logs
+
+REM 检测端口是否被占用
+netstat -ano | findstr ":%SERVER_PORT% " | findstr "LISTENING" >nul
+if %errorlevel% equ 0 (
+  echo [WARN] 端口 %SERVER_PORT% 已被占用，请先执行 scripts\stop.bat
+  pause
+  exit /b 1
+)
+
+echo [INFO] 后台启动 %JAR_FILE%（端口 %SERVER_PORT%），日志输出到 logs\start.log
+start "RuoYi-{{MODULE_PREFIX}}" /B java %JAVA_OPTS% -jar "%JAR_PATH%" > logs\start.log 2>&1
+
+echo [OK] 已启动
+echo      查看日志：type logs\start.log
+echo      停止服务：scripts\stop.bat
+endlocal

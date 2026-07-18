@@ -479,6 +479,45 @@ pub fn plan(
         });
     }
 
+    // Nginx 配置生成（可选，输出到 output_dir/nginx/）
+    if params.enable_nginx_config {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "生成 Nginx 反向代理配置（端口 {}，{}）",
+                params.server_port,
+                if params.use_https { "HTTPS" } else { "HTTP" }
+            ),
+            task_type: TaskType::GenerateNginxConfig,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec!["nginx/nginx.conf".into(), "nginx/README.md".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // 启动脚本生成（可选，输出到 output_dir/scripts/）
+    if params.enable_startup_scripts {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "生成启动/停止脚本（start/stop .sh + .bat）".into(),
+            task_type: TaskType::GenerateStartupScripts,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![
+                "scripts/start.sh".into(),
+                "scripts/stop.sh".into(),
+                "scripts/start.bat".into(),
+                "scripts/stop.bat".into(),
+            ],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 13. 执行后校验（始终）
     tasks.push(Task {
         id: next_id(&tasks),

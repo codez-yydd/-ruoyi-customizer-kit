@@ -157,6 +157,18 @@ export interface CustomizeParams {
   generator_table_prefix: string
   /** 是否升级 Vue3 模板 */
   generator_vue3: boolean
+  // ---- 部署：Nginx 配置 ----
+  /** 是否生成 Nginx 反向代理配置 */
+  enable_nginx_config: boolean
+  /** 后端服务端口（默认 8080） */
+  server_port: number
+  /** 对外域名（留空用 localhost） */
+  server_name: string
+  /** 是否启用 HTTPS（生成证书占位段） */
+  use_https: boolean
+  // ---- 部署：启动脚本 ----
+  /** 是否生成启动/停止脚本（.sh + .bat） */
+  enable_startup_scripts: boolean
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -183,6 +195,8 @@ export type TaskType =
   | 'CustomizeGeneratorConfig'
   | 'GenerateAiRules'
   | 'SplitFrontend'
+  | 'GenerateNginxConfig'
+  | 'GenerateStartupScripts'
   | 'ValidateProject'
   | 'GenerateReport'
 

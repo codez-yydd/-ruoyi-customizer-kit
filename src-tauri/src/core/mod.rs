@@ -13,6 +13,8 @@ pub mod sql_customize;
 pub mod frontend_split;
 pub mod oss;
 pub mod generator_config;
+pub mod nginx;
+pub mod scripts;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -56,6 +58,11 @@ fn default_oss_provider() -> String {
 /// serde 默认值辅助：JWT token 默认有效期 30 分钟
 fn default_jwt_expire() -> i32 {
     30
+}
+
+/// serde 默认值辅助：后端服务端口默认 8080
+fn default_server_port() -> i32 {
+    8080
 }
 
 /// 用户改造参数
@@ -212,6 +219,23 @@ pub struct CustomizeParams {
     /// 是否升级 Vue3 模板
     #[serde(default)]
     pub generator_vue3: bool,
+    // ---- 部署：Nginx 配置 ----
+    /// 是否生成 Nginx 反向代理配置（输出到 output_dir/nginx/）
+    #[serde(default)]
+    pub enable_nginx_config: bool,
+    /// 后端服务端口（Nginx 反代目标 + 启动脚本用，默认 8080）
+    #[serde(default = "default_server_port")]
+    pub server_port: i32,
+    /// 对外域名（留空则用 localhost）
+    #[serde(default)]
+    pub server_name: String,
+    /// 是否启用 HTTPS（生成证书占位段）
+    #[serde(default)]
+    pub use_https: bool,
+    // ---- 部署：启动脚本 ----
+    /// 是否生成启动/停止脚本（start.sh/stop.sh/start.bat/stop.bat）
+    #[serde(default)]
+    pub enable_startup_scripts: bool,
 }
 
 impl Default for CustomizeParams {
@@ -273,6 +297,11 @@ impl Default for CustomizeParams {
             generator_author: String::new(),
             generator_table_prefix: String::new(),
             generator_vue3: false,
+            enable_nginx_config: false,
+            server_port: 8080,
+            server_name: String::new(),
+            use_https: false,
+            enable_startup_scripts: false,
         }
     }
 }

@@ -1,0 +1,100 @@
+# {{PROJECT_NAME}} Nginx 反向代理配置
+# 由若依锻造台 RuoYi Forge 自动生成
+#
+# 部署说明：
+#   1. 将前端打包产物（dist/）放到 /var/www/{{FRONTEND_DIR}} 下
+#   2. 后端 jar 监听 {{SERVER_PORT}}（见 scripts/start.sh）
+#   3. 暴露的 web 端口为 80（HTTP）或 443（HTTPS）
+#
+# upstream：后端服务
+upstream backend {
+    server 127.0.0.1:{{SERVER_PORT}};
+}
+
+# gzip 压缩
+gzip on;
+gzip_min_length 1k;
+gzip_comp_level 4;
+gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+gzip_vary on;
+gzip_disable "msie6";
+
+server {
+    listen       80;
+    server_name  {{SERVER_NAME}};
+
+    # 前端静态资源
+    root   /var/www/{{FRONTEND_DIR}};
+    index  index.html index.htm;
+
+    # 前端 SPA 路由回退（Vue Router history 模式）
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 静态资源缓存
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # 后端接口反代（若依默认前缀 /prod-api）
+    location /prod-api/ {
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        # 若依接口路径前缀需与后端 server.servlet.context-path 对齐
+        proxy_pass http://backend/;
+    }
+
+    # 上传文件大小限制（按需调整）
+    client_max_body_size 100m;
+
+    # 单页入口
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+}
+{{#HTTPS}}
+# ---------------- HTTPS 配置（占位，需替换为正式证书）----------------
+# 1. 将证书放到 /etc/nginx/cert/ 下：
+#    - {{MODULE_PREFIX}}.pem（或 fullchain.pem）
+#    - {{MODULE_PREFIX}}.key（私钥）
+# 2. 取消下面 server 块的注释，HTTP server 块改为 301 强制跳转
+#
+# server {
+#     listen       443 ssl http2;
+#     server_name  {{SERVER_NAME}};
+#
+#     ssl_certificate     /etc/nginx/cert/{{MODULE_PREFIX}}.pem;
+#     ssl_certificate_key /etc/nginx/cert/{{MODULE_PREFIX}}.key;
+#     ssl_protocols       TLSv1.2 TLSv1.3;
+#     ssl_ciphers         HIGH:!aNULL:!MD5;
+#     ssl_session_cache   shared:SSL:10m;
+#     ssl_session_timeout 10m;
+#
+#     root   /var/www/{{FRONTEND_DIR}};
+#     index  index.html;
+#
+#     location / {
+#         try_files $uri $uri/ /index.html;
+#     }
+#     location /prod-api/ {
+#         proxy_set_header Host $http_host;
+#         proxy_set_header X-Real-IP $remote_addr;
+#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+#         proxy_set_header X-Forwarded-Proto $scheme;
+#         proxy_pass http://backend/;
+#     }
+# }
+#
+# # HTTP 强制跳转 HTTPS
+# server {
+#     listen 80;
+#     server_name {{SERVER_NAME}};
+#     return 301 https://$host$request_uri;
+# }
+{{/HTTPS}}

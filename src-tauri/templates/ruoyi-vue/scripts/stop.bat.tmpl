@@ -1,0 +1,25 @@
+@echo off
+REM {{PROJECT_NAME}} 后端服务停止脚本（Windows）
+REM 由若依锻造台 RuoYi Forge 自动生成
+REM
+REM 用法：双击或 scripts\stop.bat
+REM 按端口查进程并结束（Windows 版无 PID 文件机制）。
+
+setlocal
+
+set SERVER_PORT={{SERVER_PORT}}
+
+echo [INFO] 查找占用端口 %SERVER_PORT% 的进程
+set FOUND=0
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":%SERVER_PORT% " ^| findstr "LISTENING"') do (
+  echo [INFO] 停止进程 PID=%%a
+  taskkill /PID %%a /F >nul 2>&1
+  set FOUND=1
+)
+
+if "%FOUND%"=="0" (
+  echo [INFO] 端口 %SERVER_PORT% 无进程在监听
+) else (
+  echo [OK] 已停止
+)
+endlocal
