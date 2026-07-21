@@ -135,6 +135,11 @@ fn colored_console_injected_in_full_pipeline() {
         console_block.contains("${console.pattern}"),
         "ConsoleAppender 应引用 ${{console.pattern}}"
     );
+    // ConsoleAppender encoder 应注入 UTF-8 charset
+    assert!(
+        console_block.contains("<charset>UTF-8</charset>"),
+        "ConsoleAppender encoder 应注入 UTF-8 charset"
+    );
     // FileAppender 保持纯文本（不应含 ${console.pattern}）
     let file_block = logback
         .split("RollingFileAppender")

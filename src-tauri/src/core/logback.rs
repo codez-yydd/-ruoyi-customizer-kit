@@ -6,9 +6,10 @@
 // 改造点（幂等）：
 //   1. 在 <configuration> 标签后插入两个 property：
 //        - log.pattern      文件日志（纯文本，无 ANSI 码，避免污染日志文件）
-//        - console.pattern  控制台日志（%highlight 整行着色）
+//        - console.pattern  控制台日志（%highlight 整行着色，%n 在 highlight 内部）
 //   2. 将 ConsoleAppender 块内的 <pattern>...</pattern> 替换为
-//      <pattern>${console.pattern}</pattern>
+//      <pattern>${console.pattern}</pattern>，并确保 <encoder> 内有
+//      <charset>UTF-8</charset>（无则插入，避免控制台中文乱码）
 //
 // 幂等判定：文件已含 console.pattern 字样则整体跳过（无论 property 还是 ${console.pattern}
 // 引用），保护用户已自定义的配置，且避免重复注入。
@@ -33,7 +34,11 @@ pub struct ColoredConsoleOutcome {
 const LOG_PATTERN_VALUE: &str = r#"%d{HH:mm:ss.SSS} [%thread] %-5level %logger{20} - [%method,%line] - %msg%n"#;
 
 /// 注入的 console.pattern property（控制台，%highlight 整行着色）
-const CONSOLE_PATTERN_VALUE: &str = r#"%highlight(%d{HH:mm:ss.SSS} [%thread] %-5level %logger{20} - [%method,%line] - %msg)%n"#;
+///
+/// 注意：%n 必须写在 %highlight(...) **内部**（...%msg%n）。
+/// 若放在外部（...%msg)%n），logback 会把 %n 当成字面量字符串打出，
+/// 导致日志不换行、全部粘成一行。
+const CONSOLE_PATTERN_VALUE: &str = r#"%highlight(%d{HH:mm:ss.SSS} [%thread] %-5level %logger{20} - [%method,%line] - %msg%n)"#;
 
 /// 扫描全项目 logback*.xml，注入彩色控制台配置。
 ///
@@ -129,7 +134,8 @@ fn insert_after_configuration(content: &str, insertion: &str) -> Option<String> 
 ///
 /// 匹配 `<appender name="xxx" class="...ConsoleAppender..."> ... </appender>` 整块，
 /// 替换块内所有 <pattern>...</pattern>（ConsoleAppender 通常只有一个 encoder/pattern，
-/// 但若有多个则全部统一为 ${console.pattern}，保持一致）。
+/// 但若有多个则全部统一为 ${console.pattern}，保持一致），并确保 <encoder> 内有
+/// <charset>UTF-8</charset>（无则插入）。
 fn rewrite_console_pattern(content: &str) -> String {
     // 匹配整个 ConsoleAppender 块（非贪婪到 </appender>）
     let block_re = match regex::Regex::new(r#"(?s)(<appender\b[^>]*class="[^"]*ConsoleAppender"[^>]*>)(.*?)(</appender>)"#) {
@@ -137,23 +143,32 @@ fn rewrite_console_pattern(content: &str) -> String {
         Err(_) => return content.to_string(),
     };
     // 匹配块内的 <pattern>...</pattern>（单行或多行，非贪婪）
-    let pat_re = match regex::Regex::new(r#"(?s)<pattern\b[^>]*>.*?</pattern>"#) {
+    let pat_re = regex::Regex::new(r#"(?s)<pattern\b[^>]*>.*?</pattern>"#);
+    // 匹配 <encoder ...> 开标签（兼容带属性的 encoder）
+    let encoder_re = match regex::Regex::new(r#"<encoder\b[^>]*>"#) {
         Ok(r) => r,
         Err(_) => return content.to_string(),
     };
     block_re
         .replace_all(content, |caps: &regex::Captures| {
             let head = &caps[1];
-            let body = &caps[2];
+            let mut body = caps[2].to_string();
             let tail = &caps[3];
-            if pat_re.is_match(body) {
-                // 替换串里的 $ 在 regex crate 中是捕获组引用前缀，必须转义为 $$
-                let new_body = pat_re.replace_all(body, "<pattern>$${console.pattern}</pattern>");
-                format!("{head}{new_body}{tail}")
-            } else {
-                // ConsoleAppender 块内无 <pattern> 节点：不强行插入，保持原样
-                format!("{head}{body}{tail}")
+
+            // 1. pattern 改为 ${console.pattern}
+            if let Ok(re) = &pat_re {
+                if re.is_match(&body) {
+                    // 替换串里的 $ 在 regex crate 中是捕获组引用前缀，必须转义为 $$
+                    body = re.replace_all(&body, "<pattern>$${console.pattern}</pattern>").into_owned();
+                }
             }
+            // 2. 确保 <encoder> 内有 <charset>UTF-8</charset>（幂等：已有则不重复加）
+            if !body.contains("<charset>") {
+                if let Some(m) = encoder_re.find(&body) {
+                    body.insert_str(m.end(), "\n\t\t\t\t<charset>UTF-8</charset>");
+                }
+            }
+            format!("{head}{body}{tail}")
         })
         .into_owned()
 }
@@ -303,6 +318,60 @@ mod tests {
         let console_block = out.split("ConsoleAppender").nth(1).unwrap().split("</appender>").next().unwrap();
         let ref_count = console_block.matches("${console.pattern}").count();
         assert_eq!(ref_count, 2, "块内两个 pattern 都应被改为 ${{console.pattern}}");
+    }
+
+    #[test]
+    fn console_pattern_value_keeps_newline_inside_highlight() {
+        // 回归测试：%n 必须在 %highlight(...) 内部。
+        // 之前 bug：写成 %highlight(...%msg)%n，%n 在括号外被当字面量打出，日志不换行。
+        assert!(
+            CONSOLE_PATTERN_VALUE.contains("%msg%n)"),
+            "console.pattern 应为 ...%msg%n)，%n 在 highlight 内部，实际：{}",
+            CONSOLE_PATTERN_VALUE
+        );
+        assert!(
+            !CONSOLE_PATTERN_VALUE.contains(")%n"),
+            "console.pattern 不应是 ...%msg)%n（%n 在 highlight 外会导致日志不换行），实际：{}",
+            CONSOLE_PATTERN_VALUE
+        );
+    }
+
+    #[test]
+    fn inject_adds_utf8_charset_to_console_encoder() {
+        // ConsoleAppender 的 <encoder> 无 <charset>：应注入 UTF-8 charset
+        let xml = r#"<configuration>
+    <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%msg%n</pattern>
+        </encoder>
+    </appender>
+</configuration>"#;
+        let out = transform_one(xml).expect("应能改造");
+        let console_block = out.split("ConsoleAppender").nth(1).unwrap().split("</appender>").next().unwrap();
+        assert!(
+            console_block.contains("<charset>UTF-8</charset>"),
+            "ConsoleAppender encoder 应注入 UTF-8 charset"
+        );
+    }
+
+    #[test]
+    fn inject_does_not_duplicate_existing_charset() {
+        // ConsoleAppender 已有 <charset>：不重复加（幂等）
+        let xml = r#"<configuration>
+    <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%msg%n</pattern>
+            <charset>GBK</charset>
+        </encoder>
+    </appender>
+</configuration>"#;
+        let out = transform_one(xml).expect("应能改造");
+        let console_block = out.split("ConsoleAppender").nth(1).unwrap().split("</appender>").next().unwrap();
+        // 用户自定义的 GBK 应保留，不强制覆盖为 UTF-8，也不重复加
+        assert!(console_block.contains("<charset>GBK</charset>"), "已有 charset 应保留");
+        assert!(!console_block.contains("<charset>UTF-8</charset>"), "已有 charset 不应再插入 UTF-8");
+        let charset_count = console_block.matches("<charset>").count();
+        assert_eq!(charset_count, 1, "charset 不应重复");
     }
 
     #[test]
