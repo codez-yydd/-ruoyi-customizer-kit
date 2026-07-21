@@ -119,6 +119,8 @@ where
         TaskType::SplitFrontend => do_split_frontend(root, params, &mut r, log),
         TaskType::GenerateNginxConfig => do_generate_nginx_config(root, params, &mut r, log),
         TaskType::GenerateStartupScripts => do_generate_startup_scripts(root, params, &mut r, log),
+        TaskType::GenerateDevScripts => do_generate_dev_scripts(root, params, &mut r, log),
+        TaskType::UpdateAdminPomFinalName => do_update_admin_pom_final_name(root, params, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
             r.status = TaskStatus::Skipped;
             r.message = "校验/报告在执行后单独触发".into();
@@ -895,6 +897,38 @@ where
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12n. 生成开发脚本（run.sh / run.bat）到项目根目录
+/// 与部署脚本互补：开发脚本面向 `mvn install + spring-boot:run`，部署脚本面向打包后的 jar。
+///
+/// 输出到 root（即改造后的项目根，真实流程下 root == output_dir），与模块改名、ai_rules 等
+/// 改造类任务同源；而非走 params.output_dir（那是 nginx/scripts 部署产物的输出位）。
+fn do_generate_dev_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::scripts::generate_dev_scripts(root, params, &|msg| log(msg))?;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12o. admin pom finalName 改造：打包产物固定为 {prefix}-admin.jar
+/// 与现有部署脚本（start.sh 的 {prefix}-admin*.jar glob）配套，确保 jar 名稳定可匹配。
+fn do_update_admin_pom_final_name<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modified = crate::core::scripts::set_admin_pom_final_name(root, params, &|msg| log(msg))?;
+    if modified {
+        r.modified_files = 1;
+    } else {
+        r.message = "无 admin 模块或 finalName 已存在，跳过".into();
     }
     Ok(())
 }

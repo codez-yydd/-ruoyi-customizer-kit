@@ -1,0 +1,21 @@
+@echo off
+chcp 65001 >nul
+REM {{PROJECT_NAME}} 开发脚本（构建 + 启动），由若依锻造台自动生成
+REM 用法：双击或 run.bat
+
+set JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8
+
+echo ========== Maven install ==========
+call mvn clean install -DskipTests
+
+if %errorlevel% neq 0 (
+    echo Maven install failed!
+    pause
+    exit /b 1
+)
+
+echo ========== Start ==========
+
+cd {{MODULE_PREFIX}}-admin
+
+call mvn spring-boot:run

@@ -31,6 +31,8 @@ pub enum TaskType {
     SplitFrontend,
     GenerateNginxConfig,
     GenerateStartupScripts,
+    GenerateDevScripts,
+    UpdateAdminPomFinalName,
     ValidateProject,
     GenerateReport,
 }

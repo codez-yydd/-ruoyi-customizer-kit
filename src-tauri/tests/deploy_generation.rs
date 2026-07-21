@@ -255,5 +255,90 @@ fn deploy_tasks_run_in_full_pipeline_and_write_to_output_dir() {
     let start_sh = fs::read_to_string(output_dir.join("scripts/start.sh")).unwrap();
     assert!(start_sh.contains("9090"), "start.sh 应含端口 9090");
     assert!(start_sh.contains("demo-admin"), "start.sh 应含模块前缀 demo");
+
+    // 开发脚本（run.sh / run.bat）写到改造根 root（真实流程 root == output_dir）
+    assert!(root.join("run.sh").is_file(), "run.sh 应写到项目根目录");
+    assert!(root.join("run.bat").is_file(), "run.bat 应写到项目根目录");
+    let run_sh = fs::read_to_string(root.join("run.sh")).unwrap();
+    assert!(!run_sh.contains("{{"), "run.sh 不应残留占位符");
+    assert!(run_sh.contains("cd demo-admin"), "run.sh 应含 cd demo-admin");
+    assert!(run_sh.contains("mvn clean install"), "run.sh 应含 mvn clean install");
+    assert!(run_sh.contains("mvn spring-boot:run"), "run.sh 应含 mvn spring-boot:run");
+
+    // admin pom finalName 应被设置（finalName 改造作用于改造根 root，与模块改名同类）
+    let admin_pom_path = root.join("demo-admin/pom.xml");
+    assert!(admin_pom_path.is_file(), "demo-admin/pom.xml 应存在（改造后模块在 root）");
+    let admin_pom = fs::read_to_string(&admin_pom_path).unwrap();
+    assert!(
+        admin_pom.contains("<finalName>demo-admin</finalName>"),
+        "admin pom 应含 <finalName>demo-admin</finalName>，实际：{}",
+        admin_pom
+    );
+}
+
+#[test]
+fn dev_scripts_and_final_name_always_planned_even_without_deploy_flags() {
+    // 即使不开启 nginx / 启动脚本，run.sh/run.bat 与 finalName 也应被规划（始终生成）
+    let src_dir = tempfile::tempdir().unwrap();
+    let out_dir = tempfile::tempdir().unwrap();
+    let root = src_dir.path();
+    build_minimal_ruoyi(root);
+    let template = load_vue_template();
+
+    let mut params = CustomizeParams::default();
+    params.original_package = "com.ruoyi".into();
+    params.new_package = "com.example.demo".into();
+    params.original_module_prefix = "ruoyi".into();
+    params.new_module_prefix = "demo".into();
+    params.original_project_name = "ruoyi".into();
+    params.new_project_name = "demo".into();
+    params.frontend_title = "示例系统".into();
+    params.output_dir = out_dir.path().to_string_lossy().to_string();
+    params.enable_config_rewrite = false;
+    params.enable_logback_rewrite = false;
+    params.enable_mybatis_plus = false;
+    params.enable_generator_mybatis_plus = false;
+    params.enable_long_id_json_string = false;
+    params.enable_clear_home = false;
+    params.enable_remove_github = false;
+    params.enable_remove_docs = false;
+    params.enable_ai_rules = false;
+    params.enable_report = false;
+    // 关键：不开启 nginx / 启动脚本
+    params.enable_nginx_config = false;
+    params.enable_startup_scripts = false;
+
+    let info = core::detector::detect(root, &template);
+    assert!(info.confidence.recognized);
+    let tasks = core::planner::plan(&info, &params, &template);
+    let types: Vec<_> = tasks.iter().map(|t| format!("{:?}", t.task_type)).collect();
+    assert!(types.iter().any(|t| t.contains("GenerateDevScripts")), "应规划开发脚本：{:?}", types);
+    assert!(types.iter().any(|t| t.contains("UpdateAdminPomFinalName")), "应规划 finalName：{:?}", types);
+
+    let _results = core::executor::execute_all(root, &info, &tasks, &params, &template, |_| {});
+
+    // 即使不开启部署，run.sh/run.bat 也应在改造根 root（开发脚本与改造类任务同源）
+    assert!(root.join("run.sh").is_file());
+    assert!(root.join("run.bat").is_file());
+    // admin pom finalName 改造也作用于 root（与模块改名同类，不走 output_dir）
+    let admin_pom = fs::read_to_string(root.join("demo-admin/pom.xml")).unwrap();
+    assert!(admin_pom.contains("<finalName>demo-admin</finalName>"));
+}
+
+#[test]
+fn update_admin_pom_final_name_skips_when_already_present() {
+    // 幂等：admin pom 已含 finalName 时应跳过，不重复注入
+    let tmp = tempfile::tempdir().unwrap();
+    let admin = tmp.path().join("demo-admin");
+    fs::create_dir_all(&admin).unwrap();
+    let original = "<project>\n  <build>\n    <finalName>custom-name</finalName>\n  </build>\n</project>";
+    fs::write(admin.join("pom.xml"), original).unwrap();
+
+    let mut params = CustomizeParams::default();
+    params.new_module_prefix = "demo".into();
+    let r = ruoyi_forge_lib::core::scripts::set_admin_pom_final_name(tmp.path(), &params, &|_| {}).unwrap();
+    assert!(!r, "已有 finalName 应跳过返回 false");
+    // 内容不变
+    assert_eq!(fs::read_to_string(admin.join("pom.xml")).unwrap(), original);
 }
 

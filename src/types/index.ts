@@ -197,6 +197,8 @@ export type TaskType =
   | 'SplitFrontend'
   | 'GenerateNginxConfig'
   | 'GenerateStartupScripts'
+  | 'GenerateDevScripts'
+  | 'UpdateAdminPomFinalName'
   | 'ValidateProject'
   | 'GenerateReport'
 

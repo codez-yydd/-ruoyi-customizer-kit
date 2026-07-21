@@ -518,6 +518,38 @@ pub fn plan(
         });
     }
 
+    // 开发脚本生成（始终，输出到 output_dir 根目录）：mvn install + spring-boot:run 一键启动
+    tasks.push(Task {
+        id: next_id(&tasks),
+        name: format!(
+            "生成开发脚本（run.sh / run.bat，cd {}-admin）",
+            params.new_module_prefix
+        ),
+        task_type: TaskType::GenerateDevScripts,
+        risk_level: RiskLevel::Low,
+        affected_files: vec![],
+        affected_dirs: vec![],
+        created_files: vec!["run.sh".into(), "run.bat".into()],
+        status: TaskStatus::Pending,
+        error_message: String::new(),
+    });
+
+    // admin pom 打包名改造（始终）：finalName → {prefix}-admin（产出 {prefix}-admin.jar）
+    tasks.push(Task {
+        id: next_id(&tasks),
+        name: format!(
+            "设置 admin 打包名 → {}-admin.jar",
+            params.new_module_prefix
+        ),
+        task_type: TaskType::UpdateAdminPomFinalName,
+        risk_level: RiskLevel::Low,
+        affected_files: vec![format!("{}-admin/pom.xml", params.new_module_prefix)],
+        affected_dirs: vec![],
+        created_files: vec![],
+        status: TaskStatus::Pending,
+        error_message: String::new(),
+    });
+
     // 13. 执行后校验（始终）
     tasks.push(Task {
         id: next_id(&tasks),

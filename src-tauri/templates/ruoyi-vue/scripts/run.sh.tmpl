@@ -1,0 +1,21 @@
+#!/bin/bash
+# {{PROJECT_NAME}} 开发脚本（构建 + 启动），由若依锻造台自动生成
+# 用法：./run.sh
+
+# 强制 UTF-8，避免控制台 / JSON 中文乱码
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8"
+
+echo "========== Maven install =========="
+mvn clean install -DskipTests
+
+if [ $? -ne 0 ]; then
+    echo "Maven install failed!"
+    exit 1
+fi
+
+echo "========== Start =========="
+cd {{MODULE_PREFIX}}-admin
+
+mvn spring-boot:run
