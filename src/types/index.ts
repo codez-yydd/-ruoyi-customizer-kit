@@ -180,6 +180,7 @@ export type TaskType =
   | 'UpdateFrontendTitle'
   | 'RewriteApplicationProfiles'
   | 'RewriteLogbackPath'
+  | 'InjectColoredConsolePattern'
   | 'AddMybatisPlusDependency'
   | 'AddMybatisPlusConfig'
   | 'UpdateGeneratorTemplatesForMybatisPlus'

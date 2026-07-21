@@ -14,6 +14,7 @@ pub enum TaskType {
     UpdateFrontendTitle,
     RewriteApplicationProfiles,
     RewriteLogbackPath,
+    InjectColoredConsolePattern,
     AddMybatisPlusDependency,
     AddMybatisPlusConfig,
     UpdateGeneratorTemplatesForMybatisPlus,

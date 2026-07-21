@@ -15,6 +15,7 @@ pub mod oss;
 pub mod generator_config;
 pub mod nginx;
 pub mod scripts;
+pub mod logback;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;

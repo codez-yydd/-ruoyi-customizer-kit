@@ -102,6 +102,7 @@ where
         TaskType::UpdateFrontendTitle => do_update_frontend(root, params, template, &engine, &mut r, log),
         TaskType::RewriteApplicationProfiles => do_rewrite_config(root, params, template, &mut r, log),
         TaskType::RewriteLogbackPath => do_rewrite_logback(root, &engine, &mut r, log),
+        TaskType::InjectColoredConsolePattern => do_inject_colored_console(root, &engine, &mut r, log),
         TaskType::AddMybatisPlusDependency => do_add_mp_dependency(root, info, &mut r, log),
         TaskType::AddMybatisPlusConfig => do_add_mp_config(root, params, info, &mut r, log),
         TaskType::UpdateGeneratorTemplatesForMybatisPlus => do_adapt_generator(root, params, info, &mut r, log),
@@ -479,6 +480,23 @@ where
             r.modified_files += 1;
             log(&format!("logback 修正：{}", path.display()));
         }
+    }
+    Ok(())
+}
+
+/// 7b. logback 彩色控制台日志注入（默认开启，无条件）
+/// 在 logback*.xml 中插入 log.pattern / console.pattern property，并让 ConsoleAppender
+/// 引用 ${console.pattern}（%highlight 整行着色）。文件 appender 不动，保持纯文本。
+fn do_inject_colored_console<F>(root: &Path, engine: &ReplaceEngine, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::logback::inject_colored_console(root, engine, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    if outcome.modified_files == 0 {
+        r.message = "无 logback 文件或已含彩色配置，跳过".into();
+    } else if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
     }
     Ok(())
 }

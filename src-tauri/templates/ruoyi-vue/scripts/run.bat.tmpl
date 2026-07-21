@@ -18,4 +18,5 @@ echo ========== Start ==========
 
 cd {{MODULE_PREFIX}}-admin
 
-call mvn spring-boot:run
+REM 强制 ANSI 彩色日志（Cursor / VS Code 集成终端可识别）
+call mvn spring-boot:run -Dspring-boot.run.jvmArguments="-Dspring.output.ansi.enabled=ALWAYS"

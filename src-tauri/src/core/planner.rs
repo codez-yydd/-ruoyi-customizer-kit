@@ -184,6 +184,22 @@ pub fn plan(
         });
     }
 
+    // 7b. logback 彩色控制台日志注入（默认开启，无条件）：仅当存在 logback 文件时规划。
+    // 与 log.path 修正互补：路径修正依赖开关，彩色增强是默认体验。
+    if !info.logback_files.is_empty() {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "注入 logback 彩色控制台日志（%highlight + 文件纯文本）".into(),
+            task_type: TaskType::InjectColoredConsolePattern,
+            risk_level: RiskLevel::Low,
+            affected_files: info.logback_files.clone(),
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 8/9. MyBatis-Plus 依赖 + 配置类（可选）
     if params.enable_mybatis_plus {
         tasks.push(Task {
