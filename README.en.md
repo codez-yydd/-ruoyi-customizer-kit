@@ -4,7 +4,7 @@
 
 A desktop tool for rapid initialization and customization of [RuoYi-Vue](https://gitee.com/y_project/RuoYi-Vue) projects. Automates package renaming, module restructuring, config file refactoring, MyBatis-Plus integration, UniApp mini-program scaffolding, and more — so you don't have to do it all by hand.
 
-> This project is co-developed with [GLM 5.2](https://zhipuai.cn) and [Qwen 3.7 Plus](https://qwen.ai).
+> This project is co-developed with [GLM 5.2](https://zhipuai.cn).
 
 ## Features
 
@@ -19,6 +19,38 @@ A desktop tool for rapid initialization and customization of [RuoYi-Vue](https:/
 - **Execution Preview** — Preview task list, impact scope, and high-risk items before executing
 - **Residue Scanning** — Post-execution validation for leftover old package/module names
 - **Execution Report** — Generates a Markdown transformation report
+
+## Screenshots
+
+A wizard-style workflow — customize a project in five steps: select project → auto-detect → configure → preview → execute.
+
+### Home · Select Project
+
+![Home](docs/img/01-home.png)
+
+### Detect · Auto Recognition
+
+![Detect](docs/img/02-detect.png)
+
+### Configure · Package / Module / Frontend
+
+![Configure - Basic](docs/img/03-config-basic.png)
+
+### Configure · Integration Switches
+
+![Configure - Features](docs/img/04-config-features.png)
+
+### Configure · OSS / JWT / Deploy
+
+![Configure - Deploy](docs/img/05-config-deploy.png)
+
+### Preview · Task List
+
+![Preview](docs/img/06-preview.png)
+
+### Execute · Result Overview
+
+![Execute](docs/img/07-execute.png)
 
 ## Tech Stack
 

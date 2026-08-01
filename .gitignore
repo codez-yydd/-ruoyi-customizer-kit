@@ -37,4 +37,7 @@ components.d.ts
 # 应用运行产物
 .ry-forge-report/
 .ry-customizer-backup/
-/docs/
+# docs/ 默认忽略，仅放行 README 引用的截图（img/）
+# 注意：git 不允许重新包含已被忽略目录的子目录，故先放行 docs/ 再忽略其余
+
+

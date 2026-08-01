@@ -4,7 +4,7 @@
 
 若依（RuoYi-Vue）新项目的快速初始化定制工具。一键完成包名修改、模块重命名、配置文件重构、MyBatis-Plus 集成、UniApp 小程序骨架生成等常见定制操作，告别重复劳动。
 
-> 本项目基于 [GLM 5.2](https://zhipuai.cn) 和 [Qwen 3.7 Plus](https://qwen.ai) 协同开发。
+> 本项目基于 [GLM 5.2](https://zhipuai.cn) 协同开发。
 
 ---
 
@@ -21,6 +21,38 @@
 - **执行预览** — 改造前展示任务清单、影响范围、高风险项
 - **残留扫描** — 执行后自动校验旧包名/旧模块名残留
 - **执行报告** — 生成 Markdown 格式改造报告
+
+## 界面预览
+
+向导式操作流程，五步完成项目定制：选择项目 → 自动识别 → 参数配置 → 执行预览 → 一键改造。
+
+### 首页 · 选择项目
+
+![首页](docs/img/01-home.png)
+
+### 项目识别 · 自动检测
+
+![项目识别](docs/img/02-detect.png)
+
+### 参数配置 · 包名 / 模块 / 前端
+
+![参数配置-包名模块](docs/img/03-config-basic.png)
+
+### 参数配置 · 集成开关
+
+![参数配置-集成开关](docs/img/04-config-features.png)
+
+### 参数配置 · OSS / JWT / 部署
+
+![参数配置-部署](docs/img/05-config-deploy.png)
+
+### 执行预览 · 任务清单
+
+![执行预览](docs/img/06-preview.png)
+
+### 执行改造 · 结果总览
+
+![执行改造](docs/img/07-execute.png)
 
 ## 技术栈
 
