@@ -60,7 +60,9 @@ export default defineConfig(async () => ({
       'element-plus/es/components/tag/style/css',
       // 服务式 API（ElMessage/ElMessageBox）的样式
       'element-plus/es/components/message/style/css',
-      'element-plus/es/components/message-box/style/css'
+      'element-plus/es/components/message-box/style/css',
+      // 侧边栏菜单图标库（页面启动即加载，预构建避免运行时新依赖 full-reload）
+      '@element-plus/icons-vue'
     ]
   },
   server: {

@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
 import * as api from '@/api'
+import { View } from '@element-plus/icons-vue'
 import type { PreviewResponse } from '@/types'
 
 const router = useRouter()
@@ -56,9 +57,17 @@ function goExecute() {
 
 <template>
   <div class="preview">
-    <h2 class="page-title">执行预览</h2>
+    <div class="page-header">
+      <div class="page-header__icon">
+        <el-icon :size="20"><View /></el-icon>
+      </div>
+      <div>
+        <h2 class="page-header__title">执行预览</h2>
+        <div class="page-header__subtitle">检查任务清单与风险后确认执行</div>
+      </div>
+    </div>
 
-    <div v-loading="loading">
+    <div v-loading="loading" class="preview__body">
       <div v-if="preview" class="rf-card">
         <h3 class="section-title">输出目录</h3>
         <div class="output-info">
@@ -135,6 +144,12 @@ function goExecute() {
 </template>
 
 <style scoped>
+.preview__body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .output-info {
   font-size: 13px;
   display: flex;

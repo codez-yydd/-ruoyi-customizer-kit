@@ -32,7 +32,10 @@ const levelClass: Record<string, string> = {
 <template>
   <div class="log-panel">
     <div class="log-panel__header">
-      <span class="log-panel__title">执行日志</span>
+      <span class="log-panel__title">
+        <span class="log-panel__dot"></span>
+        执行日志
+      </span>
       <el-button size="small" text @click="store.clearLogs()">清空</el-button>
     </div>
     <div ref="bodyRef" class="log-panel__body">
@@ -66,9 +69,31 @@ const levelClass: Record<string, string> = {
 }
 
 .log-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: #e0e0e0;
   font-size: 13px;
   font-weight: 600;
+}
+
+.log-panel__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ec9b0;
+  box-shadow: 0 0 5px rgba(78, 201, 176, 0.6);
+  animation: log-pulse 2s ease-in-out infinite;
+}
+
+@keyframes log-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 .log-panel__body {

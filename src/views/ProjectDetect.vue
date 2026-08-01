@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
 import * as api from '@/api'
+import { Search } from '@element-plus/icons-vue'
 import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
@@ -38,7 +39,15 @@ function goConfig() {
 
 <template>
   <div class="detect">
-    <h2 class="page-title">项目识别</h2>
+    <div class="page-header">
+      <div class="page-header__icon">
+        <el-icon :size="20"><Search /></el-icon>
+      </div>
+      <div>
+        <h2 class="page-header__title">项目识别</h2>
+        <div class="page-header__subtitle">查看识别结果与置信度</div>
+      </div>
+    </div>
 
     <!-- 未选择目录 -->
     <div v-if="!rootPath" class="rf-card">
@@ -178,7 +187,6 @@ function goConfig() {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 16px;
-  margin-top: 16px;
 }
 .result-head {
   display: flex;

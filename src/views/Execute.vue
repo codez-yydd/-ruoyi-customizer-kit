@@ -7,6 +7,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectStore } from '@/stores/project'
 import { useProfilesStore } from '@/stores/profiles'
 import * as api from '@/api'
+import { Tools } from '@element-plus/icons-vue'
 import type { ExecuteResponse } from '@/types'
 import LogPanel from '@/components/LogPanel.vue'
 
@@ -105,7 +106,15 @@ const statusLabel = (s: string) => {
 
 <template>
   <div class="execute">
-    <h2 class="page-title">执行改造</h2>
+    <div class="page-header">
+      <div class="page-header__icon">
+        <el-icon :size="20"><Tools /></el-icon>
+      </div>
+      <div>
+        <h2 class="page-header__title">执行改造</h2>
+        <div class="page-header__subtitle">执行定制任务并查看结果</div>
+      </div>
+    </div>
 
     <div v-if="running" class="rf-card">
       <el-alert type="info" :closable="false" title="正在执行改造，请勿关闭窗口..." show-icon />

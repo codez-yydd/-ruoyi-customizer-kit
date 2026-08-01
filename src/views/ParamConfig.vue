@@ -14,6 +14,7 @@ import 'element-plus/es/components/message-box/style/css'
 import { useProjectStore } from '@/stores/project'
 import { useProfilesStore } from '@/stores/profiles'
 import type { ProfileEntry } from '@/stores/profiles'
+import { Setting } from '@element-plus/icons-vue'
 import { pickSaveDirectory, pickSaveJsonFile, pickOpenJsonFile } from '@/api/dialog'
 import { saveConfigJson, loadConfigJson } from '@/api'
 import type { CustomizeParams } from '@/types'
@@ -252,7 +253,15 @@ function generateRandomSecret(): string {
 
 <template>
   <div class="param-config">
-    <h2 class="page-title">参数配置</h2>
+    <div class="page-header">
+      <div class="page-header__icon">
+        <el-icon :size="20"><Setting /></el-icon>
+      </div>
+      <div>
+        <h2 class="page-header__title">参数配置</h2>
+        <div class="page-header__subtitle">配置改造参数与输出目录</div>
+      </div>
+    </div>
 
     <div class="toolbar">
       <el-button size="small" @click="importConfig">导入配置</el-button>
@@ -396,38 +405,42 @@ function generateRandomSecret(): string {
           </div>
         </div>
 
-        <!-- 安全加固详情 -->
-        <div v-if="form.enable_security" class="uniapp-panel">
-          <div class="uniapp-grid">
-            <el-form-item label="admin 新密码">
-              <el-input v-model="form.admin_password" show-password placeholder="留空则不修改 admin 密码" />
+        <!-- 安全加固 / SQL 定制详情（共用 admin 密码，避免重复输入） -->
+        <div v-if="form.enable_security || form.enable_sql_customize" class="detail-panel">
+          <div class="detail-grid">
+            <el-form-item
+              v-if="form.enable_security || form.enable_sql_customize"
+              label="admin 密码"
+            >
+              <el-input v-model="form.admin_password" show-password placeholder="留空则不修改" />
+              <span class="inline-hint muted">安全加固与 SQL 定制共用</span>
             </el-form-item>
-            <el-form-item label="清除演示账号">
+            <el-form-item v-if="form.enable_sql_customize" label="新数据库名">
+              <el-input
+                v-model="form.db_name"
+                :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`"
+              />
+            </el-form-item>
+            <el-form-item v-if="form.enable_security" label="清除演示账号">
               <el-switch v-model="form.clean_demo_users" />
               <span class="inline-hint muted">删除 ry / ryadmin 等演示账号 SQL</span>
             </el-form-item>
-          </div>
-          <div class="hint muted" style="margin-left:0;margin-top:-4px">
-            执行后新密码会明文回显到执行报告，便于查看；关闭注册、关闭 demo 模式将自动处理。
-          </div>
-        </div>
-
-        <!-- SQL 定制详情 -->
-        <div v-if="form.enable_sql_customize" class="uniapp-panel">
-          <div class="uniapp-grid">
-            <el-form-item label="新数据库名">
-              <el-input v-model="form.db_name" :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`" />
-            </el-form-item>
-            <el-form-item label="清除 quartz 数据">
+            <el-form-item v-if="form.enable_sql_customize" label="清除 quartz 数据">
               <el-switch v-model="form.clean_quartz" />
               <span class="inline-hint muted">删除 QRTZ_* 表和数据</span>
             </el-form-item>
-            <el-form-item label="admin 密码" class="notify-row">
-              <el-input v-model="form.admin_password" show-password placeholder="留空则不修改（与安全加固共用）" />
-            </el-form-item>
           </div>
-          <div class="hint muted" style="margin-left:0;margin-top:-4px">
-            自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+          <div class="detail-tip muted">
+            <template v-if="form.enable_security && form.enable_sql_customize">
+              安全加固：自动关闭注册与 demo 模式，新密码明文回显到执行报告；SQL 定制：自动匹配 ry_*.sql
+              脚本替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+            </template>
+            <template v-else-if="form.enable_security">
+              自动关闭注册与 demo 模式；执行后新密码会明文回显到执行报告，便于查看。
+            </template>
+            <template v-else>
+              自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+            </template>
           </div>
         </div>
 
@@ -463,7 +476,7 @@ function generateRandomSecret(): string {
             <div class="switch-item__hint muted">注入 SDK + 配置类 + 独立上传接口 /common/oss/upload</div>
           </div>
         </div>
-        <div v-if="form.enable_oss" class="uniapp-panel">
+        <div v-if="form.enable_oss" class="detail-panel">
           <el-form-item label="云厂商">
             <el-radio-group v-model="form.oss_provider">
               <el-radio value="aliyun">阿里云 OSS</el-radio>
@@ -472,7 +485,7 @@ function generateRandomSecret(): string {
               <el-radio value="qiniu">七牛云 Kodo</el-radio>
             </el-radio-group>
           </el-form-item>
-          <div class="uniapp-grid">
+          <div class="detail-grid">
             <el-form-item label="Endpoint">
               <el-input v-model="form.oss_endpoint" :placeholder="form.oss_provider === 'minio' ? 'http://localhost:9000' : '如 oss-cn-hangzhou.aliyuncs.com'" />
             </el-form-item>
@@ -489,7 +502,7 @@ function generateRandomSecret(): string {
               <el-input v-model="form.oss_custom_domain" placeholder="CDN 域名，留空用默认域名" />
             </el-form-item>
           </div>
-          <div class="hint muted" style="margin-left:0;margin-top:-4px">
+          <div class="detail-tip muted">
             将新增独立的 /common/oss/upload 上传接口，不改动若依原有本地上传逻辑。
           </div>
         </div>
@@ -513,8 +526,8 @@ function generateRandomSecret(): string {
           </div>
         </div>
 
-        <div v-if="form.enable_jwt" class="uniapp-panel">
-          <div class="uniapp-grid">
+        <div v-if="form.enable_jwt" class="detail-panel">
+          <div class="detail-grid">
             <el-form-item label="JWT Secret">
               <el-input v-model="form.jwt_secret" show-password placeholder="留空则执行时随机生成强密钥">
                 <template #append>
@@ -529,8 +542,8 @@ function generateRandomSecret(): string {
           </div>
         </div>
 
-        <div v-if="form.enable_generator_config" class="uniapp-panel">
-          <div class="uniapp-grid">
+        <div v-if="form.enable_generator_config" class="detail-panel">
+          <div class="detail-grid">
             <el-form-item label="作者名">
               <el-input v-model="form.generator_author" placeholder="留空保留默认 ruoyi" />
             </el-form-item>
@@ -542,7 +555,7 @@ function generateRandomSecret(): string {
               <span class="inline-hint muted">联动新包名</span>
             </el-form-item>
           </div>
-          <div class="uniapp-grid">
+          <div class="detail-grid">
             <el-form-item label="Vue3 模板升级">
               <el-switch v-model="form.generator_vue3" />
               <span class="inline-hint muted">将生成器前端模板改为 Element Plus（Vue3）语法</span>
@@ -569,8 +582,8 @@ function generateRandomSecret(): string {
           </div>
         </div>
 
-        <div v-if="form.enable_nginx_config || form.enable_startup_scripts" class="uniapp-panel">
-          <div class="uniapp-grid">
+        <div v-if="form.enable_nginx_config || form.enable_startup_scripts" class="detail-panel">
+          <div class="detail-grid">
             <el-form-item label="后端端口">
               <el-input-number v-model="form.server_port" :min="1" :max="65535" />
               <span class="inline-hint muted">jar 监听端口（Nginx 反代目标 + 脚本停止端口）</span>
@@ -579,21 +592,21 @@ function generateRandomSecret(): string {
               <el-input v-model="form.server_name" placeholder="留空用 localhost，如 demo.example.com" />
             </el-form-item>
           </div>
-          <div v-if="form.enable_nginx_config" class="uniapp-grid">
+          <div v-if="form.enable_nginx_config" class="detail-grid">
             <el-form-item label="启用 HTTPS" class="notify-row">
               <el-switch v-model="form.use_https" />
               <span class="inline-hint muted">生成证书占位段（需自行替换正式证书）</span>
             </el-form-item>
           </div>
-          <div class="hint muted" style="margin-left:0;margin-top:-4px">
+          <div class="detail-tip muted">
             输出到 output_dir/nginx/（配置）和 output_dir/scripts/（脚本）。
           </div>
         </div>
 
         <!-- UniApp 小程序信息 + 微信支付（仅开启 UniApp 时显示） -->
-        <div v-if="form.enable_uniapp" class="uniapp-panel">
+        <div v-if="form.enable_uniapp" class="detail-panel">
           <el-divider content-position="left">小程序信息</el-divider>
-          <div class="uniapp-grid">
+          <div class="detail-grid">
             <el-form-item label="小程序 AppID">
               <el-input v-model="form.wx_appid" placeholder="如 wx1234567890abcdef" />
             </el-form-item>
@@ -603,7 +616,7 @@ function generateRandomSecret(): string {
           </div>
 
           <el-divider content-position="left">微信支付</el-divider>
-          <div class="uniapp-grid">
+          <div class="detail-grid">
             <el-form-item label="引入微信支付">
               <el-switch v-model="form.pay_included" />
               <span class="inline-hint muted">生成 wechat.pay 配置块、注入官方 SDK 依赖与配置类</span>
@@ -623,7 +636,7 @@ function generateRandomSecret(): string {
               </el-radio-group>
             </el-form-item>
 
-            <div class="uniapp-grid">
+            <div class="detail-grid">
               <el-form-item label="商户号">
                 <el-input v-model="form.pay_mch_id" placeholder="如 1900000109" />
               </el-form-item>
@@ -706,7 +719,9 @@ function generateRandomSecret(): string {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 16px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--rf-card-border);
 }
 
 /* 改造开关：两列网格，紧凑排列 */
@@ -722,7 +737,15 @@ function generateRandomSecret(): string {
   gap: 2px;
   padding: 8px 12px;
   background: #f7f8fa;
+  border: 1px solid transparent;
   border-radius: 6px;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease;
+}
+.switch-item:hover {
+  background: #f2f4f8;
+  border-color: #e8ecf1;
 }
 .switch-item__head {
   display: flex;
@@ -738,28 +761,34 @@ function generateRandomSecret(): string {
   line-height: 1.5;
 }
 
-/* UniApp 嵌套面板：小程序信息 + 微信支付 */
-.uniapp-panel {
+/* 详情面板：分区开关开启后展开的嵌套表单 */
+.detail-panel {
   margin-left: 140px;
   margin-top: 8px;
   padding: 12px 20px 4px;
   background: #f7f8fa;
+  border: 1px solid #eef1f5;
   border-radius: 6px;
 }
-.uniapp-grid {
+.detail-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 0 24px;
 }
-.uniapp-grid .el-form-item {
+.detail-grid .el-form-item {
   margin-bottom: 14px;
 }
-/* pay-mode 单独占满一行 */
-.uniapp-panel .pay-mode-row {
+/* 详情面板内单独占满一行的项 */
+.detail-panel .pay-mode-row {
   margin-bottom: 14px;
 }
-.uniapp-panel .notify-row {
+.detail-panel .notify-row {
   grid-column: 1 / -1;
+}
+.detail-tip {
+  margin: 6px 0 10px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 .inline-hint {
   margin-left: 12px;

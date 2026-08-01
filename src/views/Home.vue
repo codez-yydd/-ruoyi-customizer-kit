@@ -6,6 +6,7 @@ import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
 import { useProjectFlow } from '@/composables/useProjectFlow'
 import * as api from '@/api'
+import { HomeFilled } from '@element-plus/icons-vue'
 import LogPanel from '@/components/LogPanel.vue'
 import {
   detectInterruptedSession,
@@ -86,7 +87,15 @@ function chooseZip() {
 
 <template>
   <div class="home">
-    <h2 class="page-title">若依锻造台 · RuoYi Forge</h2>
+    <div class="page-header">
+      <div class="page-header__icon">
+        <el-icon :size="20"><HomeFilled /></el-icon>
+      </div>
+      <div>
+        <h2 class="page-header__title">若依锻造台</h2>
+        <div class="page-header__subtitle">RuoYi Forge · 快速定制若依新项目</div>
+      </div>
+    </div>
 
     <div class="rf-card intro">
       <p>
