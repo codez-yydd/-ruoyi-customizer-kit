@@ -529,6 +529,20 @@ pub fn plan(
             status: TaskStatus::Pending,
             error_message: String::new(),
         });
+
+        // 一键打包脚本生成（与 start/stop 同开关，输出到 output_dir 根目录）：
+        // 后端 mvn package + 前端 npm run build:prod，产物汇总到 build/（jar + dist）。
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "生成一键打包脚本（build.sh / build.bat，产物输出到 build/）".into(),
+            task_type: TaskType::GenerateBuildScripts,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec!["build.sh".into(), "build.bat".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
     }
 
     // 开发脚本生成（始终，输出到 output_dir 根目录）：mvn install + spring-boot:run 一键启动

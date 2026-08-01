@@ -33,6 +33,7 @@ pub enum TaskType {
     GenerateNginxConfig,
     GenerateStartupScripts,
     GenerateDevScripts,
+    GenerateBuildScripts,
     UpdateAdminPomFinalName,
     ValidateProject,
     GenerateReport,

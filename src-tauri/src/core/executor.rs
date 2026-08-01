@@ -121,6 +121,7 @@ where
         TaskType::GenerateNginxConfig => do_generate_nginx_config(root, params, &mut r, log),
         TaskType::GenerateStartupScripts => do_generate_startup_scripts(root, params, &mut r, log),
         TaskType::GenerateDevScripts => do_generate_dev_scripts(root, params, &mut r, log),
+        TaskType::GenerateBuildScripts => do_generate_build_scripts(root, params, &mut r, log),
         TaskType::UpdateAdminPomFinalName => do_update_admin_pom_final_name(root, params, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
             r.status = TaskStatus::Skipped;
@@ -946,7 +947,22 @@ where
     Ok(())
 }
 
-/// 12o. admin pom finalName 改造：打包产物固定为 {prefix}-admin.jar
+/// 12o. 生成一键打包脚本（build.sh / build.bat）到项目根目录
+/// 后端 mvn package + 前端 npm run build:prod，产物汇总到 build/（jar + dist）。
+/// 与开发脚本同源输出到 root（即改造后的项目根）。
+fn do_generate_build_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::scripts::generate_build_scripts(root, params, &|msg| log(msg))?;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12p. admin pom finalName 改造：打包产物固定为 {prefix}-admin.jar
 /// 与现有部署脚本（start.sh 的 {prefix}-admin*.jar glob）配套，确保 jar 名稳定可匹配。
 fn do_update_admin_pom_final_name<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
 where

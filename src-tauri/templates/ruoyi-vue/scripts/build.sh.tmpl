@@ -1,0 +1,66 @@
+#!/bin/bash
+# {{PROJECT_NAME}} 一键打包脚本（Linux/macOS），由若依锻造台自动生成
+#
+# 产物统一汇总到项目根目录的 build/ 文件夹：
+#   build/
+#     ├── {{MODULE_PREFIX}}-admin.jar   后端可运行 jar
+#     └── dist/                         前端构建产物（交由 Nginx 托管）
+#
+# 用法：./build.sh
+
+set -e
+
+# 项目根目录（脚本所在目录）
+APP_HOME="$(cd "$(dirname "$0")" && pwd)"
+cd "$APP_HOME"
+
+# 强制 UTF-8，避免控制台 / 日志中文乱码
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8"
+
+FRONTEND_DIR="{{MODULE_PREFIX}}-ui"
+
+# ========== 1. 后端打包 ==========
+echo "========== Maven package =========="
+mvn clean package -DskipTests
+
+# ========== 2. 前端打包 ==========
+echo "========== Frontend build =========="
+if [ ! -d "$FRONTEND_DIR" ]; then
+  echo "⚠️  未找到前端目录 $FRONTEND_DIR，跳过前端构建"
+else
+  cd "$FRONTEND_DIR"
+  # 首次构建需安装依赖
+  if [ ! -d "node_modules" ]; then
+    echo "---------- npm install ----------"
+    npm install
+  fi
+  npm run build:prod
+  cd "$APP_HOME"
+fi
+
+# ========== 3. 汇总产物到 build/ ==========
+echo "========== Assemble build/ =========="
+mkdir -p build
+
+# 后端 jar：取 target 下首个非 .original 的 jar（兼容带/不带版本号）
+JAR_PATH="$(ls "./{{MODULE_PREFIX}}-admin/target"/{{MODULE_PREFIX}}-admin*.jar 2>/dev/null | grep -v "\.original$" | head -1)"
+if [ -z "$JAR_PATH" ]; then
+  echo "❌ 找不到 {{MODULE_PREFIX}}-admin*.jar，后端打包可能失败"
+  exit 1
+fi
+cp "$JAR_PATH" build/
+echo "✅ 已复制后端 jar：build/$(basename "$JAR_PATH")"
+
+# 前端 dist
+if [ -d "$FRONTEND_DIR/dist" ]; then
+  rm -rf build/dist
+  cp -r "$FRONTEND_DIR/dist" build/dist
+  echo "✅ 已复制前端产物：build/dist"
+else
+  echo "⚠️  未找到 $FRONTEND_DIR/dist，跳过前端产物汇总"
+fi
+
+echo ""
+echo "🎉 打包完成！产物位于 build/ 目录"

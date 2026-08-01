@@ -40,9 +40,14 @@ export default defineConfig(async () => ({
       // 基础样式（所有 EP 组件共用，必须最先）
       'element-plus/es/components/base/style/css',
       // 运行时新发现的组件样式（与 Vite 实际优化日志对齐）
+      // 注意：必须覆盖全部懒加载页面首次进入时才会导入的组件样式，
+      // 缺一个就会触发 Vite「新依赖→重新预构建→full-reload」，
+      // 导致页面 reload、内存状态丢失、被导航守卫弹回首页。
+      'element-plus/es/components/alert/style/css',
+      'element-plus/es/components/button/style/css',
       'element-plus/es/components/dialog/style/css',
-      'element-plus/es/components/table/style/css',
-      'element-plus/es/components/table-column/style/css',
+      'element-plus/es/components/divider/style/css',
+      'element-plus/es/components/empty/style/css',
       'element-plus/es/components/form/style/css',
       'element-plus/es/components/form-item/style/css',
       'element-plus/es/components/input/style/css',
@@ -50,7 +55,9 @@ export default defineConfig(async () => ({
       'element-plus/es/components/radio/style/css',
       'element-plus/es/components/radio-group/style/css',
       'element-plus/es/components/switch/style/css',
-      'element-plus/es/components/divider/style/css',
+      'element-plus/es/components/table/style/css',
+      'element-plus/es/components/table-column/style/css',
+      'element-plus/es/components/tag/style/css',
       // 服务式 API（ElMessage/ElMessageBox）的样式
       'element-plus/es/components/message/style/css',
       'element-plus/es/components/message-box/style/css'

@@ -565,7 +565,7 @@ function generateRandomSecret(): string {
               <span class="switch-item__label">启动脚本</span>
               <el-switch v-model="form.enable_startup_scripts" />
             </div>
-            <div class="switch-item__hint muted">start/stop 脚本（.sh + .bat），端口与 Nginx 共用</div>
+            <div class="switch-item__hint muted">start/stop 脚本 + build 一键打包脚本（.sh + .bat），端口与 Nginx 共用</div>
           </div>
         </div>
 

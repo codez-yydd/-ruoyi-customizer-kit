@@ -1,7 +1,7 @@
 // 项目状态管理：跨页面共享当前选中的项目、识别结果、改造参数、预览/执行结果、日志
 
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type {
   CustomizeParams,
   ExecuteResponse,
@@ -17,27 +17,87 @@ export interface LogEntry {
   time: string
 }
 
+// ===== 向导进度持久化 =====
+// 页面意外 reload（如 Vite 依赖预构建 full-reload、HMR 重启）会清空内存状态，
+// 导致 maxStep 归零、导航守卫把用户弹回首页。这里把核心流程状态持久化到
+// localStorage，reload 后恢复，进度不丢失。
+const STORAGE_KEY = 'rf-project-state-v1'
+const STORAGE_VERSION = 1
+
+interface ProjectPersistedState {
+  rootPath: string
+  projectInfo: ProjectInfo | null
+  params: CustomizeParams | null
+  preview: PreviewResponse | null
+  executeResult: ExecuteResponse | null
+  sourceType: 'directory' | 'zip'
+  zipPath: string
+  extractRoot: string
+  outputDir: string
+}
+
+function loadPersistedState(): ProjectPersistedState | null {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed || parsed.version !== STORAGE_VERSION || !parsed.state) return null
+    return parsed.state as ProjectPersistedState
+  } catch {
+    return null
+  }
+}
+
+const persisted = loadPersistedState()
+
 export const useProjectStore = defineStore('project', () => {
   /** 当前选中的项目根路径（识别用的临时路径） */
-  const rootPath = ref<string>('')
+  const rootPath = ref<string>(persisted?.rootPath ?? '')
   /** 当前识别结果 */
-  const projectInfo = ref<ProjectInfo | null>(null)
-  /** 执行日志 */
+  const projectInfo = ref<ProjectInfo | null>(persisted?.projectInfo ?? null)
+  /** 执行日志（不持久化，属于会话级内容） */
   const logs = ref<LogEntry[]>([])
   /** 改造参数 */
-  const params = ref<CustomizeParams | null>(null)
+  const params = ref<CustomizeParams | null>(persisted?.params ?? null)
   /** 预览响应（任务列表 + 汇总） */
-  const preview = ref<PreviewResponse | null>(null)
+  const preview = ref<PreviewResponse | null>(persisted?.preview ?? null)
   /** 执行结果 */
-  const executeResult = ref<ExecuteResponse | null>(null)
+  const executeResult = ref<ExecuteResponse | null>(persisted?.executeResult ?? null)
   /** 来源类型：directory 或 zip */
-  const sourceType = ref<'directory' | 'zip'>('directory')
+  const sourceType = ref<'directory' | 'zip'>(persisted?.sourceType ?? 'directory')
   /** zip 文件的原始路径（仅 zip 模式） */
-  const zipPath = ref<string>('')
+  const zipPath = ref<string>(persisted?.zipPath ?? '')
   /** zip 解压的临时根目录（仅 zip 模式，清理时使用） */
-  const extractRoot = ref<string>('')
+  const extractRoot = ref<string>(persisted?.extractRoot ?? '')
   /** 用户选择的最终输出目录 */
-  const outputDir = ref<string>('')
+  const outputDir = ref<string>(persisted?.outputDir ?? '')
+
+  // 状态变化时写回 localStorage；resetFlow 清空状态也会同步清空持久化。
+  // 静默失败：localStorage 不可用（满/禁用）不阻断主流程。
+  watch(
+    () => ({
+      rootPath: rootPath.value,
+      projectInfo: projectInfo.value,
+      params: params.value,
+      preview: preview.value,
+      executeResult: executeResult.value,
+      sourceType: sourceType.value,
+      zipPath: zipPath.value,
+      extractRoot: extractRoot.value,
+      outputDir: outputDir.value
+    }),
+    (state) => {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ version: STORAGE_VERSION, state })
+        )
+      } catch {
+        // ignore
+      }
+    },
+    { deep: true }
+  )
 
   /**
    * 向导已解锁到的最远步骤序号（0=首页,1=识别,2=配置,3=预览,4=执行,5=报告）。

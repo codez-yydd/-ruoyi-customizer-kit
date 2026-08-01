@@ -1,0 +1,84 @@
+@echo off
+chcp 65001 >nul
+setlocal enabledelayedexpansion
+REM {{PROJECT_NAME}} 一键打包脚本（Windows），由若依锻造台自动生成
+REM
+REM 产物统一汇总到项目根目录的 build\ 文件夹：
+REM   build\
+REM     ├─ {{MODULE_PREFIX}}-admin.jar   后端可运行 jar
+REM     └─ dist\                         前端构建产物（交由 Nginx 托管）
+REM
+REM 用法：双击或 build.bat
+
+REM 切到脚本所在目录（项目根）
+cd /d "%~dp0"
+
+set "JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8"
+set "FRONTEND_DIR={{MODULE_PREFIX}}-ui"
+
+REM ========== 1. 后端打包 ==========
+echo ========== Maven package ==========
+call mvn clean package -DskipTests
+if %errorlevel% neq 0 (
+    echo [ERROR] Maven package failed!
+    pause
+    exit /b 1
+)
+
+REM ========== 2. 前端打包 ==========
+echo ========== Frontend build ==========
+if not exist "%FRONTEND_DIR%" (
+    echo [WARN] 未找到前端目录 %FRONTEND_DIR%，跳过前端构建
+) else (
+    cd /d "%FRONTEND_DIR%"
+    if not exist "node_modules" (
+        echo ---------- npm install ----------
+        call npm install
+        if %errorlevel% neq 0 (
+            echo [ERROR] npm install failed!
+            pause
+            exit /b 1
+        )
+    )
+    call npm run build:prod
+    if %errorlevel% neq 0 (
+        echo [ERROR] Frontend build failed!
+        pause
+        exit /b 1
+    )
+    cd /d "%~dp0"
+)
+
+REM ========== 3. 汇总产物到 build\ ==========
+echo ========== Assemble build\ ==========
+if not exist build mkdir build
+
+REM 后端 jar：取 target 下首个非 .original 的 jar
+set "JAR_PATH="
+set "JAR_NAME="
+for %%f in (".\{{MODULE_PREFIX}}-admin\target\{{MODULE_PREFIX}}-admin*.jar") do (
+    echo %%f | findstr /v "\.original" >nul && (
+        set "JAR_PATH=%%f"
+        set "JAR_NAME=%%~nxf"
+    )
+)
+if not defined JAR_PATH (
+    echo [ERROR] 找不到 {{MODULE_PREFIX}}-admin*.jar，后端打包可能失败
+    pause
+    exit /b 1
+)
+copy /Y "!JAR_PATH!" "build\" >nul
+echo [OK] 已复制后端 jar：build\!JAR_NAME!
+
+REM 前端 dist
+if exist "%FRONTEND_DIR%\dist" (
+    if exist "build\dist" rmdir /S /Q "build\dist"
+    xcopy /E /I /Y "%FRONTEND_DIR%\dist" "build\dist" >nul
+    echo [OK] 已复制前端产物：build\dist
+) else (
+    echo [WARN] 未找到 %FRONTEND_DIR%\dist，跳过前端产物汇总
+)
+
+echo.
+echo [DONE] 打包完成！产物位于 build\ 目录
+endlocal
