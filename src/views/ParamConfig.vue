@@ -1,5 +1,7 @@
 <script setup lang="ts">
 // 参数配置页：填写改造参数（包名/模块名/标题/输出目录/开关），实时校验合法性。
+// 配置分区采用可折叠面板（el-collapse）：核心 4 区默认展开，其余默认折叠；
+// 工具栏提供预设方案一键填入推荐开关；折叠状态与当前预设跨会话记忆。
 import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -11,19 +13,40 @@ import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
 import 'element-plus/es/components/message/style/css'
 import 'element-plus/es/components/message-box/style/css'
+import type { CollapseModelValue } from 'element-plus'
 import { useProjectStore } from '@/stores/project'
 import { useProfilesStore } from '@/stores/profiles'
 import type { ProfileEntry } from '@/stores/profiles'
-import { Setting } from '@element-plus/icons-vue'
+import { Setting, MagicStick, ArrowDown } from '@element-plus/icons-vue'
 import { pickSaveDirectory, pickSaveJsonFile, pickOpenJsonFile } from '@/api/dialog'
 import { saveConfigJson, loadConfigJson } from '@/api'
 import type { CustomizeParams } from '@/types'
+import { FEATURE_PRESETS, type Preset } from '@/constants/presets'
+import { useUiPrefs } from '@/composables/useUiPrefs'
 
 const router = useRouter()
 const store = useProjectStore()
 const profilesStore = useProfilesStore()
 const { projectInfo, params: storedParams, sourceType } = storeToRefs(store)
 const historyDialogVisible = ref(false)
+
+// UI 偏好：折叠状态 + 当前预设（localStorage 持久化）
+const { activeSections, currentPresetKey, setPreset, markCustomized, syncSections, expandSection } =
+  useUiPrefs()
+
+// 分区 key 常量（与 el-collapse-item 的 name 对应）
+const SECTION = {
+  package: 'package',
+  frontend: 'frontend',
+  output: 'output',
+  switches: 'switches',
+  security: 'security',
+  structure: 'structure',
+  oss: 'oss',
+  jwt: 'jwt',
+  deploy: 'deploy',
+  uniapp: 'uniapp'
+} as const
 
 // 默认参数（从识别结果预填原值）
 const defaults = (): CustomizeParams => ({
@@ -155,6 +178,94 @@ const errors = computed(() => {
 })
 const valid = computed(() => Object.keys(errors.value).length === 0)
 
+function countTrue(arr: boolean[]): number {
+  return arr.filter(Boolean).length
+}
+
+// 各可选分区已启用的功能项数量（用于标题徽标）
+const sectionCounts = computed(() => ({
+  switches: countTrue([
+    form.enable_mybatis_plus,
+    form.enable_config_rewrite,
+    form.enable_logback_rewrite,
+    form.enable_generator_mybatis_plus,
+    form.enable_long_id_json_string,
+    form.enable_snowflake_id,
+    form.enable_clear_home,
+    form.enable_remove_github,
+    form.enable_remove_docs,
+    form.enable_report,
+    form.enable_uniapp
+  ]),
+  security: countTrue([form.enable_security, form.enable_sql_customize]),
+  structure: countTrue([form.enable_frontend_split, form.enable_ai_rules]),
+  oss: countTrue([form.enable_oss]),
+  jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
+  deploy: countTrue([form.enable_nginx_config, form.enable_startup_scripts]),
+  uniapp: countTrue([form.pay_included])
+}))
+
+// 当前应用的预设对象（用于工具栏状态提示）
+const currentPreset = computed(
+  () => FEATURE_PRESETS.find((p) => p.key === currentPresetKey.value) || null
+)
+
+// 用户是否手动修改过配置（点开关 / 导入 / 应用历史）。
+// 用于「已自定义」横幅判定——初始进入页面时为 false，避免因 defaults 默认开关 true 而误显示。
+const userModified = ref(false)
+
+/** 折叠面板变化：同步到持久化（el-collapse 的 change 事件值可能是 string | number | string[]） */
+function handleCollapseChange(active: CollapseModelValue) {
+  const arr = (Array.isArray(active) ? active : [active]).map(String)
+  syncSections(arr)
+}
+
+/** switch 用户交互变化：标记为已自定义（清空预设标记）。预设/导入的程序化赋值不触发。 */
+function onSwitchChange() {
+  userModified.value = true
+  markCustomized()
+}
+
+/** 智能展开：开关被打开时（含预设/导入触发）自动展开所属分区 */
+const TRIGGERS: ReadonlyArray<readonly [() => boolean, string]> = [
+  [() => form.enable_oss, SECTION.oss],
+  [() => form.enable_security, SECTION.security],
+  [() => form.enable_sql_customize, SECTION.security],
+  [() => form.enable_jwt, SECTION.jwt],
+  [() => form.enable_generator_config, SECTION.jwt],
+  [() => form.enable_nginx_config, SECTION.deploy],
+  [() => form.enable_startup_scripts, SECTION.deploy],
+  [() => form.enable_uniapp, SECTION.uniapp],
+  [() => form.pay_included, SECTION.uniapp],
+  [() => form.enable_frontend_split, SECTION.structure]
+]
+TRIGGERS.forEach(([getter, key]) => {
+  watch(getter, (v) => {
+    if (v) expandSection(key)
+  })
+})
+
+/** 下拉菜单 command 回调：按 key 查找预设并应用（找不到则静默忽略） */
+function handlePresetCommand(key: string) {
+  const preset = FEATURE_PRESETS.find((p) => p.key === key)
+  if (preset) applyPreset(preset)
+}
+
+/** 应用预设方案（只覆盖开关，保留标识字段） */
+function applyPreset(preset: Preset) {
+  ElMessageBox.confirm(
+    `将应用「${preset.name}」预设，会覆盖当前已填写的开关项（包名/模块/标题/输出目录等标识字段保留），是否继续？`,
+    '应用预设方案',
+    { type: 'warning', confirmButtonText: '应用', cancelButtonText: '取消' }
+  )
+    .then(() => {
+      Object.assign(form, preset.params)
+      setPreset(preset)
+      ElMessage.success(`已应用「${preset.name}」预设`)
+    })
+    .catch(() => {})
+}
+
 function back() {
   router.push({ name: 'detect' })
 }
@@ -208,6 +319,8 @@ async function importConfig() {
         form.original_package = projectInfo.value.original_package || form.original_package
         form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
       }
+      markCustomized()
+      userModified.value = true
       ElMessage.success('配置导入成功')
     } else {
       ElMessage.error(res.message)
@@ -228,6 +341,8 @@ function applyHistory(entry: ProfileEntry) {
         form.original_package = projectInfo.value.original_package || form.original_package
         form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
       }
+      markCustomized()
+      userModified.value = true
       historyDialogVisible.value = false
       ElMessage.success('已应用历史配置')
     })
@@ -268,414 +383,490 @@ function generateRandomSecret(): string {
       <el-button size="small" @click="importConfig">导入配置</el-button>
       <el-button size="small" @click="exportConfig">导出配置</el-button>
       <el-button size="small" @click="historyDialogVisible = true">历史记录</el-button>
+      <!-- 预设方案下拉 -->
+      <el-dropdown trigger="click" @command="handlePresetCommand" placement="bottom-start">
+        <el-button size="small" type="primary" plain>
+          <el-icon class="el-icon--left"><MagicStick /></el-icon>
+          预设方案
+          <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+        </el-button>
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item
+              v-for="p in FEATURE_PRESETS"
+              :key="p.key"
+              :command="p.key"
+            >
+              <div class="preset-item">
+                <span class="preset-item__icon">{{ p.icon }}</span>
+                <div class="preset-item__text">
+                  <div class="preset-item__name">{{ p.name }}</div>
+                  <div class="preset-item__desc">{{ p.desc }}</div>
+                </div>
+              </div>
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+    </div>
+
+    <!-- 当前预设状态提示 -->
+    <div v-if="currentPreset" class="preset-banner">
+      <el-icon><MagicStick /></el-icon>
+      <span>当前预设：<strong>{{ currentPreset.icon }} {{ currentPreset.name }}</strong></span>
+      <span class="preset-banner__hint">手动修改开关后将变为「已自定义」</span>
+    </div>
+    <div v-else-if="userModified" class="preset-banner preset-banner--custom">
+      <span>当前配置：<strong>已自定义</strong></span>
     </div>
 
     <div class="rf-card">
       <el-form label-width="140px" label-position="right">
-        <el-divider content-position="left">包名与模块</el-divider>
-        <el-form-item label="原包名">
-          <el-input :model-value="form.original_package" disabled />
-        </el-form-item>
-        <el-form-item label="新包名" :error="errors.new_package">
-          <el-input v-model="form.new_package" placeholder="如 com.company.project" />
-        </el-form-item>
-        <el-form-item label="原模块前缀">
-          <el-input :model-value="form.original_module_prefix" disabled />
-        </el-form-item>
-        <el-form-item label="新模块前缀" :error="errors.new_module_prefix">
-          <el-input v-model="form.new_module_prefix" placeholder="如 demo" />
-        </el-form-item>
-
-        <el-divider content-position="left">前端</el-divider>
-        <el-form-item label="前端标题" :error="errors.frontend_title">
-          <el-input v-model="form.frontend_title" placeholder="如 某某管理系统" />
-        </el-form-item>
-        <el-form-item label="版权年份">
-          <el-input v-model="form.copyright_year" placeholder="如 2024-2026，留空则跳过版权替换" />
-        </el-form-item>
-        <el-form-item label="版权方名称">
-          <el-input v-model="form.copyright_holder" placeholder="如 某某科技，留空则用前端标题" />
-        </el-form-item>
-
-        <el-divider content-position="left">输出</el-divider>
-        <el-form-item label="输出目录" :error="errors.output_dir">
-          <div class="output-dir-row">
-            <el-input v-model="form.output_dir" placeholder="选择改造后项目的存储位置" disabled />
-            <el-button @click="chooseOutputDir">选择</el-button>
-          </div>
-          <div class="hint muted">
-            {{ sourceType === 'zip' ? '执行时将解压到此目录并改造' : '执行时将复制项目到此目录并改造，不修改原始项目' }}
-          </div>
-        </el-form-item>
-
-        <el-divider content-position="left">改造开关</el-divider>
-        <div class="switch-grid">
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">集成 MyBatis-Plus</span>
-              <el-switch v-model="form.enable_mybatis_plus" />
-            </div>
-            <div class="switch-item__hint muted">自动加依赖、分页配置类、改造源码继承体系</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">重构配置文件</span>
-              <el-switch v-model="form.enable_config_rewrite" />
-            </div>
-            <div class="switch-item__hint muted">application → base/dev/prod 三件套</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">修正 logback 路径</span>
-              <el-switch v-model="form.enable_logback_rewrite" />
-            </div>
-            <div class="switch-item__hint muted">log.path = logs（相对路径）</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">代码生成器适配</span>
-              <el-switch v-model="form.enable_generator_mybatis_plus" />
-            </div>
-            <div class="switch-item__hint muted">Mapper/Service/Domain 模板适配</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">Long 主键序列化</span>
-              <el-switch v-model="form.enable_long_id_json_string" />
-            </div>
-            <div class="switch-item__hint muted">避免前端精度丢失</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">全局雪花ID</span>
-              <el-switch v-model="form.enable_snowflake_id" />
-            </div>
-            <div class="switch-item__hint muted">insert 手动 setId（Hutool 雪花算法），全局禁用自增</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">清空首页</span>
-              <el-switch v-model="form.enable_clear_home" />
-            </div>
-            <div class="switch-item__hint muted">清空若依默认首页仪表盘</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">移除 GitHub 外链</span>
-              <el-switch v-model="form.enable_remove_github" />
-            </div>
-            <div class="switch-item__hint muted">移除顶部栏 github/gitee 链接</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">移除文档外链</span>
-              <el-switch v-model="form.enable_remove_docs" />
-            </div>
-            <div class="switch-item__hint muted">移除顶部栏若依文档链接</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">生成执行报告</span>
-              <el-switch v-model="form.enable_report" />
-            </div>
-            <div class="switch-item__hint muted">改造后输出 Markdown 报告</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">生成 UniApp 小程序</span>
-              <el-switch v-model="form.enable_uniapp" />
-            </div>
-            <div class="switch-item__hint muted">
-              <template v-if="form.enable_uniapp">
-                将生成：{{ form.new_module_prefix ? `${form.new_module_prefix}-uniapp` : '请先填写新模块前缀' }}
-              </template>
-              <template v-else>含请求封装、登录框架、环境配置</template>
-            </div>
-          </div>
-        </div>
-
-        <!-- 安全 & SQL 分区 -->
-        <el-divider content-position="left">安全 &amp; SQL</el-divider>
-        <div class="switch-grid">
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">安全加固</span>
-              <el-switch v-model="form.enable_security" />
-            </div>
-            <div class="switch-item__hint muted">admin 密码、关闭注册、关闭 demo 模式</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">SQL 脚本定制</span>
-              <el-switch v-model="form.enable_sql_customize" />
-            </div>
-            <div class="switch-item__hint muted">库名、admin 密码、清除演示/quartz 数据</div>
-          </div>
-        </div>
-
-        <!-- 安全加固 / SQL 定制详情（共用 admin 密码，避免重复输入） -->
-        <div v-if="form.enable_security || form.enable_sql_customize" class="detail-panel">
-          <div class="detail-grid">
-            <el-form-item
-              v-if="form.enable_security || form.enable_sql_customize"
-              label="admin 密码"
-            >
-              <el-input v-model="form.admin_password" show-password placeholder="留空则不修改" />
-              <span class="inline-hint muted">安全加固与 SQL 定制共用</span>
+        <el-collapse :model-value="activeSections" @change="handleCollapseChange" class="config-collapse">
+          <!-- 包名与模块 -->
+          <el-collapse-item :name="SECTION.package" title="包名与模块">
+            <el-form-item label="原包名">
+              <el-input :model-value="form.original_package" disabled />
             </el-form-item>
-            <el-form-item v-if="form.enable_sql_customize" label="新数据库名">
-              <el-input
-                v-model="form.db_name"
-                :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`"
-              />
+            <el-form-item label="新包名" :error="errors.new_package">
+              <el-input v-model="form.new_package" placeholder="如 com.company.project" />
             </el-form-item>
-            <el-form-item v-if="form.enable_security" label="清除演示账号">
-              <el-switch v-model="form.clean_demo_users" />
-              <span class="inline-hint muted">删除 ry / ryadmin 等演示账号 SQL</span>
+            <el-form-item label="原模块前缀">
+              <el-input :model-value="form.original_module_prefix" disabled />
             </el-form-item>
-            <el-form-item v-if="form.enable_sql_customize" label="清除 quartz 数据">
-              <el-switch v-model="form.clean_quartz" />
-              <span class="inline-hint muted">删除 QRTZ_* 表和数据</span>
+            <el-form-item label="新模块前缀" :error="errors.new_module_prefix">
+              <el-input v-model="form.new_module_prefix" placeholder="如 demo" />
             </el-form-item>
-          </div>
-          <div class="detail-tip muted">
-            <template v-if="form.enable_security && form.enable_sql_customize">
-              安全加固：自动关闭注册与 demo 模式，新密码明文回显到执行报告；SQL 定制：自动匹配 ry_*.sql
-              脚本替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+          </el-collapse-item>
+
+          <!-- 前端 -->
+          <el-collapse-item :name="SECTION.frontend" title="前端">
+            <el-form-item label="前端标题" :error="errors.frontend_title">
+              <el-input v-model="form.frontend_title" placeholder="如 某某管理系统" />
+            </el-form-item>
+            <el-form-item label="版权年份">
+              <el-input v-model="form.copyright_year" placeholder="如 2024-2026，留空则跳过版权替换" />
+            </el-form-item>
+            <el-form-item label="版权方名称">
+              <el-input v-model="form.copyright_holder" placeholder="如 某某科技，留空则用前端标题" />
+            </el-form-item>
+          </el-collapse-item>
+
+          <!-- 输出 -->
+          <el-collapse-item :name="SECTION.output" title="输出">
+            <el-form-item label="输出目录" :error="errors.output_dir">
+              <div class="output-dir-row">
+                <el-input v-model="form.output_dir" placeholder="选择改造后项目的存储位置" disabled />
+                <el-button @click="chooseOutputDir">选择</el-button>
+              </div>
+              <div class="hint muted">
+                {{ sourceType === 'zip' ? '执行时将解压到此目录并改造' : '执行时将复制项目到此目录并改造，不修改原始项目' }}
+              </div>
+            </el-form-item>
+          </el-collapse-item>
+
+          <!-- 改造开关 -->
+          <el-collapse-item :name="SECTION.switches">
+            <template #title>
+              <span class="section-title">改造开关</span>
+              <el-badge v-if="sectionCounts.switches > 0" :value="`已启用 ${sectionCounts.switches}`" class="section-badge" type="primary" />
             </template>
-            <template v-else-if="form.enable_security">
-              自动关闭注册与 demo 模式；执行后新密码会明文回显到执行报告，便于查看。
+            <div class="switch-grid">
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">集成 MyBatis-Plus</span>
+                  <el-switch v-model="form.enable_mybatis_plus" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">自动加依赖、分页配置类、改造源码继承体系</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">重构配置文件</span>
+                  <el-switch v-model="form.enable_config_rewrite" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">application → base/dev/prod 三件套</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">修正 logback 路径</span>
+                  <el-switch v-model="form.enable_logback_rewrite" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">log.path = logs（相对路径）</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">代码生成器适配</span>
+                  <el-switch v-model="form.enable_generator_mybatis_plus" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">Mapper/Service/Domain 模板适配</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">Long 主键序列化</span>
+                  <el-switch v-model="form.enable_long_id_json_string" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">避免前端精度丢失</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">全局雪花ID</span>
+                  <el-switch v-model="form.enable_snowflake_id" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">insert 手动 setId（Hutool 雪花算法），全局禁用自增</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">清空首页</span>
+                  <el-switch v-model="form.enable_clear_home" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">清空若依默认首页仪表盘</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">移除 GitHub 外链</span>
+                  <el-switch v-model="form.enable_remove_github" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">移除顶部栏 github/gitee 链接</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">移除文档外链</span>
+                  <el-switch v-model="form.enable_remove_docs" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">移除顶部栏若依文档链接</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">生成执行报告</span>
+                  <el-switch v-model="form.enable_report" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">改造后输出 Markdown 报告</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">生成 UniApp 小程序</span>
+                  <el-switch v-model="form.enable_uniapp" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">
+                  <template v-if="form.enable_uniapp">
+                    将生成：{{ form.new_module_prefix ? `${form.new_module_prefix}-uniapp` : '请先填写新模块前缀' }}
+                  </template>
+                  <template v-else>含请求封装、登录框架、环境配置</template>
+                </div>
+              </div>
+            </div>
+          </el-collapse-item>
+
+          <!-- 安全 & SQL -->
+          <el-collapse-item :name="SECTION.security">
+            <template #title>
+              <span class="section-title">安全 &amp; SQL</span>
+              <el-badge v-if="sectionCounts.security > 0" :value="`已启用 ${sectionCounts.security}`" class="section-badge" type="primary" />
             </template>
-            <template v-else>
-              自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
-            </template>
-          </div>
-        </div>
+            <div class="switch-grid">
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">安全加固</span>
+                  <el-switch v-model="form.enable_security" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">admin 密码、关闭注册、关闭 demo 模式</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">SQL 脚本定制</span>
+                  <el-switch v-model="form.enable_sql_customize" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">库名、admin 密码、清除演示/quartz 数据</div>
+              </div>
+            </div>
 
-        <!-- 项目结构分区 -->
-        <el-divider content-position="left">项目结构</el-divider>
-        <div class="switch-grid">
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">前后端分离</span>
-              <el-switch v-model="form.enable_frontend_split" />
-            </div>
-            <div class="switch-item__hint muted">
-              {{ form.enable_frontend_split ? `前端将移至 ${form.new_module_prefix || 'demo'}-ui-frontend` : '前端目录拆出，与后端平级' }}
-            </div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">AI 规范文件</span>
-              <el-switch v-model="form.enable_ai_rules" />
-            </div>
-            <div class="switch-item__hint muted">生成 AGENTS.md + CLAUDE.md 编码规范</div>
-          </div>
-        </div>
-
-        <!-- 对象存储 OSS 分区 -->
-        <el-divider content-position="left">对象存储 OSS</el-divider>
-        <div class="switch-grid">
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">引入 OSS</span>
-              <el-switch v-model="form.enable_oss" />
-            </div>
-            <div class="switch-item__hint muted">注入 SDK + 配置类 + 独立上传接口 /common/oss/upload</div>
-          </div>
-        </div>
-        <div v-if="form.enable_oss" class="detail-panel">
-          <el-form-item label="云厂商">
-            <el-radio-group v-model="form.oss_provider">
-              <el-radio value="aliyun">阿里云 OSS</el-radio>
-              <el-radio value="tencent">腾讯云 COS</el-radio>
-              <el-radio value="minio">MinIO</el-radio>
-              <el-radio value="qiniu">七牛云 Kodo</el-radio>
-            </el-radio-group>
-          </el-form-item>
-          <div class="detail-grid">
-            <el-form-item label="Endpoint">
-              <el-input v-model="form.oss_endpoint" :placeholder="form.oss_provider === 'minio' ? 'http://localhost:9000' : '如 oss-cn-hangzhou.aliyuncs.com'" />
-            </el-form-item>
-            <el-form-item label="Bucket">
-              <el-input v-model="form.oss_bucket" placeholder="bucket 名称" />
-            </el-form-item>
-            <el-form-item label="AccessKey">
-              <el-input v-model="form.oss_access_key" placeholder="accessKey" />
-            </el-form-item>
-            <el-form-item label="SecretKey">
-              <el-input v-model="form.oss_secret_key" show-password placeholder="secretKey" />
-            </el-form-item>
-            <el-form-item label="自定义域名" class="notify-row">
-              <el-input v-model="form.oss_custom_domain" placeholder="CDN 域名，留空用默认域名" />
-            </el-form-item>
-          </div>
-          <div class="detail-tip muted">
-            将新增独立的 /common/oss/upload 上传接口，不改动若依原有本地上传逻辑。
-          </div>
-        </div>
-
-        <!-- JWT & 代码生成器 分区 -->
-        <el-divider content-position="left">JWT &amp; 代码生成器</el-divider>
-        <div class="switch-grid">
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">JWT 定制</span>
-              <el-switch v-model="form.enable_jwt" />
-            </div>
-            <div class="switch-item__hint muted">替换若依默认公开的 token secret + 有效期</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">代码生成器配置</span>
-              <el-switch v-model="form.enable_generator_config" />
-            </div>
-            <div class="switch-item__hint muted">作者名、生成包名、表前缀、Vue3 模板</div>
-          </div>
-        </div>
-
-        <div v-if="form.enable_jwt" class="detail-panel">
-          <div class="detail-grid">
-            <el-form-item label="JWT Secret">
-              <el-input v-model="form.jwt_secret" show-password placeholder="留空则执行时随机生成强密钥">
-                <template #append>
-                  <el-button @click="form.jwt_secret = generateRandomSecret()">随机生成</el-button>
+            <!-- 安全加固 / SQL 定制详情（共用 admin 密码，避免重复输入） -->
+            <div v-if="form.enable_security || form.enable_sql_customize" class="detail-panel">
+              <div class="detail-grid">
+                <el-form-item
+                  v-if="form.enable_security || form.enable_sql_customize"
+                  label="admin 密码"
+                >
+                  <el-input v-model="form.admin_password" show-password placeholder="留空则不修改" />
+                  <span class="inline-hint muted">安全加固与 SQL 定制共用</span>
+                </el-form-item>
+                <el-form-item v-if="form.enable_sql_customize" label="新数据库名">
+                  <el-input
+                    v-model="form.db_name"
+                    :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`"
+                  />
+                </el-form-item>
+                <el-form-item v-if="form.enable_security" label="清除演示账号">
+                  <el-switch v-model="form.clean_demo_users" @change="onSwitchChange" />
+                  <span class="inline-hint muted">删除 ry / ryadmin 等演示账号 SQL</span>
+                </el-form-item>
+                <el-form-item v-if="form.enable_sql_customize" label="清除 quartz 数据">
+                  <el-switch v-model="form.clean_quartz" @change="onSwitchChange" />
+                  <span class="inline-hint muted">删除 QRTZ_* 表和数据</span>
+                </el-form-item>
+              </div>
+              <div class="detail-tip muted">
+                <template v-if="form.enable_security && form.enable_sql_customize">
+                  安全加固：自动关闭注册与 demo 模式，新密码明文回显到执行报告；SQL 定制：自动匹配 ry_*.sql
+                  脚本替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
                 </template>
-              </el-input>
-            </el-form-item>
-            <el-form-item label="Token 有效期">
-              <el-input-number v-model="form.jwt_expire_minutes" :min="1" :max="10080" />
-              <span class="inline-hint muted">分钟（默认 30）</span>
-            </el-form-item>
-          </div>
-        </div>
-
-        <div v-if="form.enable_generator_config" class="detail-panel">
-          <div class="detail-grid">
-            <el-form-item label="作者名">
-              <el-input v-model="form.generator_author" placeholder="留空保留默认 ruoyi" />
-            </el-form-item>
-            <el-form-item label="表前缀">
-              <el-input v-model="form.generator_table_prefix" placeholder="如 sys_, 逗号分隔" />
-            </el-form-item>
-            <el-form-item label="生成包名" class="notify-row">
-              <el-input :model-value="form.new_package" disabled />
-              <span class="inline-hint muted">联动新包名</span>
-            </el-form-item>
-          </div>
-          <div class="detail-grid">
-            <el-form-item label="Vue3 模板升级">
-              <el-switch v-model="form.generator_vue3" />
-              <span class="inline-hint muted">将生成器前端模板改为 Element Plus（Vue3）语法</span>
-            </el-form-item>
-          </div>
-        </div>
-
-        <!-- 部署分区 -->
-        <el-divider content-position="left">部署</el-divider>
-        <div class="switch-grid">
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">Nginx 配置</span>
-              <el-switch v-model="form.enable_nginx_config" />
+                <template v-else-if="form.enable_security">
+                  自动关闭注册与 demo 模式；执行后新密码会明文回显到执行报告，便于查看。
+                </template>
+                <template v-else>
+                  自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+                </template>
+              </div>
             </div>
-            <div class="switch-item__hint muted">生成反向代理配置（前端静态托管 + /prod-api 反代后端）</div>
-          </div>
-          <div class="switch-item">
-            <div class="switch-item__head">
-              <span class="switch-item__label">启动脚本</span>
-              <el-switch v-model="form.enable_startup_scripts" />
+          </el-collapse-item>
+
+          <!-- 项目结构 -->
+          <el-collapse-item :name="SECTION.structure">
+            <template #title>
+              <span class="section-title">项目结构</span>
+              <el-badge v-if="sectionCounts.structure > 0" :value="`已启用 ${sectionCounts.structure}`" class="section-badge" type="primary" />
+            </template>
+            <div class="switch-grid">
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">前后端分离</span>
+                  <el-switch v-model="form.enable_frontend_split" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">
+                  {{ form.enable_frontend_split ? `前端将移至 ${form.new_module_prefix || 'demo'}-ui-frontend` : '前端目录拆出，与后端平级' }}
+                </div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">AI 规范文件</span>
+                  <el-switch v-model="form.enable_ai_rules" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">生成 AGENTS.md + CLAUDE.md 编码规范</div>
+              </div>
             </div>
-            <div class="switch-item__hint muted">start/stop 脚本 + build 一键打包脚本（.sh + .bat），端口与 Nginx 共用</div>
-          </div>
-        </div>
+          </el-collapse-item>
 
-        <div v-if="form.enable_nginx_config || form.enable_startup_scripts" class="detail-panel">
-          <div class="detail-grid">
-            <el-form-item label="后端端口">
-              <el-input-number v-model="form.server_port" :min="1" :max="65535" />
-              <span class="inline-hint muted">jar 监听端口（Nginx 反代目标 + 脚本停止端口）</span>
-            </el-form-item>
-            <el-form-item label="对外域名">
-              <el-input v-model="form.server_name" placeholder="留空用 localhost，如 demo.example.com" />
-            </el-form-item>
-          </div>
-          <div v-if="form.enable_nginx_config" class="detail-grid">
-            <el-form-item label="启用 HTTPS" class="notify-row">
-              <el-switch v-model="form.use_https" />
-              <span class="inline-hint muted">生成证书占位段（需自行替换正式证书）</span>
-            </el-form-item>
-          </div>
-          <div class="detail-tip muted">
-            输出到 output_dir/nginx/（配置）和 output_dir/scripts/（脚本）。
-          </div>
-        </div>
+          <!-- 对象存储 OSS -->
+          <el-collapse-item :name="SECTION.oss">
+            <template #title>
+              <span class="section-title">对象存储 OSS</span>
+              <el-badge v-if="sectionCounts.oss > 0" value="已启用" class="section-badge" type="primary" />
+            </template>
+            <div class="switch-grid">
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">引入 OSS</span>
+                  <el-switch v-model="form.enable_oss" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">注入 SDK + 配置类 + 独立上传接口 /common/oss/upload</div>
+              </div>
+            </div>
+            <div v-if="form.enable_oss" class="detail-panel">
+              <el-form-item label="云厂商">
+                <el-radio-group v-model="form.oss_provider">
+                  <el-radio value="aliyun">阿里云 OSS</el-radio>
+                  <el-radio value="tencent">腾讯云 COS</el-radio>
+                  <el-radio value="minio">MinIO</el-radio>
+                  <el-radio value="qiniu">七牛云 Kodo</el-radio>
+                </el-radio-group>
+              </el-form-item>
+              <div class="detail-grid">
+                <el-form-item label="Endpoint">
+                  <el-input v-model="form.oss_endpoint" :placeholder="form.oss_provider === 'minio' ? 'http://localhost:9000' : '如 oss-cn-hangzhou.aliyuncs.com'" />
+                </el-form-item>
+                <el-form-item label="Bucket">
+                  <el-input v-model="form.oss_bucket" placeholder="bucket 名称" />
+                </el-form-item>
+                <el-form-item label="AccessKey">
+                  <el-input v-model="form.oss_access_key" placeholder="accessKey" />
+                </el-form-item>
+                <el-form-item label="SecretKey">
+                  <el-input v-model="form.oss_secret_key" show-password placeholder="secretKey" />
+                </el-form-item>
+                <el-form-item label="自定义域名" class="notify-row">
+                  <el-input v-model="form.oss_custom_domain" placeholder="CDN 域名，留空用默认域名" />
+                </el-form-item>
+              </div>
+              <div class="detail-tip muted">
+                将新增独立的 /common/oss/upload 上传接口，不改动若依原有本地上传逻辑。
+              </div>
+            </div>
+          </el-collapse-item>
 
-        <!-- UniApp 小程序信息 + 微信支付（仅开启 UniApp 时显示） -->
-        <div v-if="form.enable_uniapp" class="detail-panel">
-          <el-divider content-position="left">小程序信息</el-divider>
-          <div class="detail-grid">
-            <el-form-item label="小程序 AppID">
-              <el-input v-model="form.wx_appid" placeholder="如 wx1234567890abcdef" />
-            </el-form-item>
-            <el-form-item label="小程序 AppSecret">
-              <el-input v-model="form.wx_appsecret" show-password placeholder="小程序密钥" />
-            </el-form-item>
-          </div>
+          <!-- JWT & 代码生成器 -->
+          <el-collapse-item :name="SECTION.jwt">
+            <template #title>
+              <span class="section-title">JWT &amp; 代码生成器</span>
+              <el-badge v-if="sectionCounts.jwt > 0" :value="`已启用 ${sectionCounts.jwt}`" class="section-badge" type="primary" />
+            </template>
+            <div class="switch-grid">
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">JWT 定制</span>
+                  <el-switch v-model="form.enable_jwt" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">替换若依默认公开的 token secret + 有效期</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">代码生成器配置</span>
+                  <el-switch v-model="form.enable_generator_config" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">作者名、生成包名、表前缀、Vue3 模板</div>
+              </div>
+            </div>
 
-          <el-divider content-position="left">微信支付</el-divider>
-          <div class="detail-grid">
-            <el-form-item label="引入微信支付">
-              <el-switch v-model="form.pay_included" />
-              <span class="inline-hint muted">生成 wechat.pay 配置块、注入官方 SDK 依赖与配置类</span>
-            </el-form-item>
-            <el-form-item label="开启微信支付">
-              <el-switch v-model="form.pay_enabled" :disabled="!form.pay_included" />
-              <span class="inline-hint muted">对应 yml 的 enabled 字段</span>
-            </el-form-item>
-          </div>
+            <div v-if="form.enable_jwt" class="detail-panel">
+              <div class="detail-grid">
+                <el-form-item label="JWT Secret">
+                  <el-input v-model="form.jwt_secret" show-password placeholder="留空则执行时随机生成强密钥">
+                    <template #append>
+                      <el-button @click="form.jwt_secret = generateRandomSecret()">随机生成</el-button>
+                    </template>
+                  </el-input>
+                </el-form-item>
+                <el-form-item label="Token 有效期">
+                  <el-input-number v-model="form.jwt_expire_minutes" :min="1" :max="10080" />
+                  <span class="inline-hint muted">分钟（默认 30）</span>
+                </el-form-item>
+              </div>
+            </div>
 
-          <template v-if="form.pay_included">
-            <el-form-item label="支付模式" class="pay-mode-row">
-              <el-radio-group v-model="form.pay_mode">
-                <el-radio value="public-key">公钥模式（V3，推荐）</el-radio>
-                <el-radio value="certificate">平台证书模式（V3）</el-radio>
-                <el-radio value="v2">V2 旧模式</el-radio>
-              </el-radio-group>
-            </el-form-item>
+            <div v-if="form.enable_generator_config" class="detail-panel">
+              <div class="detail-grid">
+                <el-form-item label="作者名">
+                  <el-input v-model="form.generator_author" placeholder="留空保留默认 ruoyi" />
+                </el-form-item>
+                <el-form-item label="表前缀">
+                  <el-input v-model="form.generator_table_prefix" placeholder="如 sys_, 逗号分隔" />
+                </el-form-item>
+                <el-form-item label="生成包名" class="notify-row">
+                  <el-input :model-value="form.new_package" disabled />
+                  <span class="inline-hint muted">联动新包名</span>
+                </el-form-item>
+              </div>
+              <div class="detail-grid">
+                <el-form-item label="Vue3 模板升级">
+                  <el-switch v-model="form.generator_vue3" @change="onSwitchChange" />
+                  <span class="inline-hint muted">将生成器前端模板改为 Element Plus（Vue3）语法</span>
+                </el-form-item>
+              </div>
+            </div>
+          </el-collapse-item>
+
+          <!-- 部署 -->
+          <el-collapse-item :name="SECTION.deploy">
+            <template #title>
+              <span class="section-title">部署</span>
+              <el-badge v-if="sectionCounts.deploy > 0" :value="`已启用 ${sectionCounts.deploy}`" class="section-badge" type="primary" />
+            </template>
+            <div class="switch-grid">
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">Nginx 配置</span>
+                  <el-switch v-model="form.enable_nginx_config" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">生成反向代理配置（前端静态托管 + /prod-api 反代后端）</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">启动脚本</span>
+                  <el-switch v-model="form.enable_startup_scripts" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">start/stop 脚本 + build 一键打包脚本（.sh + .bat），端口与 Nginx 共用</div>
+              </div>
+            </div>
+
+            <div v-if="form.enable_nginx_config || form.enable_startup_scripts" class="detail-panel">
+              <div class="detail-grid">
+                <el-form-item label="后端端口">
+                  <el-input-number v-model="form.server_port" :min="1" :max="65535" />
+                  <span class="inline-hint muted">jar 监听端口（Nginx 反代目标 + 脚本停止端口）</span>
+                </el-form-item>
+                <el-form-item label="对外域名">
+                  <el-input v-model="form.server_name" placeholder="留空用 localhost，如 demo.example.com" />
+                </el-form-item>
+              </div>
+              <div v-if="form.enable_nginx_config" class="detail-grid">
+                <el-form-item label="启用 HTTPS" class="notify-row">
+                  <el-switch v-model="form.use_https" @change="onSwitchChange" />
+                  <span class="inline-hint muted">生成证书占位段（需自行替换正式证书）</span>
+                </el-form-item>
+              </div>
+              <div class="detail-tip muted">
+                输出到 output_dir/nginx/（配置）和 output_dir/scripts/（脚本）。
+              </div>
+            </div>
+          </el-collapse-item>
+
+          <!-- 小程序信息 + 微信支付（仅开启 UniApp 时才有内容） -->
+          <el-collapse-item v-if="form.enable_uniapp" :name="SECTION.uniapp">
+            <template #title>
+              <span class="section-title">小程序信息 + 微信支付</span>
+              <el-badge v-if="sectionCounts.uniapp > 0" value="已启用" class="section-badge" type="primary" />
+            </template>
+            <div class="detail-grid">
+              <el-form-item label="小程序 AppID">
+                <el-input v-model="form.wx_appid" placeholder="如 wx1234567890abcdef" />
+              </el-form-item>
+              <el-form-item label="小程序 AppSecret">
+                <el-input v-model="form.wx_appsecret" show-password placeholder="小程序密钥" />
+              </el-form-item>
+            </div>
 
             <div class="detail-grid">
-              <el-form-item label="商户号">
-                <el-input v-model="form.pay_mch_id" placeholder="如 1900000109" />
+              <el-form-item label="引入微信支付">
+                <el-switch v-model="form.pay_included" @change="onSwitchChange" />
+                <span class="inline-hint muted">生成 wechat.pay 配置块、注入官方 SDK 依赖与配置类</span>
               </el-form-item>
-              <el-form-item v-if="form.pay_mode !== 'v2'" label="商户证书序列号">
-                <el-input v-model="form.pay_mch_serial_no" placeholder="merchantSerialNumber" />
-              </el-form-item>
-              <el-form-item v-if="form.pay_mode !== 'v2'" label="API V3 密钥">
-                <el-input v-model="form.pay_api_v3_key" show-password placeholder="32 位 APIv3 密钥" />
-              </el-form-item>
-              <el-form-item v-if="form.pay_mode !== 'v2'" label="商户 API 私钥路径">
-                <el-input v-model="form.pay_private_key_path" placeholder="classpath:cert/apiclient_key.pem" />
-              </el-form-item>
-              <el-form-item v-if="form.pay_mode === 'public-key'" label="平台公钥 ID">
-                <el-input v-model="form.pay_public_key_id" placeholder="如 PUB_KEY_ID_xxxx" />
-              </el-form-item>
-              <el-form-item v-if="form.pay_mode === 'public-key'" label="平台公钥路径">
-                <el-input v-model="form.pay_public_key_path" placeholder="classpath:cert/wxp_pub.pem" />
-              </el-form-item>
-              <el-form-item v-if="form.pay_mode === 'v2'" label="API V2 密钥">
-                <el-input v-model="form.pay_api_key" show-password placeholder="32 位 APIv2 密钥" />
-              </el-form-item>
-              <el-form-item v-if="form.pay_mode === 'v2'" label="商户证书路径">
-                <el-input v-model="form.pay_cert_path" placeholder="classpath:cert/apiclient_cert.p12" />
-              </el-form-item>
-              <el-form-item label="支付回调地址" class="notify-row">
-                <el-input v-model="form.pay_notify_url" placeholder="https://your-domain.com/app/xxx/payment/wechat/notify" />
-                <span class="inline-hint muted">dev/prod 共用；留空时 prod 用默认域名占位</span>
+              <el-form-item label="开启微信支付">
+                <el-switch v-model="form.pay_enabled" :disabled="!form.pay_included" @change="onSwitchChange" />
+                <span class="inline-hint muted">对应 yml 的 enabled 字段</span>
               </el-form-item>
             </div>
-          </template>
-        </div>
+
+            <template v-if="form.pay_included">
+              <el-form-item label="支付模式" class="pay-mode-row">
+                <el-radio-group v-model="form.pay_mode">
+                  <el-radio value="public-key">公钥模式（V3，推荐）</el-radio>
+                  <el-radio value="certificate">平台证书模式（V3）</el-radio>
+                  <el-radio value="v2">V2 旧模式</el-radio>
+                </el-radio-group>
+              </el-form-item>
+
+              <div class="detail-grid">
+                <el-form-item label="商户号">
+                  <el-input v-model="form.pay_mch_id" placeholder="如 1900000109" />
+                </el-form-item>
+                <el-form-item v-if="form.pay_mode !== 'v2'" label="商户证书序列号">
+                  <el-input v-model="form.pay_mch_serial_no" placeholder="merchantSerialNumber" />
+                </el-form-item>
+                <el-form-item v-if="form.pay_mode !== 'v2'" label="API V3 密钥">
+                  <el-input v-model="form.pay_api_v3_key" show-password placeholder="32 位 APIv3 密钥" />
+                </el-form-item>
+                <el-form-item v-if="form.pay_mode !== 'v2'" label="商户 API 私钥路径">
+                  <el-input v-model="form.pay_private_key_path" placeholder="classpath:cert/apiclient_key.pem" />
+                </el-form-item>
+                <el-form-item v-if="form.pay_mode === 'public-key'" label="平台公钥 ID">
+                  <el-input v-model="form.pay_public_key_id" placeholder="如 PUB_KEY_ID_xxxx" />
+                </el-form-item>
+                <el-form-item v-if="form.pay_mode === 'public-key'" label="平台公钥路径">
+                  <el-input v-model="form.pay_public_key_path" placeholder="classpath:cert/wxp_pub.pem" />
+                </el-form-item>
+                <el-form-item v-if="form.pay_mode === 'v2'" label="API V2 密钥">
+                  <el-input v-model="form.pay_api_key" show-password placeholder="32 位 APIv2 密钥" />
+                </el-form-item>
+                <el-form-item v-if="form.pay_mode === 'v2'" label="商户证书路径">
+                  <el-input v-model="form.pay_cert_path" placeholder="classpath:cert/apiclient_cert.p12" />
+                </el-form-item>
+                <el-form-item label="支付回调地址" class="notify-row">
+                  <el-input v-model="form.pay_notify_url" placeholder="https://your-domain.com/app/xxx/payment/wechat/notify" />
+                  <span class="inline-hint muted">dev/prod 共用；留空时 prod 用默认域名占位</span>
+                </el-form-item>
+              </div>
+            </template>
+          </el-collapse-item>
+        </el-collapse>
       </el-form>
 
       <!-- 历史记录对话框 -->
@@ -710,6 +901,7 @@ function generateRandomSecret(): string {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
+  align-items: center;
 }
 .hint {
   margin-left: 12px;
@@ -732,12 +924,98 @@ function generateRandomSecret(): string {
   border-top: 1px solid var(--rf-card-border);
 }
 
+/* 预设下拉菜单项 */
+.preset-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+.preset-item__icon {
+  font-size: 18px;
+  line-height: 1.4;
+}
+.preset-item__text {
+  display: flex;
+  flex-direction: column;
+}
+.preset-item__name {
+  font-size: 14px;
+  color: #303133;
+  line-height: 1.4;
+}
+.preset-item__desc {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+  margin-top: 2px;
+  max-width: 320px;
+}
+
+/* 预设状态提示横幅 */
+.preset-banner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  margin-bottom: 12px;
+  background: #ecf5ff;
+  border: 1px solid #d9ecff;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #303133;
+}
+.preset-banner--custom {
+  background: #fdf6ec;
+  border-color: #faecd8;
+}
+.preset-banner__hint {
+  margin-left: 8px;
+  font-size: 12px;
+  color: #909399;
+}
+
+/* 折叠面板 */
+.config-collapse {
+  border: none;
+}
+.config-collapse :deep(.el-collapse-item__header) {
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  background: #f7f8fa;
+  border-radius: 6px;
+  padding: 0 14px;
+  margin-bottom: 4px;
+  border: 1px solid #eef1f5;
+  height: 44px;
+  line-height: 44px;
+}
+.config-collapse :deep(.el-collapse-item__header:hover) {
+  background: #f2f4f8;
+}
+.config-collapse :deep(.el-collapse-item__wrap) {
+  border: none;
+}
+.config-collapse :deep(.el-collapse-item__content) {
+  padding: 16px 0 8px;
+}
+.section-title {
+  margin-right: 10px;
+}
+.section-badge {
+  margin-left: 4px;
+}
+.section-badge :deep(.el-badge__content) {
+  font-weight: normal;
+  font-size: 11px;
+}
+
 /* 改造开关：两列网格，紧凑排列 */
 .switch-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 10px 16px;
-  margin-left: 140px;
 }
 .switch-item {
   display: flex;
@@ -771,8 +1049,7 @@ function generateRandomSecret(): string {
 
 /* 详情面板：分区开关开启后展开的嵌套表单 */
 .detail-panel {
-  margin-left: 140px;
-  margin-top: 8px;
+  margin-top: 12px;
   padding: 12px 20px 4px;
   background: #f7f8fa;
   border: 1px solid #eef1f5;
