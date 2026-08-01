@@ -15,6 +15,7 @@ pub mod oss;
 pub mod generator_config;
 pub mod nginx;
 pub mod scripts;
+pub mod snowflake;
 pub mod logback;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
@@ -87,6 +88,9 @@ pub struct CustomizeParams {
     pub enable_logback_rewrite: bool,
     pub enable_generator_mybatis_plus: bool,
     pub enable_long_id_json_string: bool,
+    /// 全局雪花 ID：insert 方法注入 Hutool IdUtil.setId，禁止自增
+    #[serde(default)]
+    pub enable_snowflake_id: bool,
     pub enable_report: bool,
     /// 清空若依前端首页（views/index.vue）为空白页
     #[serde(default = "default_true")]
@@ -256,6 +260,7 @@ impl Default for CustomizeParams {
             enable_logback_rewrite: true,
             enable_generator_mybatis_plus: true,
             enable_long_id_json_string: true,
+            enable_snowflake_id: false,
             enable_report: true,
             enable_clear_home: true,
             enable_remove_github: true,

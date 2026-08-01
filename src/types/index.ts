@@ -65,6 +65,8 @@ export interface CustomizeParams {
   enable_logback_rewrite: boolean
   enable_generator_mybatis_plus: boolean
   enable_long_id_json_string: boolean
+  /** 全局雪花ID：insert 手动 setId（Hutool 雪花算法），全局禁用自增 */
+  enable_snowflake_id: boolean
   enable_report: boolean
   /** 清空若依前端首页为空白页 */
   enable_clear_home: boolean

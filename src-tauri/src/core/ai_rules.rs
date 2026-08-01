@@ -66,6 +66,20 @@ fn build_placeholders(params: &CustomizeParams) -> HashMap<String, String> {
             params.frontend_title.clone()
         },
     );
+    // 雪花 ID 规范段（仅开启时输出，关闭则填空串，整段消失）
+    map.insert(
+        "{{SNOWFLAKE_ID_SECTION}}".into(),
+        if params.enable_snowflake_id {
+            "# SNOWFLAKE ID RULES\n\n\
+             - 主键 ID 统一使用 Hutool 雪花算法生成：`cn.hutool.core.util.IdUtil.getSnowflakeNextId()`。\n\
+             - 所有 ServiceImpl 的 `insert` 方法必须在落库前调用 `entity.setId(IdUtil.getSnowflakeNextId())` 手动赋值，禁止依赖数据库自增。\n\
+             - 新增业务表时主键策略与此保持一致；MyBatis-Plus 场景下 domain 主键注解使用 `@TableId(type = IdType.INPUT)`。\n\n\
+             ---\n"
+                .to_string()
+        } else {
+            String::new()
+        },
+    );
     map
 }
 

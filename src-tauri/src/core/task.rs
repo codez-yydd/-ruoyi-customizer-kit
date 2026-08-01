@@ -19,6 +19,7 @@ pub enum TaskType {
     AddMybatisPlusConfig,
     UpdateGeneratorTemplatesForMybatisPlus,
     AddLongIdJsonSerializeAnnotation,
+    InjectSnowflakeId,
     GenerateUniappProject,
     AppendWechatConfig,
     AddWechatPayDependency,

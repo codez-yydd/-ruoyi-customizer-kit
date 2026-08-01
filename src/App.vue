@@ -7,6 +7,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
 import { Box, Check, HomeFilled, Search, Setting, Tools, View } from '@element-plus/icons-vue'
+import pkg from '../package.json'
+
+// 版本号统一取自 package.json，避免多处硬编码不同步
+const appVersion = pkg.version
 
 const route = useRoute()
 const router = useRouter()
@@ -87,7 +91,7 @@ function go(m: { name: string; step: number }) {
         </div>
       </div>
 
-      <div class="rf-sidebar__footer">RuoYi Forge v0.1.0</div>
+      <div class="rf-sidebar__footer">RuoYi Forge v{{ appVersion }}</div>
     </aside>
 
     <main class="rf-main">

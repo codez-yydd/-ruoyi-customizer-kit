@@ -107,6 +107,7 @@ where
         TaskType::AddMybatisPlusConfig => do_add_mp_config(root, params, info, &mut r, log),
         TaskType::UpdateGeneratorTemplatesForMybatisPlus => do_adapt_generator(root, params, info, &mut r, log),
         TaskType::AddLongIdJsonSerializeAnnotation => do_add_long_id(root, info, &mut r, log),
+        TaskType::InjectSnowflakeId => do_inject_snowflake_id(root, params, info, &mut r, log),
         TaskType::GenerateUniappProject => do_generate_uniapp(root, params, &mut r, log),
         TaskType::AppendWechatConfig => do_append_wechat_config(root, params, &mut r, log),
         TaskType::AddWechatPayDependency => do_add_wechat_pay_dependency(root, info, &mut r, log),
@@ -611,6 +612,141 @@ where
     let n = crate::core::mybatis_plus::adapt_generator_templates(root, &domain_files, true, log)?;
     r.modified_files = n;
     Ok(())
+}
+
+/// 11b. 全局雪花 ID：注入 Hutool 依赖 + 改造生成器模板 + 改造已有源码 insert 方法。
+/// 若同时开启 MyBatis-Plus，把 domain 主键标记为 IdType.INPUT，避免 MP 自动分配与手动 setId 冲突。
+fn do_inject_snowflake_id<F>(
+    root: &Path,
+    params: &CustomizeParams,
+    info: &crate::core::ProjectInfo,
+    r: &mut TaskResult,
+    log: &F,
+) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let mut modified = 0usize;
+    let mut notes: Vec<&str> = Vec::new();
+
+    // 1. 添加 Hutool 依赖
+    let modules = current_backend_modules(root, info);
+    if crate::core::snowflake::add_hutool_dependency(root, &modules, &|msg| log(msg))? {
+        modified += 1;
+    }
+
+    // 2. 改造代码生成器模板 serviceImpl.java.vm（如有）
+    for rel in current_generator_files(root, info) {
+        if !rel.ends_with("serviceImpl.java.vm") {
+            continue;
+        }
+        let path = root.join(&rel);
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if let Some(new_content) = crate::core::snowflake::inject_snowflake_to_service_impl_vm(&content) {
+            if new_content != content {
+                std::fs::write(&path, new_content)
+                    .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+                modified += 1;
+                log(&format!("已注入雪花 ID 到生成器模板：{rel}"));
+            }
+        }
+    }
+
+    // 3. 改造已有 ServiceImpl 源码 insert 方法
+    let n = crate::core::snowflake::inject_snowflake_to_existing_sources(root, &|msg| log(msg))?;
+    modified += n;
+
+    // 4. 同时开启 MP 时：domain 主键标记 IdType.INPUT（生成器模板 + 已有源码）
+    if params.enable_mybatis_plus {
+        // 4a. 生成器 domain 模板
+        for rel in current_generator_files(root, info) {
+            if !rel.ends_with("domain.java.vm") {
+                continue;
+            }
+            let path = root.join(&rel);
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if let Some(new_content) = crate::core::snowflake::mark_domain_idtype_input(&content) {
+                if new_content != content {
+                    std::fs::write(&path, new_content)
+                        .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+                    modified += 1;
+                    log(&format!("已标记 domain 主键 IdType.INPUT：{rel}"));
+                }
+            }
+        }
+        // 4b. 已有 domain 源码（扫描所有 domain 目录下的 .java）
+        let dom_n = mark_existing_domains_input(root, log)?;
+        modified += dom_n;
+        notes.push("domain 主键已标记 IdType.INPUT");
+    }
+
+    r.modified_files = modified;
+    if modified == 0 {
+        r.message = "无可注入的 insert 方法，跳过".into();
+    } else if !notes.is_empty() {
+        r.message = notes.join("；");
+    }
+    Ok(())
+}
+
+/// 扫描已有 domain 源码，把 Long 主键 @TableId 标记为 IdType.INPUT（仅雪花ID+MP 同开时调用）。
+fn mark_existing_domains_input<F>(root: &Path, log: &F) -> Result<usize, String>
+where
+    F: Fn(&str),
+{
+    let mut count = 0usize;
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                !matches!(
+                    name.as_str(),
+                    "target" | "node_modules" | ".git" | ".idea" | "dist"
+                )
+            } else {
+                true
+            }
+        })
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_file()
+            || !path
+                .file_name()
+                .map(|n| n.to_string_lossy().ends_with(".java"))
+                .unwrap_or(false)
+        {
+            continue;
+        }
+        // 仅处理 domain 目录下的实体类，避免误改
+        if !path
+            .to_string_lossy()
+            .contains("/domain/")
+            && !path.to_string_lossy().contains("\\domain\\")
+        {
+            continue;
+        }
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        if let Some(new_content) = crate::core::snowflake::mark_domain_idtype_input(&content) {
+            if new_content != content {
+                std::fs::write(path, &new_content)
+                    .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+                count += 1;
+                log(&format!("已标记 domain 主键 IdType.INPUT：{}", path.display()));
+            }
+        }
+    }
+    Ok(count)
 }
 
 /// 扫描当前实际存在的后端模块目录（兼顾已改名场景）

@@ -41,6 +41,7 @@ const defaults = (): CustomizeParams => ({
   enable_logback_rewrite: true,
   enable_generator_mybatis_plus: true,
   enable_long_id_json_string: true,
+  enable_snowflake_id: false,
   enable_report: true,
   enable_clear_home: true,
   enable_remove_github: true,
@@ -343,6 +344,13 @@ function generateRandomSecret(): string {
               <el-switch v-model="form.enable_long_id_json_string" />
             </div>
             <div class="switch-item__hint muted">避免前端精度丢失</div>
+          </div>
+          <div class="switch-item">
+            <div class="switch-item__head">
+              <span class="switch-item__label">全局雪花ID</span>
+              <el-switch v-model="form.enable_snowflake_id" />
+            </div>
+            <div class="switch-item__hint muted">insert 手动 setId（Hutool 雪花算法），全局禁用自增</div>
           </div>
           <div class="switch-item">
             <div class="switch-item__head">

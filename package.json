@@ -1,6 +1,6 @@
 {
   "name": "ruoyi-forge",
-  "version": "0.1.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "RuoYi Forge / 若依锻造台 — 面向若依新项目初始化的快速定制工具",

@@ -264,6 +264,25 @@ pub fn plan(
         });
     }
 
+    // 11b. 全局雪花 ID（可选，独立开关）：insert 方法注入 Hutool IdUtil.setId
+    if params.enable_snowflake_id {
+        let mut name = "全局雪花ID：注入 Hutool IdUtil + 主键 setId".to_string();
+        if params.enable_mybatis_plus {
+            name.push_str("（domain 主键标记 IdType.INPUT）");
+        }
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name,
+            task_type: TaskType::InjectSnowflakeId,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 12. UniApp 小程序项目生成（可选）
     if params.enable_uniapp {
         let uniapp_dir = format!("{}-uniapp", params.new_module_prefix);
