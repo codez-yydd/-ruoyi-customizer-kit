@@ -1,0 +1,79 @@
+# 跨平台发布：推送 v* tag 时，在 Windows / macOS / Linux 三端并行构建并发布到 GitHub Release。
+#
+# 触发方式：
+#   git tag v1.0.1
+#   git push origin v1.0.1
+#
+# 产物：
+#   Windows → .exe (NSIS) + .msi
+#   macOS   → .dmg + .app
+#   Linux   → .deb + .AppImage + .rpm
+#
+# 说明：Tauri 无法在单一系统交叉编译出其它平台的安装包，
+# 故用 matrix 在三个 runner 上各自原生构建。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 允许手动触发（用于测试，不会发布到 Release）
+  workflow_dispatch:
+
+jobs:
+  publish:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+          - platform: macos-latest
+            args: '--target x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 Rust 稳定版
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: 安装 Linux 系统依赖
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: 安装前端依赖
+        run: npm install
+
+      - name: 缓存 Cargo
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      # 构建 + 发布到 Release（tag 触发时才上传；手动触发仅构建验证）
+      - name: 构建并发布
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: 'RuoYi Forge ${{ github.ref_name }}'
+          releaseBody: '若依锻造台 ${{ github.ref_name }} 版本，请在 Assets 中选择对应平台安装包下载。'
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
