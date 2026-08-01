@@ -280,19 +280,16 @@ pub fn plan(
         });
         // 追加微信小程序配置（按是否引入支付动态调整文案）
         let append_name = if params.pay_included {
-            "追加微信小程序 + 支付配置到 application-dev/prod"
+            "追加微信小程序 + 支付配置到 application.yaml"
         } else {
-            "追加微信小程序配置到 application-dev/prod"
+            "追加微信小程序配置到 application.yaml"
         };
         tasks.push(Task {
             id: next_id(&tasks),
             name: append_name.into(),
             task_type: TaskType::AppendWechatConfig,
             risk_level: RiskLevel::Low,
-            affected_files: vec![
-                "application-dev.yaml".into(),
-                "application-prod.yaml".into(),
-            ],
+            affected_files: vec!["application.yaml".into()],
             affected_dirs: vec![],
             created_files: vec![],
             status: TaskStatus::Pending,

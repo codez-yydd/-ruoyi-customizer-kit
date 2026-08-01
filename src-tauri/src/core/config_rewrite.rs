@@ -149,30 +149,40 @@ pub fn rewrite(
         "server:\n  port: 8080\n".to_string()
     };
 
-    // 2. 读取 application-druid.yml/yaml（datasource 来源，原文）
-    let (druid_content, druid_existed) =
+    // 2. 探测 application-druid.yml/yaml 是否存在（datasource 已改用标准模板生成，
+    //    不再读取其内容，但旧文件需在迁移后删除）
+    let (_druid_content, druid_existed) =
         read_first(resources_dir, &["application-druid.yml", "application-druid.yaml"])?;
 
-    // 3. 按顶层块切分 application，挑出公共块（保留注释）+ 环境块
+    // 3. 按顶层块切分 application，挑出公共块（保留注释）；环境相关块（spring/redis 等）
+    //    从 base 移除——datasource/redis 已改用标准模板写入 dev/prod。
+    //    但 spring 块需特殊处理：保留其中的「运行时子项」（messages/jackson/mvc 等 + 注释），
+    //    只丢弃 datasource/redis/data/profiles 等环境相关子项。
+    //    （若丢掉 spring.messages.basename，MessageSource 会退化为空 → 登录登出 i18n 全挂）
     let blocks = split_top_blocks(&base_content);
     let mut public_lines: Vec<String> = Vec::new();
-    let mut env_lines_from_base: Vec<String> = Vec::new(); // 来自 base 的 spring/redis 等环境块
+    let mut spring_runtime_children: Vec<String> = Vec::new(); // 保留的 spring 运行时子项
     for (key, lines) in &blocks {
         if key == "<prelude>" {
             public_lines.extend(lines.iter().cloned());
             public_lines.push(String::new()); // 空行分隔
             continue;
         }
-        if ENV_KEYS.contains(&key.as_str()) {
-            env_lines_from_base.extend(lines.iter().cloned());
-            env_lines_from_base.push(String::new());
-        } else {
-            public_lines.extend(lines.iter().cloned());
-            public_lines.push(String::new());
+        if key == "spring" {
+            // 从 spring 块抽取运行时子项（排除 datasource/redis/data/profiles）
+            spring_runtime_children = extract_spring_runtime_children(lines);
+            continue;
         }
+        if ENV_KEYS.contains(&key.as_str()) {
+            // 其它环境相关块（redis/datasource 等独立顶层块，罕见）从 base 移除
+            continue;
+        }
+        public_lines.extend(lines.iter().cloned());
+        public_lines.push(String::new());
     }
 
     // 4. 构建 base 公共配置：
+    //    - server.port 同步为 params.server_port（与 nginx / scripts 对齐）
     //    - 在 server 块之后补 spring.application.name + spring.profiles.active=dev（base 必须有 profiles 激活）
     //    - 若开启 MyBatis-Plus，补 mybatis-plus 块
     let mut base_out = String::new();
@@ -180,12 +190,23 @@ pub fn rewrite(
         base_out.push_str(line);
         base_out.push('\n');
     }
-    // 顶部确保 server 存在；若原文无 server，补一个
+    // 顶部确保 server 存在；若原文无 server，补一个（端口用 params.server_port）
     if !base_content.contains("server:") {
-        base_out = format!("server:\n  port: 8080\n\n{}", base_out);
+        base_out = format!("server:\n  port: {}\n\n{}", params.server_port, base_out);
     }
-    // 追加精简 spring 块（base 必须有 profiles 激活 + 应用名）
+    // server.port 同步：把 server 块内的 port 行强制改为 params.server_port
+    // （原 application.yml 里常写 8080，需与 nginx upstream / scripts/start.sh 的端口一致）
+    base_out = sync_server_port(&base_out, params.server_port);
+    // 追加精简 spring 块：
+    //   - 先放保留的运行时子项（messages/jackson/mvc 等，含注释）
+    //   - 再补 application.name + profiles.active=dev（base 必须有 profiles 激活）
     base_out.push_str("\nspring:\n");
+    if !spring_runtime_children.is_empty() {
+        for child in &spring_runtime_children {
+            base_out.push_str(child);
+            base_out.push('\n');
+        }
+    }
     base_out.push_str(&format!("  application:\n    name: {}\n", params.new_project_name));
     base_out.push_str("  profiles:\n    active: dev\n");
 
@@ -197,41 +218,17 @@ pub fn rewrite(
         ));
     }
 
-    // 5. 构建 dev / prod：合并「base 里抽出的 spring/redis 环境块」+「druid 的 datasource」
-    //    dev：明文（localhost）；prod：密码/连接串用环境变量占位
-    let mut dev = String::new();
-    let mut prod = String::new();
-
-    // 5.1 先放 druid 的 datasource（若有）
-    if druid_existed {
-        let druid_ds = extract_spring_datasource_block(&druid_content);
-        if let Some(ds_block) = druid_ds {
-            dev.push_str("spring:\n");
-            dev.push_str(&ds_block);
-            dev.push('\n');
-            prod.push_str("spring:\n");
-            prod.push_str(&apply_prod_placeholders(&ds_block));
-            prod.push('\n');
-        }
-    }
-    // 5.2 再放从 base 抽出的 redis / 环境相关 spring 子配置（合并到已有的 spring 块下）
-    //     若 dev 已有 spring 块（来自 datasource），追加到其后；否则新建
-    let env_spring = collect_env_spring_children(&env_lines_from_base);
-    if !env_spring.is_empty() {
-        let has_spring_dev = dev.contains("spring:");
-        if !has_spring_dev {
-            dev.push_str("spring:\n");
-            prod.push_str("spring:\n");
-        }
-        for child in &env_spring {
-            dev.push_str(child);
-            dev.push('\n');
-            prod.push_str(child);
-            prod.push('\n');
-        }
-    }
-    // prod 末尾的环境占位也应用到 redis（如有）
-    prod = apply_prod_placeholders(&prod);
+    // 5. 构建 dev / prod：统一用「标准完整模板」明文写入 datasource + redis
+    //    （druid 全量连接池参数 + lettuce 连接池；库名取 db_name 或 new_module_prefix）
+    //    dev 与 prod 内容完全一致：都明文，无 ${ENV} 占位（由部署人员后续按需替换）
+    let db_name = if params.db_name.is_empty() {
+        params.new_module_prefix.as_str()
+    } else {
+        params.db_name.as_str()
+    };
+    let std_block = build_standard_datasource_redis(db_name);
+    let dev = std_block.clone();
+    let prod = std_block;
 
     // 6. 写出文件
     let base_path = resources_dir.join("application.yaml");
@@ -266,6 +263,10 @@ pub fn rewrite(
 }
 
 /// 从 druid 内容中提取 spring.datasource 块（含缩进），返回可直接挂在 spring: 下的子内容
+///
+/// 注：datasource 已改用标准模板生成（`build_standard_datasource_redis`），此函数保留备用，
+/// 当前 dev/prod 生成路径不再调用。
+#[allow(dead_code)]
 fn extract_spring_datasource_block(druid_content: &str) -> Option<String> {
     // druid 文件通常是：spring:\n  datasource:\n    ...
     // 我们要取出 "  datasource:" 及其所有更深层缩进行
@@ -299,7 +300,124 @@ fn extract_spring_datasource_block(druid_content: &str) -> Option<String> {
     Some(block_lines.join("\n"))
 }
 
+/// 从 spring 块的行中抽取「运行时子项」——保留除 datasource/redis/data/profiles 之外的所有子项及其注释。
+///
+/// 输入 lines 形如：
+/// ```text
+/// spring:
+///   # 国际化
+///   messages:
+///     basename: i18n/messages
+///   jackson:
+///     date-format: yyyy-MM-dd
+///   profiles:
+///     active: druid
+///   datasource:
+///     ...
+/// ```
+/// 输出（每个元素一行，可直接拼到新 spring 块下，2 空格缩进）：
+/// - 保留：messages / jackson / mvc / servlet / main / http 等运行时配置 + 它们的注释 + 更深层级内容
+/// - 丢弃：datasource / data（redis 在 data 下）/ redis / profiles（active 已在 base 单独写）
+///
+/// 这样 base 仍能正确加载 i18n（spring.messages.basename）、Jackson 日期格式等运行时行为。
+fn extract_spring_runtime_children(lines: &[String]) -> Vec<String> {
+    // 环境相关子项（按 key 名匹配，冒号结尾）：整体丢弃其子树
+    const ENV_CHILD_KEYS: &[&str] = &["datasource:", "data:", "redis:", "profiles:"];
+
+    let mut out: Vec<String> = Vec::new();
+    let mut seen_spring_header = false;
+    let mut skip_current = false; // 当前正在丢弃某个环境子项的子树
+    let mut pending_comment: Option<String> = None; // 暂存块前注释，归属下一个顶层子项
+
+    for line in lines {
+        // 跳过 spring: 头本身（调用方会重新写 spring:）
+        let trimmed_end = line.trim_end();
+        if !seen_spring_header {
+            if trimmed_end == "spring:" {
+                seen_spring_header = true;
+                continue;
+            }
+            // 头之前的行（理论上 split_top_blocks 不会给，防御性跳过）
+            continue;
+        }
+
+        // 注释行（#）：可能是某子项的块前注释或行内说明
+        let is_comment = trimmed_end.starts_with('#');
+        let is_blank = trimmed_end.is_empty();
+
+        // spring 下的两层缩进顶层子项（恰好 2 空格，非注释）
+        if !is_comment && !is_blank
+            && line.starts_with("  ")
+            && !line.starts_with("   ")
+        {
+            let key = trimmed_end.trim_start(); // 去掉 2 空格缩进，得到 "messages:" / "profiles:" 等
+            if ENV_CHILD_KEYS.contains(&key) {
+                skip_current = true;
+                pending_comment = None; // 该注释属于被丢弃的子项
+                continue;
+            }
+            // 保留的顶层子项：先吐出归属它的块前注释
+            skip_current = false;
+            if let Some(c) = pending_comment.take() {
+                out.push(c);
+            }
+            out.push(line.clone());
+            continue;
+        }
+
+        // 三层及以上缩进（子项的子项）
+        if !is_blank && line.starts_with("   ") {
+            if skip_current {
+                continue;
+            }
+            // 归属当前保留子项（或其块前注释段），保留
+            out.push(line.clone());
+            continue;
+        }
+
+        // 空行 / 注释行
+        if is_comment {
+            // 注释可能属于下一个子项（块前注释）或当前保留子项的行内说明
+            if skip_current {
+                // 属于被丢弃子项，丢弃
+                continue;
+            }
+            // 暂存为下一个顶层子项的块前注释；但若已有保留子项在产出中，
+            // 可能是当前子项内部的说明注释 —— 判断缩进层级无法可靠区分，
+            // 保守策略：注释一律暂存 pending_comment，遇到保留顶层子项时吐出；
+            // 若之后遇到的是被丢弃子项则丢弃。多行注释累加。
+            if let Some(existing) = pending_comment.take() {
+                pending_comment = Some(format!("{existing}\n{line}"));
+            } else {
+                pending_comment = Some(line.clone());
+            }
+            continue;
+        }
+
+        // 空行：保留子项之间的分隔——若 pending 有注释或已有产出则保留一个空行
+        if is_blank && !out.is_empty() {
+            out.push(String::new());
+        }
+    }
+
+    // 末尾若有未归属的注释且产出处于保留区，附加（避免丢失块尾说明）
+    if let Some(c) = pending_comment {
+        if !out.is_empty() {
+            out.push(c);
+        }
+    }
+
+    // 去掉末尾多余空行
+    while out.last().map(|l| l.is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out
+}
+
 /// 从 base 抽出的环境块行中，收集 spring 下的子配置（redis、profiles 等已删 active）
+///
+/// 注：datasource/redis 已改用标准模板生成，此函数保留备用，当前路径不再调用。
+#[allow(dead_code)]
 fn collect_env_spring_children(env_lines: &[String]) -> Vec<String> {
     // env_lines 形如 ["spring:", "  redis:", "    host: localhost", ...]
     // 我们要 spring 下除 datasource/profiles 之外的子项（主要是 redis）
@@ -355,6 +473,9 @@ fn collect_env_spring_children(env_lines: &[String]) -> Vec<String> {
 }
 
 /// 给 prod 的 datasource / redis 应用环境变量占位（用户名/密码/URL/redis host）
+///
+/// 注：dev/prod 现统一用明文标准模板（无 ${ENV} 占位），此函数保留备用，当前路径不再调用。
+#[allow(dead_code)]
 fn apply_prod_placeholders(content: &str) -> String {
     let mut out = content.to_string();
     // datasource master 的 username/password/url
@@ -376,6 +497,9 @@ fn apply_prod_placeholders(content: &str) -> String {
 }
 
 /// 把形如 "key: value" 的行值替换为 ${ENV_VAR:原值}（仅 prod 用）
+///
+/// 注：dev/prod 现统一用明文标准模板，此函数保留备用，当前路径不再调用。
+#[allow(dead_code)]
 fn replace_value_line(content: &str, key: &str, env_var: &str) -> String {
     let mut out = String::new();
     for line in content.lines() {
@@ -401,6 +525,142 @@ fn replace_value_line(content: &str, key: &str, env_var: &str) -> String {
         // 保持一致
     }
     out
+}
+
+/// 把 base 配置中 server 块内的 port 行强制改为 `port: <target_port>`。
+///
+/// 用于让 application.yaml 的 server.port 与 nginx upstream / scripts/start.sh 的端口一致。
+/// 仅匹配 server 块下第一个 `port: <数字>` 行（缩进 2 空格）；其它 port（如 server.port 注释）不受影响。
+fn sync_server_port(content: &str, target_port: i32) -> String {
+    // 找到顶层 "server:" 行，在其块内替换第一个 "  port: 数字" 行
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut in_server = false;
+    let mut port_replaced = false;
+    for line in &lines {
+        // 顶层 server: 键（不以空格开头）
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            let key = line.split(':').next().unwrap_or("").trim();
+            in_server = key == "server";
+            out.push((*line).to_string());
+            continue;
+        }
+        if in_server && !port_replaced {
+            // 匹配 "  port: 数字"（恰好两层缩进）
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("port:") {
+                let after = trimmed["port:".len()..].trim();
+                // 仅替换纯数字值（保留行内注释）
+                let num_part = after.split('#').next().unwrap_or("").trim();
+                if !num_part.is_empty()
+                    && num_part.chars().all(|c| c.is_ascii_digit())
+                {
+                    let indent = &line[..line.len() - trimmed.len()];
+                    out.push(format!("{indent}port: {}", target_port));
+                    port_replaced = true;
+                    continue;
+                }
+            }
+        }
+        out.push((*line).to_string());
+    }
+    out.join("\n")
+}
+
+/// 构建标准完整的 spring.datasource + spring.data.redis 配置块（明文）。
+///
+/// 用于 dev / prod：druid 全量连接池参数 + lettuce 连接池。dev 与 prod 内容完全一致，
+/// 不注入 ${ENV} 占位（由部署人员后续按需替换）。
+///
+/// `db_name`：数据库名（url 中 jdbc:mysql://localhost:3306/<db_name>）。
+fn build_standard_datasource_redis(db_name: &str) -> String {
+    format!(
+        r#"# ===== 数据源 + Redis 配置（dev/prod 明文，部署时按需替换密码/地址） =====
+spring:
+  datasource:
+    type: com.alibaba.druid.pool.DruidDataSource
+    driverClassName: com.mysql.cj.jdbc.Driver
+    druid:
+      # 主库数据源
+      master:
+        url: jdbc:mysql://localhost:3306/{db_name}?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8
+        username: root
+        password: 123456
+      # 从库数据源
+      slave:
+        # 从数据源开关/默认关闭
+        enabled: false
+        url:
+        username:
+        password:
+      # 初始连接数
+      initialSize: 5
+      # 最小连接池数量
+      minIdle: 10
+      # 最大连接池数量
+      maxActive: 20
+      # 配置获取连接等待超时的时间
+      maxWait: 60000
+      # 配置连接超时时间
+      connectTimeout: 30000
+      # 配置网络超时时间
+      socketTimeout: 60000
+      # 配置间隔多久才进行一次检测，检测需要关闭的空闲连接，单位是毫秒
+      timeBetweenEvictionRunsMillis: 60000
+      # 配置一个连接在池中最小生存的时间，单位是毫秒
+      minEvictableIdleTimeMillis: 300000
+      # 配置一个连接在池中最大生存的时间，单位是毫秒
+      maxEvictableIdleTimeMillis: 900000
+      # 配置检测连接是否有效
+      validationQuery: SELECT 1 FROM DUAL
+      testWhileIdle: true
+      testOnBorrow: false
+      testOnReturn: false
+      webStatFilter:
+        enabled: true
+      statViewServlet:
+        enabled: true
+        # 设置白名单，不填则允许所有访问
+        allow:
+        url-pattern: /druid/*
+        # 控制台管理用户名和密码
+        login-username: admin
+        login-password: wauio@(*&d
+      filter:
+        stat:
+          enabled: true
+          # 慢SQL记录
+          log-slow-sql: true
+          slow-sql-millis: 1000
+          merge-sql: true
+        wall:
+          config:
+            multi-statement-allow: true
+  data:
+    # redis 配置
+    redis:
+      # 地址
+      host: localhost
+      # 端口，默认为6379
+      port: 6379
+      # 数据库索引
+      database: 1
+      # 密码
+      password:
+      # 连接超时时间
+      timeout: 10s
+      lettuce:
+        pool:
+          # 连接池中的最小空闲连接
+          min-idle: 0
+          # 连接池中的最大空闲连接
+          max-idle: 8
+          # 连接池的最大数据库连接数
+          max-active: 8
+          # #连接池最大阻塞等待时间（使用负值表示没有限制）
+          max-wait: -1ms
+"#
+    )
 }
 
 /// 按候选名顺序读取第一个存在的文件，返回 (内容, 是否存在)

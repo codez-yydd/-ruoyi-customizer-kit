@@ -51,16 +51,63 @@ fn adds_mybatis_plus_dependency_idempotently() {
     let root = dir.path();
     let modules = vec!["ruoyi-common".to_string(), "ruoyi-admin".to_string()];
 
-    // 首次添加
+    // 首次添加（合成项目无 parent 版本 → 默认 Boot 3 → boot3-starter）
     let added = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
     assert!(added, "首次应添加依赖");
     let common_pom = fs::read_to_string(root.join("ruoyi-common/pom.xml")).unwrap();
-    assert!(common_pom.contains("mybatis-plus-boot-starter"), "common pom 应含依赖");
+    assert!(common_pom.contains("mybatis-plus-spring-boot3-starter"), "默认 Boot 3 应注入 boot3 starter");
     assert!(common_pom.contains("3.5.7"), "版本应为 3.5.7");
 
     // 再次添加应跳过（幂等）
     let added2 = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
     assert!(!added2, "已存在时应跳过");
+}
+
+#[test]
+fn selects_boot2_starter_when_parent_is_boot2() {
+    let dir = build_project();
+    let root = dir.path();
+    // 根 pom 用 spring-boot-starter-parent 2.7.18（Spring 5 / Boot 2）
+    write(
+        root.join("pom.xml"),
+        "<project>\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>2.7.18</version>\n  </parent>\n</project>\n",
+    );
+    let modules = vec!["ruoyi-common".to_string()];
+    let added = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
+    assert!(added);
+    let common_pom = fs::read_to_string(root.join("ruoyi-common/pom.xml")).unwrap();
+    assert!(common_pom.contains("mybatis-plus-boot-starter"), "Boot 2 应注入 boot2 starter");
+    assert!(!common_pom.contains("boot3-starter"), "Boot 2 不应注入 boot3 starter");
+}
+
+#[test]
+fn selects_boot3_starter_when_parent_is_boot3() {
+    let dir = build_project();
+    let root = dir.path();
+    // 根 pom 用 spring-boot-starter-parent 3.2.4（Spring 6 / Boot 3）
+    write(
+        root.join("pom.xml"),
+        "<project>\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>3.2.4</version>\n  </parent>\n</project>\n",
+    );
+    let modules = vec!["ruoyi-common".to_string()];
+    let added = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
+    assert!(added);
+    let common_pom = fs::read_to_string(root.join("ruoyi-common/pom.xml")).unwrap();
+    assert!(common_pom.contains("mybatis-plus-spring-boot3-starter"), "Boot 3 应注入 boot3 starter");
+}
+
+#[test]
+fn detect_boot_major_version_reads_parent_version() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    // 无 pom → None
+    assert_eq!(mybatis_plus::detect_boot_major_version(root), None);
+    // Boot 3 parent
+    write(
+        root.join("pom.xml"),
+        "<project>\n  <parent>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>3.5.0</version>\n  </parent>\n</project>\n",
+    );
+    assert_eq!(mybatis_plus::detect_boot_major_version(root), Some(3));
 }
 
 #[test]

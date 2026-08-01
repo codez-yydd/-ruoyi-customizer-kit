@@ -175,8 +175,13 @@ fn full_pipeline_end_to_end() {
     let base = fs::read_to_string(res.join("application.yaml")).unwrap();
     assert!(base.contains("active: dev"));
     assert!(base.contains("mybatis-plus"));
+    // datasource/redis 现为标准模板明文（dev 与 prod 一致，无 ${ENV} 占位）
+    let dev = fs::read_to_string(res.join("application-dev.yaml")).unwrap();
     let prod = fs::read_to_string(res.join("application-prod.yaml")).unwrap();
-    assert!(prod.contains("MYSQL_USERNAME"));
+    assert_eq!(dev, prod, "dev 与 prod 应为完全相同的标准模板明文");
+    assert!(prod.contains("initialSize: 5"), "应含 druid initialSize 标准配置");
+    assert!(prod.contains("max-active: 8"), "应含 lettuce max-active 标准配置");
+    assert!(!prod.contains("${"), "prod 不应含环境变量占位");
 
     // logback
     let logback = fs::read_to_string(res.join("logback.xml")).unwrap();
@@ -184,7 +189,7 @@ fn full_pipeline_end_to_end() {
 
     // MyBatis-Plus 依赖 + 配置类
     let common_pom = fs::read_to_string(root.join("demo-common/pom.xml")).unwrap();
-    assert!(common_pom.contains("mybatis-plus-boot-starter"));
+    assert!(common_pom.contains("mybatis-plus-spring-boot3-starter"), "无 Boot 版本时默认 Boot 3 starter");
     let cfg = root.join("demo-admin/src/main/java/com/company/project/framework/config/MybatisPlusConfig.java");
     assert!(cfg.is_file(), "MybatisPlusConfig.java 应存在");
 

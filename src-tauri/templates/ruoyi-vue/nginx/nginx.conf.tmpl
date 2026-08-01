@@ -6,6 +6,15 @@
 #   2. 后端 jar 监听 {{SERVER_PORT}}（见 scripts/start.sh）
 #   3. 暴露的 web 端口为 80（HTTP）或 443（HTTPS）
 #
+# ---------------- 端口配置（集中定义，三处必须一致）----------------
+# 后端服务端口：{{SERVER_PORT}}
+# 此端口需与以下配置保持一致：
+#   - application.yaml 的 server.port
+#   - scripts/start.sh 与 scripts/stop.sh 的 SERVER_PORT
+#   - 前端代理目标（vue.config.js / vite.config.ts 的 proxy.target、.env 的 BASE_API）
+# 如需修改端口，请同步更新上述所有位置。
+# ----------------------------------------------------------------
+
 # upstream：后端服务
 upstream backend {
     server 127.0.0.1:{{SERVER_PORT}};

@@ -79,51 +79,33 @@ pub fn generate_uniapp_project(
     })
 }
 
-/// 向后端 application-dev/prod 追加微信小程序配置（幂等）。
+/// 向后端 application.yaml（base 默认配置）追加微信小程序配置（幂等）。
+///
+/// 微信配置与环境无关（appid/支付密钥等不随 dev/prod 变化），只写入 base 一份，
+/// 由 spring.profiles.active=dev 加载。不再分别写 dev/prod。
 pub fn append_wechat_config(
     resources_dir: &Path,
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<bool, String> {
     let prefix = &params.new_module_prefix;
-    let dev_block = format_wechat_config(params, false);
-    let prod_block = format_wechat_config(params, true);
+    let block = format_wechat_config(params);
 
-    let mut appended = false;
-
-    // 查找 application-dev.yaml / application-dev.yml
-    for dev_name in &["application-dev.yaml", "application-dev.yml"] {
-        let dev_path = resources_dir.join(dev_name);
-        if dev_path.is_file() {
-            if append_config_if_missing(&dev_path, prefix, &dev_block)? {
-                log(&format!("已追加微信配置到 {}", dev_path.display()));
-                appended = true;
-            } else {
-                log(&format!("{} 已存在 {} 配置块，跳过", dev_path.display(), prefix));
+    // 只写 base：application.yaml / application.yml（单文件）
+    for name in &["application.yaml", "application.yml"] {
+        let path = resources_dir.join(name);
+        if path.is_file() {
+            if append_config_if_missing(&path, prefix, &block)? {
+                log(&format!("已追加微信配置到 {}", path.display()));
+                return Ok(true);
             }
-            break;
+            log(&format!("{} 已存在 {} 配置块，跳过", path.display(), prefix));
+            return Ok(false);
         }
     }
 
-    // 查找 application-prod.yaml / application-prod.yml
-    for prod_name in &["application-prod.yaml", "application-prod.yml"] {
-        let prod_path = resources_dir.join(prod_name);
-        if prod_path.is_file() {
-            if append_config_if_missing(&prod_path, prefix, &prod_block)? {
-                log(&format!("已追加微信配置到 {}", prod_path.display()));
-                appended = true;
-            } else {
-                log(&format!("{} 已存在 {} 配置块，跳过", prod_path.display(), prefix));
-            }
-            break;
-        }
-    }
-
-    if !appended {
-        log("未找到 application-dev/prod 配置文件，跳过微信配置追加");
-    }
-
-    Ok(appended)
+    log("未找到 application.yaml 配置文件，跳过微信配置追加");
+    Ok(false)
 }
 
 // ---------- 内部辅助 ----------
@@ -142,17 +124,32 @@ fn build_placeholders(params: &CustomizeParams) -> HashMap<String, String> {
         "{{UNIAPP_NAME}}".into(),
         format!("{}-uniapp", params.new_module_prefix),
     );
-    map.insert("{{API_BASE_URL_DEV}}".into(), "http://localhost:8080".into());
+    map.insert(
+        "{{API_BASE_URL_DEV}}".into(),
+        format!("http://localhost:{}", params.server_port),
+    );
     map.insert(
         "{{API_BASE_URL_PROD}}".into(),
-        "https://api.example.com".into(),
+        build_prod_base_url(params),
     );
     map.insert(
         "{{COPYRIGHT}}".into(),
         format!("{} {}", year, params.new_project_name),
     );
     map.insert("{{WX_APPID}}".into(), params.wx_appid.clone());
+    map.insert("{{SERVER_PORT}}".into(), params.server_port.to_string());
     map
+}
+
+/// 构建 uniapp 生产环境后端基地址（{{API_BASE_URL_PROD}}）。
+/// - server_name 为空 → 用占位域名（提示用户自行替换）
+/// - 非空 → 按是否启用 HTTPS 选择协议，拼接 {scheme}://{server_name}/{module_prefix}
+fn build_prod_base_url(params: &CustomizeParams) -> String {
+    if params.server_name.is_empty() {
+        return "https://your-domain.com".into();
+    }
+    let scheme = if params.use_https { "https" } else { "http" };
+    format!("{}://{}/{}", scheme, params.server_name, params.new_module_prefix)
 }
 
 /// 递归复制模板目录，对文本文件做占位符替换
@@ -218,60 +215,49 @@ fn replace_placeholders(content: &str, placeholders: &HashMap<String, String>) -
 }
 
 /// 基于 params 动态生成微信配置块（带中文注释）。
-/// - `is_prod`：仅用于 notify-url 留空时在 prod 填默认域名占位
 ///
 /// 规则：
 /// - `wx` 块始终生成（小程序 appid/appsecret）
 /// - 仅当 `params.pay_included` 为 true 时生成 `wechat.pay` 块
 /// - 按 `pay_mode` 分支写不同字段（public-key / certificate / v2）
-fn format_wechat_config(params: &CustomizeParams, is_prod: bool) -> String {
+/// - 字符串值不加引号（直接原样输出）
+fn format_wechat_config(params: &CustomizeParams) -> String {
     let prefix = &params.new_module_prefix;
-    let q = |v: &str| -> String {
-        // yml 字符串值统一加单引号；单引号本身转义为 ''
-        format!("'{}'", v.replace('\'', "''"))
-    };
 
     let mut s = String::new();
     s.push_str(&format!("\n# ===== {prefix} 微信小程序 / 支付配置 =====\n"));
     s.push_str(&format!("{prefix}:\n"));
     s.push_str("  wx: # 微信小程序\n");
-    s.push_str(&format!("    appid: {} # 小程序 AppID\n", q(&params.wx_appid)));
-    s.push_str(&format!("    appsecret: {} # 小程序 AppSecret\n", q(&params.wx_appsecret)));
+    s.push_str(&format!("    appid: {} # 小程序 AppID\n", params.wx_appid));
+    s.push_str(&format!("    appsecret: {} # 小程序 AppSecret\n", params.wx_appsecret));
 
     if params.pay_included {
         s.push_str("  wechat: # 微信支付\n");
         s.push_str("    pay:\n");
         s.push_str(&format!("      enabled: {} # 是否启用微信支付\n", params.pay_enabled));
-        s.push_str(&format!("      mode: {} # 支付模式：public-key(V3公钥,推荐) | certificate(V3平台证书) | v2(旧模式)\n", q(&params.pay_mode)));
-        s.push_str(&format!("      mch-id: {} # 商户号\n", q(&params.pay_mch_id)));
+        s.push_str(&format!("      mode: {} # 支付模式：public-key(V3公钥,推荐) | certificate(V3平台证书) | v2(旧模式)\n", params.pay_mode));
+        s.push_str(&format!("      mch-id: {} # 商户号\n", params.pay_mch_id));
         match params.pay_mode.as_str() {
             "public-key" => {
-                s.push_str(&format!("      mch-serial-no: {} # 商户证书序列号\n", q(&params.pay_mch_serial_no)));
-                s.push_str(&format!("      api-v3-key: {} # APIv3 密钥（32位）\n", q(&params.pay_api_v3_key)));
-                s.push_str(&format!("      private-key-path: {} # 商户 API 私钥 apiclient_key.pem 路径\n", q(&params.pay_private_key_path)));
-                s.push_str(&format!("      public-key-id: {} # 微信支付平台公钥 ID\n", q(&params.pay_public_key_id)));
-                s.push_str(&format!("      public-key-path: {} # 微信支付平台公钥 wxp_pub.pem 路径\n", q(&params.pay_public_key_path)));
+                s.push_str(&format!("      mch-serial-no: {} # 商户证书序列号\n", params.pay_mch_serial_no));
+                s.push_str(&format!("      api-v3-key: {} # APIv3 密钥（32位）\n", params.pay_api_v3_key));
+                s.push_str(&format!("      private-key-path: {} # 商户 API 私钥 apiclient_key.pem 路径\n", params.pay_private_key_path));
+                s.push_str(&format!("      public-key-id: {} # 微信支付平台公钥 ID\n", params.pay_public_key_id));
+                s.push_str(&format!("      public-key-path: {} # 微信支付平台公钥 wxp_pub.pem 路径\n", params.pay_public_key_path));
             }
             "certificate" => {
-                s.push_str(&format!("      mch-serial-no: {} # 商户证书序列号\n", q(&params.pay_mch_serial_no)));
-                s.push_str(&format!("      api-v3-key: {} # APIv3 密钥（32位）\n", q(&params.pay_api_v3_key)));
-                s.push_str(&format!("      private-key-path: {} # 商户 API 私钥 apiclient_key.pem 路径\n", q(&params.pay_private_key_path)));
+                s.push_str(&format!("      mch-serial-no: {} # 商户证书序列号\n", params.pay_mch_serial_no));
+                s.push_str(&format!("      api-v3-key: {} # APIv3 密钥（32位）\n", params.pay_api_v3_key));
+                s.push_str(&format!("      private-key-path: {} # 商户 API 私钥 apiclient_key.pem 路径\n", params.pay_private_key_path));
             }
             // V2 旧模式
             _ => {
-                s.push_str(&format!("      api-key: {} # APIv2 密钥（32位）\n", q(&params.pay_api_key)));
-                s.push_str(&format!("      cert-path: {} # 商户证书 apiclient_cert.p12 路径\n", q(&params.pay_cert_path)));
+                s.push_str(&format!("      api-key: {} # APIv2 密钥（32位）\n", params.pay_api_key));
+                s.push_str(&format!("      cert-path: {} # 商户证书 apiclient_cert.p12 路径\n", params.pay_cert_path));
             }
         }
-        // notify-url：用户填一个，dev/prod 共用；prod 留空用默认域名占位
-        let notify_url = if !params.pay_notify_url.is_empty() {
-            params.pay_notify_url.clone()
-        } else if is_prod {
-            format!("https://your-domain.com/app/{prefix}/payment/wechat/notify")
-        } else {
-            String::new()
-        };
-        s.push_str(&format!("      notify-url: {} # 支付回调地址（微信异步通知）\n", q(&notify_url)));
+        // notify-url：用户填一个值；留空则输出空值占位
+        s.push_str(&format!("      notify-url: {} # 支付回调地址（微信异步通知）\n", params.pay_notify_url));
     }
 
     s

@@ -20,10 +20,10 @@ fn build_resources() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let res = dir.path();
 
-    // 标准 application.yml（含大量注释 + redis + token + ruoyi 自定义 + 上传路径）
+    // 标准 application.yml（含大量注释 + redis + spring 运行时配置 + token + ruoyi 自定义 + 上传路径）
     write(
         res.join("application.yml"),
-        "# 项目相关配置\nserver:\n  port: 8080\n\n# Spring 配置\nspring:\n  profiles:\n    active: druid\n  redis:\n    host: localhost\n    port: 6379\n    password:\n\n# token 配置\ntoken:\n  header: Authorization\n  secret: abcdefghijklmnopqrstuvwxyz\n\n# MyBatis 配置\nmybatis:\n  mapperLocations: classpath*:mapper/**/*Mapper.xml\n\n# RuoYi 配置\nruoyi:\n  name: RuoYi\n  # 文件上传路径\n  profile: D:/ruoyi/uploadPath\n",
+        "# 项目相关配置\nserver:\n  port: 8080\n\n# Spring 配置\nspring:\n  profiles:\n    active: druid\n  # 国际化资源\n  messages:\n    basename: i18n/messages\n  jackson:\n    date-format: yyyy-MM-dd HH:mm:ss\n    time-zone: GMT+8\n  redis:\n    host: localhost\n    port: 6379\n    password:\n\n# token 配置\ntoken:\n  header: Authorization\n  secret: abcdefghijklmnopqrstuvwxyz\n\n# MyBatis 配置\nmybatis:\n  mapperLocations: classpath*:mapper/**/*Mapper.xml\n\n# RuoYi 配置\nruoyi:\n  name: RuoYi\n  # 文件上传路径\n  profile: D:/ruoyi/uploadPath\n",
     );
     // 标准 application-druid.yml（datasource）
     write(
@@ -34,7 +34,7 @@ fn build_resources() -> tempfile::TempDir {
 }
 
 fn params_with_config() -> CustomizeParams {
-    CustomizeParams {
+    let mut p = CustomizeParams {
         original_package: "com.ruoyi".into(),
         new_package: "com.company.project".into(),
         original_module_prefix: "ruoyi".into(),
@@ -56,7 +56,12 @@ fn params_with_config() -> CustomizeParams {
         output_dir: String::new(),
         enable_uniapp: false,
         ..CustomizeParams::default()
-    }
+    };
+    // 非默认端口：验证 server.port 同步生效
+    p.server_port = 9090;
+    // 自定义数据库名：验证 url 中库名替换
+    p.db_name = "mydb".into();
+    p
 }
 
 #[test]
@@ -88,7 +93,19 @@ fn rewrites_config_into_three_profiles() {
     assert!(base.contains("mybatis-plus"), "base 应补充 mybatis-plus");
     assert!(base.contains("com.company.project"), "mybatis-plus type-aliases 应为新包名");
 
-    // ---- 修复3：redis / datasource 抽到 dev/prod ----
+    // ---- i18n / spring 运行时配置保留（修复 messages.basename 丢失）----
+    assert!(base.contains("basename: i18n/messages"), "base 应保留 spring.messages.basename（i18n 关键配置）");
+    assert!(base.contains("jackson:"), "base 应保留 spring.jackson 运行时配置");
+    assert!(base.contains("date-format: yyyy-MM-dd HH:mm:ss"), "base 应保留 jackson date-format");
+    // base 不应残留环境相关 spring 子项（datasource/redis）
+    assert!(!base.contains("datasource:"), "base 不应残留 datasource（已抽到 dev/prod）");
+    assert!(!base.contains("redis:"), "base 不应残留 redis（已抽到 dev/prod）");
+
+    // ---- server.port 同步：base 的端口应为 params.server_port（9090），不再硬编码 8080 ----
+    assert!(base.contains("port: 9090"), "base server.port 应同步为 9090");
+    assert!(!base.contains("port: 8080"), "base server.port 不应残留 8080");
+
+    // ---- datasource / redis 用标准模板明文写入 dev/prod ----
     assert!(dev.contains("datasource"), "dev 应含 datasource");
     assert!(dev.contains("redis"), "dev 应含 redis");
     assert!(prod.contains("datasource"), "prod 应含 datasource");
@@ -96,15 +113,27 @@ fn rewrites_config_into_three_profiles() {
     // base 不应再含 redis / datasource（已抽走）
     assert!(!base.contains("redis:"), "base 不应残留 redis（已抽到 dev/prod）");
 
-    // dev：明文
+    // 标准模板全量参数（druid 连接池 + lettuce 连接池）
+    for yaml in [&dev, &prod] {
+        assert!(yaml.contains("initialSize: 5"), "应含 druid initialSize");
+        assert!(yaml.contains("maxActive: 20"), "应含 druid maxActive");
+        assert!(yaml.contains("login-username: admin"), "应含 druid statViewServlet 用户名");
+        assert!(yaml.contains("log-slow-sql: true"), "应含 druid 慢 SQL 配置");
+        assert!(yaml.contains("max-active: 8"), "应含 lettuce max-active");
+        assert!(yaml.contains("max-wait: -1ms"), "应含 lettuce max-wait");
+    }
+
+    // dev 与 prod 内容完全一致（都明文标准模板，无 ${ENV} 占位）
+    assert_eq!(dev, prod, "dev 与 prod 应为完全相同的标准模板明文");
+    assert!(!prod.contains("${"), "prod 不应含环境变量占位");
+
+    // 数据库名替换：db_name=mydb → url 中 3306/mydb
+    assert!(dev.contains("3306/mydb?"), "url 库名应为 mydb");
+    // 默认明文凭证（root / 123456）
     assert!(dev.contains("username: root"), "dev username 应为明文 root");
-    assert!(dev.contains("host: localhost"), "dev redis host 应为明文 localhost");
+    assert!(dev.contains("password: 123456"), "dev password 应为明文 123456");
 
-    // prod：环境变量占位
-    assert!(prod.contains("MYSQL_USERNAME"), "prod 应使用 MYSQL_USERNAME 占位");
-    assert!(prod.contains("MYSQL_PASSWORD"), "prod 应使用 MYSQL_PASSWORD 占位");
-
-    // ---- 修复2：不留 .bak ----
+    // ---- 不留 .bak ----
     assert!(!res.join("application-druid.yml").exists(), "旧 druid 文件应已删除");
     assert!(!res.join("application-druid.yaml").exists(), "旧 druid 文件应已删除");
     assert!(

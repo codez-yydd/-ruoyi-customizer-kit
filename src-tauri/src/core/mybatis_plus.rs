@@ -10,10 +10,79 @@ use std::path::Path;
 /// MyBatis-Plus 依赖版本（默认）
 const MP_VERSION: &str = "3.5.7";
 
+/// Boot 2.x 用 starter（面向 Spring 5）
+const MP_STARTER_BOOT2: &str = "mybatis-plus-boot-starter";
+/// Boot 3.x 用 starter（面向 Spring 6 / Jakarta EE）
+const MP_STARTER_BOOT3: &str = "mybatis-plus-spring-boot3-starter";
+
+/// 检测项目使用的 Spring Boot 大版本。
+///
+/// 扫描根 pom（含子模块 pom）的 `spring-boot-starter-parent` 版本及
+/// `<spring-boot.version>` 属性，返回主版本号（如 2 / 3）。检测不到返回 None。
+///
+/// 用途：MyBatis-Plus 的 starter 必须与 Boot 大版本匹配，否则会带入与 Spring 不兼容的
+/// `mybatis-spring`（Boot 2 starter 带 mybatis-spring 2.x，与 Spring 6 不兼容，登录全挂）。
+pub fn detect_boot_major_version(root: &Path) -> Option<u32> {
+    // 候选 pom：根 pom + 一级子模块 pom
+    let mut pom_paths: Vec<std::path::PathBuf> = vec![root.join("pom.xml")];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let p = e.path().join("pom.xml");
+            if p.is_file() {
+                pom_paths.push(p);
+            }
+        }
+    }
+    for pom in &pom_paths {
+        let content = match std::fs::read_to_string(pom) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        // 1) <spring-boot.version>3.x</spring-boot.version> 属性
+        if let Some(v) = extract_version_after(&content, "<spring-boot.version>") {
+            return major_of(&v);
+        }
+        // 2) spring-boot-starter-parent 的 <version>
+        //    形如 <parent>...<artifactId>spring-boot-starter-parent</artifactId><version>3.2.4</version>
+        if let Some(idx) = content.find("spring-boot-starter-parent") {
+            let tail = &content[idx..];
+            if let Some(v) = extract_version_after(tail, "<version>") {
+                return major_of(&v);
+            }
+        }
+    }
+    None
+}
+
+/// 在 content 中找到 tag 后，提取紧随其后的版本号文本（到下一个 < 为止）
+fn extract_version_after(content: &str, tag: &str) -> Option<String> {
+    let idx = content.find(tag)?;
+    let after = &content[idx + tag.len()..];
+    let end = after.find('<')?;
+    Some(after[..end].trim().to_string())
+}
+
+/// 从版本号字符串取主版本号（如 "3.2.4" → 3）
+fn major_of(version: &str) -> Option<u32> {
+    version.split('.').next()?.parse::<u32>().ok()
+}
+
+/// 按 Boot 大版本选择 MyBatis-Plus starter artifactId。
+/// 检测不到版本时默认 Boot 3（现代若依多为 Boot 3，避免重复踩坑）。
+fn select_starter(boot_major: Option<u32>) -> &'static str {
+    match boot_major {
+        Some(major) if major < 3 => MP_STARTER_BOOT2,
+        _ => MP_STARTER_BOOT3, // >=3 或检测不到
+    }
+}
+
 /// 添加 MyBatis-Plus 依赖到公共模块 pom（幂等：已存在则跳过）。
 /// 返回是否实际添加。
 pub fn add_dependency(root: &Path, backend_modules: &[String], log: &dyn Fn(&str)) -> Result<bool, String> {
-    let dep_marker = "mybatis-plus-boot-starter";
+    // 两个 starter 名都视为「已有依赖」（幂等检查兼容老项目可能已注入 Boot 2 starter）
+    let dep_markers = [MP_STARTER_BOOT2, MP_STARTER_BOOT3];
+    let boot_major = detect_boot_major_version(root);
+    let artifact = select_starter(boot_major);
     // 候选模块优先级：common > framework > admin > 任意
     let candidates = prioritize_modules(backend_modules);
     for module in &candidates {
@@ -22,14 +91,15 @@ pub fn add_dependency(root: &Path, backend_modules: &[String], log: &dyn Fn(&str
             continue;
         }
         let content = std::fs::read_to_string(&pom).map_err(|e| format!("读取 {} 失败：{e}", pom.display()))?;
-        // 幂等：项目任意 pom 已有该依赖则不再添加
-        if any_pom_has(root, backend_modules, dep_marker) {
+        // 幂等：项目任意 pom 已有任一 MyBatis-Plus starter 则不再添加
+        if dep_markers.iter().any(|m| any_pom_has(root, backend_modules, m)) {
             log(&format!("MyBatis-Plus 依赖已存在，跳过"));
             return Ok(false);
         }
         // 在 <dependencies> 后插入（若无 <dependencies> 则在 </project> 前插入整个块）
         let dep_block = format!(
-            "\n    <dependency>\n        <groupId>com.baomidou</groupId>\n        <artifactId>mybatis-plus-boot-starter</artifactId>\n        <version>{ver}</version>\n    </dependency>\n",
+            "\n    <dependency>\n        <groupId>com.baomidou</groupId>\n        <artifactId>{artifact}</artifactId>\n        <version>{ver}</version>\n    </dependency>\n",
+            artifact = artifact,
             ver = MP_VERSION
         );
         let new_content = if let Some(idx) = content.find("<dependencies>") {
@@ -43,7 +113,10 @@ pub fn add_dependency(root: &Path, backend_modules: &[String], log: &dyn Fn(&str
             content.replace("</project>", &format!("    <dependencies>{dep_block}    </dependencies>\n</project>"))
         };
         std::fs::write(&pom, new_content).map_err(|e| format!("写入 {} 失败：{e}", pom.display()))?;
-        log(&format!("已在 {module}/pom.xml 添加 mybatis-plus-boot-starter:{MP_VERSION}"));
+        log(&format!(
+            "已在 {module}/pom.xml 添加 {artifact}:{MP_VERSION}（Spring Boot {}）",
+            boot_major.map_or("版本未知，默认按 Boot 3".to_string(), |m| format!("{m}.x"))
+        ));
         return Ok(true);
     }
     Err("找不到合适的 pom.xml 来添加 MyBatis-Plus 依赖".into())

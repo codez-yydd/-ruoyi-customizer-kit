@@ -105,9 +105,8 @@ fn appends_wechat_config_idempotently() {
     let res_dir = dir.path().join("resources");
     fs::create_dir_all(&res_dir).unwrap();
 
-    // 创建 application-dev.yaml 和 application-prod.yaml
-    fs::write(res_dir.join("application-dev.yaml"), "spring:\n  datasource:\n    url: jdbc:mysql://localhost/ry\n").unwrap();
-    fs::write(res_dir.join("application-prod.yaml"), "spring:\n  datasource:\n    url: ${MYSQL_URL}\n").unwrap();
+    // 创建 base application.yaml（微信配置只写这一份）
+    fs::write(res_dir.join("application.yaml"), "spring:\n  application:\n    name: demo\n").unwrap();
 
     let mut params = test_params();
     // 开启微信支付，验证 pay 块的追加
@@ -119,14 +118,10 @@ fn appends_wechat_config_idempotently() {
     let appended = uniapp::append_wechat_config(&res_dir, &params, &|_| {}).unwrap();
     assert!(appended, "应追加成功");
 
-    let dev = fs::read_to_string(res_dir.join("application-dev.yaml")).unwrap();
-    assert!(dev.contains("demo:"), "dev 应含 demo 配置块");
-    assert!(dev.contains("appid:"), "dev 应含 appid");
-    assert!(dev.contains("enabled: true"), "dev 应含 enabled");
-
-    let prod = fs::read_to_string(res_dir.join("application-prod.yaml")).unwrap();
-    assert!(prod.contains("demo:"), "prod 应含 demo 配置块");
-    assert!(prod.contains("enabled: true"), "prod 应含 enabled");
+    let base = fs::read_to_string(res_dir.join("application.yaml")).unwrap();
+    assert!(base.contains("demo:"), "application.yaml 应含 demo 配置块");
+    assert!(base.contains("appid:"), "application.yaml 应含 appid");
+    assert!(base.contains("enabled: true"), "application.yaml 应含 enabled");
 
     // 第二次追加应幂等跳过
     let appended2 = uniapp::append_wechat_config(&res_dir, &params, &|_| {}).unwrap();

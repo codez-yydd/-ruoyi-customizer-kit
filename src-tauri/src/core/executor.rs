@@ -338,6 +338,16 @@ where
             if params.enable_remove_docs && remove_navbar_external_links(&mut new_content, "docs") {
                 changed = true;
             }
+            // 后端端口同步：把前端默认的 http://localhost:8080（若依代理目标 / VUE_APP_BASE_API）
+            // 替换为 server_port，使 vue.config.js / .env.* / vite.config.ts 的后端地址与启动端口一致
+            if params.server_port != 8080 {
+                let from = "http://localhost:8080";
+                let to = format!("http://localhost:{}", params.server_port);
+                if new_content.contains(from) {
+                    new_content = new_content.replace(from, &to);
+                    changed = true;
+                }
+            }
             if changed {
                 write_text(path, &new_content).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
                 r.modified_files += 1;

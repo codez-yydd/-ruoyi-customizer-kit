@@ -48,33 +48,32 @@ npm run build:mp-weixin
 
 ### API 地址
 
-在 `config/env.js` 中配置开发/生产环境的后端接口地址：
+在 `config/env.js` 中配置开发/生产环境的后端接口地址（开发环境端口与后端启动端口一致）：
 
 ```javascript
 const ENV = {
   development: {
-    baseUrl: 'http://localhost:8080'  // 开发环境
+    baseUrl: 'http://localhost:{{SERVER_PORT}}'  // 开发环境（与后端 server.port 一致）
   },
   production: {
-    baseUrl: 'https://api.example.com'  // 生产环境
+    baseUrl: 'https://your-domain.com'  // 生产环境
   }
 }
 ```
 
 ### 后端微信配置
 
-后端 `application-dev.yaml` 和 `application-prod.yaml` 中已预留微信小程序配置：
+后端 `application.yaml` 中已预留微信小程序配置：
 
 ```yaml
 {{MODULE_PREFIX}}:
   wx:
-    appid: ''        # 微信小程序 AppID
-    appsecret: ''    # 微信小程序 AppSecret
+    appid:         # 微信小程序 AppID
+    appsecret:     # 微信小程序 AppSecret
   wechat:
     pay:
       enabled: false
-      mock: true
-      mch-id: ''
+      mch-id:
       # ... 其他支付配置
 ```
 

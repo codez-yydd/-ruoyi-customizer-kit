@@ -1,7 +1,7 @@
 // 端到端集成测试：UniApp 微信小程序信息 + 微信支付配置生成。
 //
 // 构造一个最小化的若依目录结构，直接调用真实代码路径：
-// - uniapp::append_wechat_config（生成 yml 微信配置块）
+// - uniapp::append_wechat_config（生成 yml 微信配置块，只写 application.yaml）
 // - wechat::add_wechat_dependency（注入 pom 依赖）
 // - wechat::add_wechat_config_class（生成 Java 配置类）
 // - wechat::create_cert_dir（创建 cert 目录 + gitignore）
@@ -9,18 +9,18 @@
 // 覆盖矩阵：
 // - pay_included=false → yml 无 pay 块、无依赖/配置类/cert
 // - pay_included=true × (public-key / certificate / v2) → 各字段正确写入
+// - 配置块只写入 base application.yaml（不再写 dev/prod），值不加引号
 
 use ruoyi_forge_lib::core::{uniapp, wechat, CustomizeParams};
 use std::fs;
 use std::path::Path;
 
-/// 构造一个最小化的若依后端目录：demo-admin/src/main/resources/application-dev.yaml
+/// 构造一个最小化的若依后端目录：demo-admin/src/main/resources/application.yaml
 fn build_fake_ruoyi(root: &Path) -> std::io::Result<()> {
     let res = root.join("demo-admin/src/main/resources");
     fs::create_dir_all(&res)?;
-    // application-dev.yaml / application-prod.yaml 各放一个，模拟 config_rewrite 后的产物
-    fs::write(res.join("application-dev.yaml"), "spring:\n  application:\n    name: demo\n")?;
-    fs::write(res.join("application-prod.yaml"), "spring:\n  application:\n    name: demo\n")?;
+    // base application.yaml：模拟 config_rewrite 后的产物（微信配置只写这一份）
+    fs::write(res.join("application.yaml"), "spring:\n  application:\n    name: demo\n")?;
     // admin pom.xml（带 <dependencies> 节点，便于依赖注入测试）
     fs::write(
         root.join("demo-admin/pom.xml"),
@@ -50,7 +50,7 @@ fn build_params(pay_included: bool, pay_mode: &str) -> CustomizeParams {
     p
 }
 
-fn run_wechat_pipeline(root: &Path, params: &CustomizeParams) -> (String, String, String) {
+fn run_wechat_pipeline(root: &Path, params: &CustomizeParams) -> (String, String) {
     let res_dir = root.join("demo-admin/src/main/resources");
     let log = |_: &str| {};
     let _ = uniapp::append_wechat_config(&res_dir, params, &log).expect("append_wechat_config 失败");
@@ -62,8 +62,7 @@ fn run_wechat_pipeline(root: &Path, params: &CustomizeParams) -> (String, String
         let _ = wechat::create_cert_dir(root, params, &modules, &log).expect("create_cert_dir 失败");
     }
     (
-        fs::read_to_string(res_dir.join("application-dev.yaml")).unwrap(),
-        fs::read_to_string(res_dir.join("application-prod.yaml")).unwrap(),
+        fs::read_to_string(res_dir.join("application.yaml")).unwrap(),
         fs::read_to_string(root.join("demo-admin/pom.xml")).unwrap(),
     )
 }
@@ -75,19 +74,23 @@ fn test_pay_not_included_no_pay_block() {
     let tmp = tempfile::tempdir().unwrap();
     build_fake_ruoyi(tmp.path()).unwrap();
     let params = build_params(false, "public-key");
-    let (dev, prod, pom) = run_wechat_pipeline(tmp.path(), &params);
+    let (yaml, pom) = run_wechat_pipeline(tmp.path(), &params);
 
-    // wx 块存在
-    assert!(dev.contains("demo:\n"));
-    assert!(dev.contains("appid: 'wx1234567890abcdef'"));
-    assert!(dev.contains("appsecret: 'secret_value_123'"));
+    // wx 块存在，值不加引号
+    assert!(yaml.contains("demo:\n"));
+    assert!(yaml.contains("appid: wx1234567890abcdef"));
+    assert!(yaml.contains("appsecret: secret_value_123"));
     // 无 pay 块
-    assert!(!dev.contains("wechat:"));
-    assert!(!prod.contains("wechat:"));
+    assert!(!yaml.contains("wechat:"));
     // 无依赖、无配置类、无 cert
     assert!(!pom.contains("wechatpay-java"));
     assert!(!tmp.path().join("demo-admin/src/main/java").exists());
     assert!(!tmp.path().join("demo-admin/src/main/resources/cert").exists());
+    // 不应残留 dev/prod 文件（只写 base）
+    assert!(
+        !tmp.path().join("demo-admin/src/main/resources/application-dev.yaml").exists(),
+        "不应创建 application-dev.yaml"
+    );
 }
 
 #[test]
@@ -95,29 +98,26 @@ fn test_pay_public_key_mode() {
     let tmp = tempfile::tempdir().unwrap();
     build_fake_ruoyi(tmp.path()).unwrap();
     let params = build_params(true, "public-key");
-    let (dev, prod, pom) = run_wechat_pipeline(tmp.path(), &params);
+    let (yaml, pom) = run_wechat_pipeline(tmp.path(), &params);
 
-    // 公钥模式：含 public-key-id / public-key-path，且 classpath 默认值
-    for yaml in [&dev, &prod] {
-        assert!(yaml.contains("mode: 'public-key'"));
-        assert!(yaml.contains("mch-id: '1900000109'"));
-        assert!(yaml.contains("mch-serial-no: 'SERIAL_ABC'"));
-        assert!(yaml.contains("api-v3-key: 'V3KEY"));
-        assert!(yaml.contains("private-key-path: 'classpath:cert/apiclient_key.pem'"));
-        assert!(yaml.contains("public-key-id: 'PUB_KEY_ID_xyz'"));
-        assert!(yaml.contains("public-key-path: 'classpath:cert/wxp_pub.pem'"));
-        assert!(yaml.contains("notify-url: 'https://api.example.com/pay/notify'"));
-        assert!(yaml.contains("enabled: true"));
-    }
+    // 公钥模式：含 public-key-id / public-key-path，且 classpath 默认值（值不加引号）
+    assert!(yaml.contains("mode: public-key"));
+    assert!(yaml.contains("mch-id: 1900000109"));
+    assert!(yaml.contains("mch-serial-no: SERIAL_ABC"));
+    assert!(yaml.contains("api-v3-key: V3KEY"));
+    assert!(yaml.contains("private-key-path: classpath:cert/apiclient_key.pem"));
+    assert!(yaml.contains("public-key-id: PUB_KEY_ID_xyz"));
+    assert!(yaml.contains("public-key-path: classpath:cert/wxp_pub.pem"));
+    assert!(yaml.contains("notify-url: https://api.example.com/pay/notify"));
+    assert!(yaml.contains("enabled: true"));
     // 不应包含 mock 字段（已移除）
-    assert!(!dev.contains("mock:"));
-    assert!(!prod.contains("mock:"));
+    assert!(!yaml.contains("mock:"));
     // 应包含字段注释
-    assert!(dev.contains("# 商户号"));
-    assert!(prod.contains("# 支付回调地址"));
+    assert!(yaml.contains("# 商户号"));
+    assert!(yaml.contains("# 支付回调地址"));
     // 不应包含 V2 字段
-    assert!(!dev.contains("api-key:"));
-    assert!(!dev.contains("cert-path:"));
+    assert!(!yaml.contains("api-key:"));
+    assert!(!yaml.contains("cert-path:"));
     // pom 注入
     assert!(pom.contains("com.github.wechatpay-apiv3"));
     assert!(pom.contains("wechatpay-java"));
@@ -129,17 +129,17 @@ fn test_pay_certificate_mode() {
     let tmp = tempfile::tempdir().unwrap();
     build_fake_ruoyi(tmp.path()).unwrap();
     let params = build_params(true, "certificate");
-    let (dev, _prod, _pom) = run_wechat_pipeline(tmp.path(), &params);
+    let (yaml, _pom) = run_wechat_pipeline(tmp.path(), &params);
 
     // 平台证书模式：无 public-key-id / public-key-path
-    assert!(dev.contains("mode: 'certificate'"));
-    assert!(dev.contains("mch-serial-no: 'SERIAL_ABC'"));
-    assert!(dev.contains("api-v3-key:"));
-    assert!(dev.contains("private-key-path:"));
-    assert!(!dev.contains("public-key-id:"));
-    assert!(!dev.contains("public-key-path:"));
-    assert!(!dev.contains("api-key:"));
-    assert!(!dev.contains("cert-path:"));
+    assert!(yaml.contains("mode: certificate"));
+    assert!(yaml.contains("mch-serial-no: SERIAL_ABC"));
+    assert!(yaml.contains("api-v3-key:"));
+    assert!(yaml.contains("private-key-path:"));
+    assert!(!yaml.contains("public-key-id:"));
+    assert!(!yaml.contains("public-key-path:"));
+    assert!(!yaml.contains("api-key:"));
+    assert!(!yaml.contains("cert-path:"));
 }
 
 #[test]
@@ -147,31 +147,30 @@ fn test_pay_v2_mode() {
     let tmp = tempfile::tempdir().unwrap();
     build_fake_ruoyi(tmp.path()).unwrap();
     let params = build_params(true, "v2");
-    let (dev, _prod, _pom) = run_wechat_pipeline(tmp.path(), &params);
+    let (yaml, _pom) = run_wechat_pipeline(tmp.path(), &params);
 
     // V2 模式：含 api-key / cert-path，无 V3 字段
-    assert!(dev.contains("mode: 'v2'"));
-    assert!(dev.contains("mch-id: '1900000109'"));
-    assert!(dev.contains("api-key: 'V2KEY"));
-    assert!(dev.contains("cert-path: 'classpath:cert/apiclient_cert.p12'"));
-    assert!(!dev.contains("mch-serial-no:"));
-    assert!(!dev.contains("api-v3-key:"));
-    assert!(!dev.contains("private-key-path:"));
-    assert!(!dev.contains("public-key-id:"));
-    assert!(!dev.contains("public-key-path:"));
+    assert!(yaml.contains("mode: v2"));
+    assert!(yaml.contains("mch-id: 1900000109"));
+    assert!(yaml.contains("api-key: V2KEY"));
+    assert!(yaml.contains("cert-path: classpath:cert/apiclient_cert.p12"));
+    assert!(!yaml.contains("mch-serial-no:"));
+    assert!(!yaml.contains("api-v3-key:"));
+    assert!(!yaml.contains("private-key-path:"));
+    assert!(!yaml.contains("public-key-id:"));
+    assert!(!yaml.contains("public-key-path:"));
 }
 
 #[test]
-fn test_prod_notify_url_default_when_empty() {
+fn test_notify_url_empty_when_not_provided() {
     let tmp = tempfile::tempdir().unwrap();
     build_fake_ruoyi(tmp.path()).unwrap();
     let mut params = build_params(true, "public-key");
     params.pay_notify_url = String::new();
-    let (dev, prod, _pom) = run_wechat_pipeline(tmp.path(), &params);
+    let (yaml, _pom) = run_wechat_pipeline(tmp.path(), &params);
 
-    // dev 留空，prod 用默认域名占位
-    assert!(dev.contains("notify-url: ''"));
-    assert!(prod.contains("notify-url: 'https://your-domain.com/app/demo/payment/wechat/notify'"));
+    // 只写一份，notify-url 留空则输出空值
+    assert!(yaml.contains("notify-url:  #"));
 }
 
 #[test]
@@ -224,23 +223,23 @@ fn test_idempotency() {
     let params = build_params(true, "public-key");
     // 第一次
     run_wechat_pipeline(tmp.path(), &params);
-    let dev_after_first = fs::read_to_string(
-        tmp.path().join("demo-admin/src/main/resources/application-dev.yaml"),
+    let yaml_after_first = fs::read_to_string(
+        tmp.path().join("demo-admin/src/main/resources/application.yaml"),
     )
     .unwrap();
     let pom_after_first = fs::read_to_string(tmp.path().join("demo-admin/pom.xml")).unwrap();
 
     // 第二次执行（幂等）
     run_wechat_pipeline(tmp.path(), &params);
-    let dev_after_second = fs::read_to_string(
-        tmp.path().join("demo-admin/src/main/resources/application-dev.yaml"),
+    let yaml_after_second = fs::read_to_string(
+        tmp.path().join("demo-admin/src/main/resources/application.yaml"),
     )
     .unwrap();
     let pom_after_second = fs::read_to_string(tmp.path().join("demo-admin/pom.xml")).unwrap();
 
     // yml 配置块只追加一次（append_config_if_missing 幂等）
-    let count_first = dev_after_first.matches("demo:").count();
-    let count_second = dev_after_second.matches("demo:").count();
+    let count_first = yaml_after_first.matches("demo:").count();
+    let count_second = yaml_after_second.matches("demo:").count();
     assert_eq!(count_first, count_second, "yml 配置块被重复追加");
     // pom 依赖不重复注入
     let dep_count = pom_after_second.matches("wechatpay-java").count();
@@ -263,4 +262,37 @@ fn test_uniapp_manifest_appid_placeholder_replaced() {
     // 占位符被用户填的 AppID 替换（出现两次：顶层 appid + mp-weixin.appid）
     assert_eq!(manifest.matches("wx1234567890abcdef").count(), 2);
     assert!(!manifest.contains("{{"));
+}
+
+#[test]
+fn test_uniapp_base_url_syncs_with_server_port() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut params = build_params(false, "public-key");
+    params.server_port = 9090;
+    let template_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/uniapp");
+    let log = |_: &str| {};
+    let result = uniapp::generate_uniapp_project(&template_dir, tmp.path(), &params, &log)
+        .expect("生成 uniapp 失败");
+    let env = fs::read_to_string(result.output_dir.join("config/env.js")).expect("读 env.js");
+    // 开发环境 baseUrl 的端口应随 server_port（9090）变化
+    assert!(env.contains("http://localhost:9090"), "env.js dev baseUrl 应为 :9090，实际：{env}");
+    assert!(!env.contains("8080"), "env.js 不应残留 8080");
+    // 生产环境 server_name 留空 → 占位域名
+    assert!(env.contains("https://your-domain.com"));
+}
+
+#[test]
+fn test_uniapp_base_url_uses_server_name_when_provided() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut params = build_params(false, "public-key");
+    params.server_port = 9090;
+    params.server_name = "api.mysite.com".into();
+    params.use_https = true;
+    let template_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/uniapp");
+    let log = |_: &str| {};
+    let result = uniapp::generate_uniapp_project(&template_dir, tmp.path(), &params, &log)
+        .expect("生成 uniapp 失败");
+    let env = fs::read_to_string(result.output_dir.join("config/env.js")).expect("读 env.js");
+    // 生产环境按 server_name + https + 模块前缀生成
+    assert!(env.contains("https://api.mysite.com/demo"), "env.js prod baseUrl 应基于 server_name，实际：{env}");
 }
