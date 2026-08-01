@@ -2,11 +2,11 @@
 #
 # 触发方式：
 #   git tag v1.0.1
-#   git push origin v1.0.1
+#   git push github v1.0.1
 #
 # 产物：
 #   Windows → .exe (NSIS) + .msi
-#   macOS   → .dmg + .app
+#   macOS   → .dmg + .app（Apple Silicon 与 Intel 各一份）
 #   Linux   → .deb + .AppImage + .rpm
 #
 # 说明：Tauri 无法在单一系统交叉编译出其它平台的安装包，
@@ -18,8 +18,13 @@ on:
   push:
     tags:
       - 'v*'
-  # 允许手动触发（用于测试，不会发布到 Release）
+  # 允许手动触发（用于调试，仅构建不上传 Release）
   workflow_dispatch:
+
+# 同一 tag 重复推送时取消旧的，避免并发
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -27,9 +32,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
+          - platform: macos-14          # Apple Silicon（M1/M2/M3）
             args: '--target aarch64-apple-darwin'
-          - platform: macos-latest
+          - platform: macos-13          # Intel
             args: '--target x86_64-apple-darwin'
           - platform: ubuntu-22.04
             args: ''
@@ -48,10 +53,8 @@ jobs:
 
       - name: 安装 Rust 稳定版
         uses: dtolnay/rust-toolchain@stable
-
-      - name: 添加 macOS 交叉编译目标
-        if: matrix.platform == 'macos-latest'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+        with:
+          targets: ${{ matrix.platform == 'macos-14' && 'aarch64-apple-darwin' || matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '' }}
 
       - name: 安装 Linux 系统依赖
         if: matrix.platform == 'ubuntu-22.04'
@@ -67,7 +70,6 @@ jobs:
         with:
           workspaces: src-tauri -> target
 
-      # 构建 + 发布到 Release（tag 触发时才上传；手动触发仅构建验证）
       - name: 构建并发布
         uses: tauri-apps/tauri-action@v0
         env:
