@@ -201,6 +201,7 @@ export type TaskType =
   | 'GenerateNginxConfig'
   | 'GenerateStartupScripts'
   | 'GenerateDevScripts'
+  | 'GenerateDevUiScripts'
   | 'UpdateAdminPomFinalName'
   | 'ValidateProject'
   | 'GenerateReport'

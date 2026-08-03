@@ -580,6 +580,22 @@ pub fn plan(
         error_message: String::new(),
     });
 
+    // 前端开发脚本生成（始终，输出到 output_dir 根目录）：npm install + npm run dev 一键启动
+    tasks.push(Task {
+        id: next_id(&tasks),
+        name: format!(
+            "生成前端开发脚本（run-ui.sh / run-ui.bat，cd {}-ui）",
+            params.new_module_prefix
+        ),
+        task_type: TaskType::GenerateDevUiScripts,
+        risk_level: RiskLevel::Low,
+        affected_files: vec![],
+        affected_dirs: vec![],
+        created_files: vec!["run-ui.sh".into(), "run-ui.bat".into()],
+        status: TaskStatus::Pending,
+        error_message: String::new(),
+    });
+
     // admin pom 打包名改造（始终）：finalName → {prefix}-admin（产出 {prefix}-admin.jar）
     tasks.push(Task {
         id: next_id(&tasks),

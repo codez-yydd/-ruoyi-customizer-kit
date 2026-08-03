@@ -1,0 +1,33 @@
+@echo off
+chcp 65001 >nul
+REM {{PROJECT_NAME}} 前端开发脚本（依赖安装 + 启动），由若依锻造台自动生成
+REM 用法：双击或 run-ui.bat
+
+REM 切到脚本所在目录（项目根）
+cd /d "%~dp0"
+
+set "FRONTEND_DIR={{MODULE_PREFIX}}-ui"
+
+echo ========== Start Frontend ==========
+
+if not exist "%FRONTEND_DIR%" (
+    echo [ERROR] 未找到前端目录 %FRONTEND_DIR%
+    pause
+    exit /b 1
+)
+
+cd /d "%FRONTEND_DIR%"
+
+REM 首次启动需安装依赖
+if not exist "node_modules" (
+    echo ---------- npm install ----------
+    call npm install
+    if %errorlevel% neq 0 (
+        echo [ERROR] npm install failed!
+        pause
+        exit /b 1
+    )
+)
+
+echo ---------- npm run dev ----------
+call npm run dev

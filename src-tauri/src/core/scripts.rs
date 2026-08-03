@@ -12,7 +12,8 @@
 //   - start.bat / stop.bat（Windows）
 //
 // 生成清单（开发脚本，输出到根目录）：
-//   - run.sh / run.bat（mvn install + spring-boot:run 一键启动）
+//   - run.sh / run.bat（后端：mvn install + spring-boot:run 一键启动）
+//   - run-ui.sh / run-ui.bat（前端：npm install + npm run dev 一键启动）
 //
 // 生成清单（一键打包脚本，输出到根目录）：
 //   - build.sh / build.bat（后端 mvn package + 前端 npm run build:prod，产物汇总到 build/）
@@ -169,6 +170,75 @@ pub fn generate_dev_scripts(
         created += 1;
         summary.push(out_name.to_string());
         log(&format!("已生成开发脚本：{}", out_path.display()));
+    }
+
+    Ok(ScriptsOutcome { created_files: created, summary })
+}
+
+/// 生成前端开发脚本（run-ui.sh / run.bat）到 output_dir 根目录（非 scripts/ 子目录）。
+///
+/// 与后端开发脚本（run.sh/run.bat）配对：run 面向 `mvn install + spring-boot:run` 的后端，
+/// run-ui 面向 `npm install + npm run dev` 的前端。
+///
+/// 输出目录结构：
+/// ```text
+/// {output_dir}/
+///   run-ui.sh
+///   run-ui.bat
+/// ```
+pub fn generate_dev_ui_scripts(
+    output_dir: &Path,
+    params: &CustomizeParams,
+    log: &dyn Fn(&str),
+) -> Result<ScriptsOutcome, String> {
+    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/scripts");
+    if !template_dir.is_dir() {
+        return Err(format!(
+            "脚本模板目录不存在：{}",
+            template_dir.display()
+        ));
+    }
+
+    let placeholders = build_placeholders(params);
+
+    // (模板名, 输出名, 是否为 shell 脚本需赋可执行位)
+    let targets: &[(&str, &str, bool)] = &[
+        ("run-ui.sh.tmpl", "run-ui.sh", true),
+        ("run-ui.bat.tmpl", "run-ui.bat", false),
+    ];
+
+    let mut created = 0usize;
+    let mut summary: Vec<String> = Vec::new();
+
+    for (tmpl_name, out_name, is_shell) in targets {
+        let tmpl_path = template_dir.join(tmpl_name);
+        let out_path = output_dir.join(out_name);
+        if !tmpl_path.is_file() {
+            log(&format!("模板不存在，跳过：{}", tmpl_path.display()));
+            continue;
+        }
+        if out_path.exists() {
+            log(&format!("{} 已存在，跳过", out_path.display()));
+            continue;
+        }
+        let content = std::fs::read_to_string(&tmpl_path)
+            .map_err(|e| format!("读取 {} 失败：{e}", tmpl_path.display()))?;
+        let new_content = replace_placeholders(&content, &placeholders);
+        std::fs::write(&out_path, &new_content)
+            .map_err(|e| format!("写入 {} 失败：{e}", out_path.display()))?;
+
+        // shell 脚本赋予可执行位（Windows 上无意义，跳过也无妨）
+        if *is_shell {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        created += 1;
+        summary.push(out_name.to_string());
+        log(&format!("已生成前端开发脚本：{}", out_path.display()));
     }
 
     Ok(ScriptsOutcome { created_files: created, summary })
@@ -475,6 +545,36 @@ mod tests {
         let first = generate_dev_scripts(tmp.path(), &p, &|_| {}).unwrap();
         assert_eq!(first.created_files, 2);
         let second = generate_dev_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        assert_eq!(second.created_files, 0, "已存在应跳过");
+    }
+
+    // ---------- 前端开发脚本 ----------
+
+    #[test]
+    fn generate_dev_ui_scripts_writes_to_root_and_replaces_placeholders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = sample_params();
+        let outcome = generate_dev_ui_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        assert_eq!(outcome.created_files, 2, "应生成 run-ui.sh + run-ui.bat");
+
+        let run_ui_sh = std::fs::read_to_string(tmp.path().join("run-ui.sh")).unwrap();
+        assert!(!run_ui_sh.contains("{{"), "不应残留任何占位符");
+        assert!(run_ui_sh.contains("myapp-ui"), "前端目录占位符应被替换");
+        assert!(run_ui_sh.contains("npm run dev"), "应含前端 dev 命令");
+
+        let run_ui_bat = std::fs::read_to_string(tmp.path().join("run-ui.bat")).unwrap();
+        assert!(!run_ui_bat.contains("{{"), "不应残留任何占位符");
+        assert!(run_ui_bat.contains("myapp-ui"));
+        assert!(run_ui_bat.contains("call npm run dev"));
+    }
+
+    #[test]
+    fn generate_dev_ui_scripts_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = sample_params();
+        let first = generate_dev_ui_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        assert_eq!(first.created_files, 2);
+        let second = generate_dev_ui_scripts(tmp.path(), &p, &|_| {}).unwrap();
         assert_eq!(second.created_files, 0, "已存在应跳过");
     }
 

@@ -122,6 +122,7 @@ where
         TaskType::GenerateNginxConfig => do_generate_nginx_config(root, params, &mut r, log),
         TaskType::GenerateStartupScripts => do_generate_startup_scripts(root, params, &mut r, log),
         TaskType::GenerateDevScripts => do_generate_dev_scripts(root, params, &mut r, log),
+        TaskType::GenerateDevUiScripts => do_generate_dev_ui_scripts(root, params, &mut r, log),
         TaskType::GenerateBuildScripts => do_generate_build_scripts(root, params, &mut r, log),
         TaskType::UpdateAdminPomFinalName => do_update_admin_pom_final_name(root, params, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
@@ -1076,6 +1077,22 @@ where
     F: Fn(&str),
 {
     let outcome = crate::core::scripts::generate_dev_scripts(root, params, &|msg| log(msg))?;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12o. 生成前端开发脚本（run-ui.sh / run-ui.bat）到项目根目录
+/// 与后端开发脚本（run.sh/run.bat）配对：前端面向 `npm install + npm run dev`。
+///
+/// 输出到 root（即改造后的项目根），与后端开发脚本同源。
+fn do_generate_dev_ui_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::scripts::generate_dev_ui_scripts(root, params, &|msg| log(msg))?;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
