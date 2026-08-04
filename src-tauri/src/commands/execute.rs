@@ -112,14 +112,20 @@ pub async fn execute_transform(
 
     let _ = app.emit("transform:progress", LogEvent::info(format!("开始改造：{}", root.display())));
 
-    // 3. 加载模板
-    let tpl_dir = resolve_template_dir(&app, "ruoyi-vue")
-        .ok_or_else(|| "找不到模板 ruoyi-vue".to_string())?;
+    // 3. 加载模板（优先用识别阶段命中的 template_dir；旧数据为空则回退 ruoyi-vue）
+    let tpl_name = if project_info.template_dir.is_empty() {
+        "ruoyi-vue"
+    } else {
+        project_info.template_dir.as_str()
+    };
+    let tpl_dir = resolve_template_dir(&app, tpl_name)
+        .ok_or_else(|| format!("找不到模板 {tpl_name}"))?;
     let set = TemplateSet::load_from_dir(&tpl_dir).map_err(|e| format!("加载模板失败：{e}"))?;
     let template = set.into_full_template().ok_or("模板缺少必要规则")?;
 
-    // 4. 重新识别（确保 info 与当前磁盘状态一致）
-    let info = crate::core::detector::detect(&root, &template);
+    // 4. 重新识别（确保 info 与当前磁盘状态一致），并回填命中的模板目录名
+    let mut info = crate::core::detector::detect(&root, &template);
+    info.template_dir = tpl_name.to_string();
 
     // 5. 规划任务
     let tasks = planner::plan(&info, &params, &template);

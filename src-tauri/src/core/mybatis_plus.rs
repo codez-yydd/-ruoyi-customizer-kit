@@ -464,3 +464,86 @@ fn any_pom_has(root: &Path, modules: &[String], marker: &str) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造临时项目根，写入给定内容的根 pom.xml
+    fn mk_root(root_pom: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("pom.xml"), root_pom).unwrap();
+        dir
+    }
+
+    /// 若依 SB2：根 pom 用 <spring-boot.version> 属性
+    #[test]
+    fn detect_sb2_via_property() {
+        let pom = r#"<?xml version="1.0"?>
+<project>
+  <properties>
+    <spring-boot.version>2.5.15</spring-boot.version>
+  </properties>
+</project>"#;
+        let dir = mk_root(pom);
+        assert_eq!(detect_boot_major_version(dir.path()), Some(2));
+    }
+
+    /// 若依 SB3：根 pom 用 <spring-boot.version> 属性
+    #[test]
+    fn detect_sb3_via_property() {
+        let pom = r#"<?xml version="1.0"?>
+<project>
+  <properties>
+    <spring-boot.version>3.2.4</spring-boot.version>
+  </properties>
+</project>"#;
+        let dir = mk_root(pom);
+        assert_eq!(detect_boot_major_version(dir.path()), Some(3));
+    }
+
+    /// parent 继承形式：spring-boot-starter-parent 的 version
+    #[test]
+    fn detect_via_parent_version() {
+        let pom = r#"<?xml version="1.0"?>
+<project>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>2.7.18</version>
+  </parent>
+</project>"#;
+        let dir = mk_root(pom);
+        assert_eq!(detect_boot_major_version(dir.path()), Some(2));
+    }
+
+    /// 无版本信息 → None（oss 会默认 jakarta）
+    #[test]
+    fn detect_returns_none_when_no_version() {
+        let pom = "<?xml version=\"1.0\"?>\n<project><artifactId>x</artifactId></project>";
+        let dir = mk_root(pom);
+        assert_eq!(detect_boot_major_version(dir.path()), None);
+    }
+
+    /// 子模块 pom 也能被扫描（根 pom 无版本，子模块有）
+    #[test]
+    fn detect_from_submodule_pom() {
+        let dir = tempfile::tempdir().unwrap();
+        // 根 pom 无版本信息
+        std::fs::write(dir.path().join("pom.xml"), "<project><modules><module>ruoyi-admin</module></modules></project>").unwrap();
+        // 子模块 pom 带 spring-boot.version
+        let admin = dir.path().join("ruoyi-admin");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("pom.xml"), "<project><properties><spring-boot.version>2.5.15</spring-boot.version></properties></project>").unwrap();
+        assert_eq!(detect_boot_major_version(dir.path()), Some(2));
+    }
+
+    #[test]
+    fn select_starter_matches_boot_major() {
+        assert_eq!(select_starter(Some(2)), MP_STARTER_BOOT2);
+        assert_eq!(select_starter(Some(1)), MP_STARTER_BOOT2);
+        assert_eq!(select_starter(Some(3)), MP_STARTER_BOOT3);
+        // 检测不到默认 Boot 3
+        assert_eq!(select_starter(None), MP_STARTER_BOOT3);
+    }
+}

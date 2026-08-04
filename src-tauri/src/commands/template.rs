@@ -30,11 +30,12 @@ pub fn list_templates(app: tauri::AppHandle) -> Vec<TemplateInfo> {
         let loadable = TemplateSet::load_from_dir(&path).is_ok();
         out.push(TemplateInfo { name, loadable });
     }
-    // 保证 ruoyi-vue 排在前面
+    // 按识别严格度排序（ruoyi-vue → ruoyi → ruoyi-cloud），前端展示与 detect 遍历一致
+    const PRIORITY: &[&str] = &["ruoyi-vue", "ruoyi", "ruoyi-cloud"];
     out.sort_by(|a, b| {
-        let av = a.name == "ruoyi-vue";
-        let bv = b.name == "ruoyi-vue";
-        bv.cmp(&av).then_with(|| a.name.cmp(&b.name))
+        let pa = PRIORITY.iter().position(|p| *p == a.name.as_str()).unwrap_or(usize::MAX);
+        let pb = PRIORITY.iter().position(|p| *p == b.name.as_str()).unwrap_or(usize::MAX);
+        pa.cmp(&pb).then_with(|| a.name.cmp(&b.name))
     });
     out
 }

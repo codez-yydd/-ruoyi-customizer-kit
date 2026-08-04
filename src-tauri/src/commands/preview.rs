@@ -42,13 +42,18 @@ pub fn preview_tasks(
         };
     }
 
-    // 2. 加载模板（默认 ruoyi-vue）
-    let tpl_dir = match resolve_template_dir(&app, "ruoyi-vue") {
+    // 2. 加载模板（优先用识别阶段命中的 template_dir；旧数据为空则回退 ruoyi-vue）
+    let tpl_name = if project_info.template_dir.is_empty() {
+        "ruoyi-vue"
+    } else {
+        project_info.template_dir.as_str()
+    };
+    let tpl_dir = match resolve_template_dir(&app, tpl_name) {
         Some(d) => d,
         None => {
             return PreviewResponse {
                 success: false,
-                message: "找不到模板 ruoyi-vue".into(),
+                message: format!("找不到模板 {tpl_name}"),
                 tasks: vec![],
                 summary: empty_summary(),
                 project: None,

@@ -122,10 +122,15 @@ pub fn validate(
     }
 
     // 6. MyBatis-Plus 依赖与配置类（仅在开启时校验）
+    // 注意：starter 名随 Spring Boot 大版本变化——SB2 用 mybatis-plus-boot-starter，
+    // SB3 用 mybatis-plus-spring-boot3-starter。两个都视为合法依赖标记。
     if params.enable_mybatis_plus {
         let dep_ok = scan.text_files.iter().any(|p| {
             p.file_name().map(|n| n == "pom.xml").unwrap_or(false)
-                && std::fs::read_to_string(p).map(|c| c.contains("mybatis-plus-boot-starter")).unwrap_or(false)
+                && std::fs::read_to_string(p).map(|c| {
+                    c.contains("mybatis-plus-boot-starter")
+                        || c.contains("mybatis-plus-spring-boot3-starter")
+                }).unwrap_or(false)
         });
         items.push(CheckItem {
             item: "MyBatis-Plus 依赖".into(),

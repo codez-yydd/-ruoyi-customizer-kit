@@ -4,6 +4,8 @@
 export interface ProjectInfo {
   root_path: string
   project_type: string
+  /** 命中的模板目录名（如 ruoyi-vue / ruoyi / ruoyi-cloud），用于按版本裁剪 UI 与功能 */
+  template_dir: string
   backend_modules: string[]
   frontend_dirs: string[]
   config_files: string[]

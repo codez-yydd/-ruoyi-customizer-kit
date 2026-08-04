@@ -212,6 +212,18 @@ fn full_pipeline_end_to_end() {
         !matches!(pkg_check.result, validator::CheckResult::Fail),
         "旧包名残留校验不应 FAIL"
     );
+    // MyBatis-Plus 依赖校验：SB3 项目写入的是 mybatis-plus-spring-boot3-starter，
+    // 校验器必须同时识别 SB2/SB3 两个 starter 名（回归 bug：曾只查 boot-starter 导致 SB3 误报 Fail）
+    let mp_check = checks
+        .iter()
+        .find(|c| c.item.contains("MyBatis-Plus 依赖"))
+        .expect("应存在 MyBatis-Plus 依赖校验项");
+    assert!(
+        matches!(mp_check.result, validator::CheckResult::Pass),
+        "MyBatis-Plus 依赖校验应 PASS（SB3 starter），实际: {:?} - {}",
+        mp_check.result,
+        mp_check.message
+    );
 
     // 6. 报告
     let report_path = report::generate_report(root, &info, &params, &results, &checks).unwrap();

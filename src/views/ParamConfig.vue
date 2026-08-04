@@ -22,6 +22,7 @@ import { pickSaveDirectory, pickSaveJsonFile, pickOpenJsonFile } from '@/api/dia
 import { saveConfigJson, loadConfigJson } from '@/api'
 import type { CustomizeParams } from '@/types'
 import { FEATURE_PRESETS, type Preset } from '@/constants/presets'
+import { isFeatureDisabled, DISABLED_FEATURES } from '@/constants/template-capabilities'
 import { useUiPrefs } from '@/composables/useUiPrefs'
 
 const router = useRouter()
@@ -29,6 +30,29 @@ const store = useProjectStore()
 const profilesStore = useProfilesStore()
 const { projectInfo, params: storedParams, sourceType } = storeToRefs(store)
 const historyDialogVisible = ref(false)
+
+// 当前项目命中的模板目录名（ruoyi-vue / ruoyi / ruoyi-cloud），用于按版本裁剪 UI。
+// 旧持久化数据可能无 template_dir，回退 'ruoyi-vue'（默认支持全部）。
+const templateDir = computed(
+  () => projectInfo.value?.template_dir || 'ruoyi-vue'
+)
+/** 判断某开关在当前项目类型下是否被禁用（禁用则隐藏对应 UI） */
+function isDisabled(feature: keyof CustomizeParams): boolean {
+  return isFeatureDisabled(templateDir.value, feature)
+}
+
+/**
+ * 关闭当前项目类型不支持的开关（防御性清理）。
+ * 用于：项目类型变化、应用预设、导入配置、应用历史 —— 任何批量覆写 form 之后，
+ * 确保不会把单体版不支持的开关（如 enable_uniapp）残留为 true 而被执行。
+ */
+function sanitizeDisabledFeatures() {
+  const disabled = DISABLED_FEATURES[templateDir.value]
+  if (!disabled) return
+  for (const key of disabled) {
+    ;(form[key] as unknown as boolean) = false
+  }
+}
 
 // UI 偏好：折叠状态 + 当前预设（localStorage 持久化）
 const { activeSections, currentPresetKey, setPreset, markCustomized, syncSections, expandSection } =
@@ -245,6 +269,19 @@ TRIGGERS.forEach(([getter, key]) => {
   })
 })
 
+/**
+ * 项目类型变化时（或进入配置页时），强制关闭当前项目类型不支持的开关，
+ * 防止上一项目的残留配置（如单体版误留 enable_uniapp=true）被执行。
+ * immediate 确保从识别页进入配置页时立即校正一次。
+ */
+watch(
+  templateDir,
+  () => {
+    sanitizeDisabledFeatures()
+  },
+  { immediate: true }
+)
+
 /** 下拉菜单 command 回调：按 key 查找预设并应用（找不到则静默忽略） */
 function handlePresetCommand(key: string) {
   const preset = FEATURE_PRESETS.find((p) => p.key === key)
@@ -260,6 +297,8 @@ function applyPreset(preset: Preset) {
   )
     .then(() => {
       Object.assign(form, preset.params)
+      // 应用预设后，关闭当前项目类型不支持的开关（避免预设把单体版禁用项打开）
+      sanitizeDisabledFeatures()
       setPreset(preset)
       ElMessage.success(`已应用「${preset.name}」预设`)
     })
@@ -319,6 +358,8 @@ async function importConfig() {
         form.original_package = projectInfo.value.original_package || form.original_package
         form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
       }
+      // 关闭当前项目类型不支持的开关（导入的配置可能含单体版不支持的项）
+      sanitizeDisabledFeatures()
       markCustomized()
       userModified.value = true
       ElMessage.success('配置导入成功')
@@ -341,6 +382,8 @@ function applyHistory(entry: ProfileEntry) {
         form.original_package = projectInfo.value.original_package || form.original_package
         form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
       }
+      // 关闭当前项目类型不支持的开关（历史配置可能来自其它项目类型）
+      sanitizeDisabledFeatures()
       markCustomized()
       userModified.value = true
       historyDialogVisible.value = false
@@ -514,21 +557,21 @@ function generateRandomSecret(): string {
                 </div>
                 <div class="switch-item__hint muted">insert 手动 setId（Hutool 雪花算法），全局禁用自增</div>
               </div>
-              <div class="switch-item">
+              <div v-if="!isDisabled('enable_clear_home')" class="switch-item">
                 <div class="switch-item__head">
                   <span class="switch-item__label">清空首页</span>
                   <el-switch v-model="form.enable_clear_home" @change="onSwitchChange" />
                 </div>
                 <div class="switch-item__hint muted">清空若依默认首页仪表盘</div>
               </div>
-              <div class="switch-item">
+              <div v-if="!isDisabled('enable_remove_github')" class="switch-item">
                 <div class="switch-item__head">
                   <span class="switch-item__label">移除 GitHub 外链</span>
                   <el-switch v-model="form.enable_remove_github" @change="onSwitchChange" />
                 </div>
                 <div class="switch-item__hint muted">移除顶部栏 github/gitee 链接</div>
               </div>
-              <div class="switch-item">
+              <div v-if="!isDisabled('enable_remove_docs')" class="switch-item">
                 <div class="switch-item__head">
                   <span class="switch-item__label">移除文档外链</span>
                   <el-switch v-model="form.enable_remove_docs" @change="onSwitchChange" />
@@ -542,7 +585,7 @@ function generateRandomSecret(): string {
                 </div>
                 <div class="switch-item__hint muted">改造后输出 Markdown 报告</div>
               </div>
-              <div class="switch-item">
+              <div v-if="!isDisabled('enable_uniapp')" class="switch-item">
                 <div class="switch-item__head">
                   <span class="switch-item__label">生成 UniApp 小程序</span>
                   <el-switch v-model="form.enable_uniapp" @change="onSwitchChange" />
@@ -627,7 +670,7 @@ function generateRandomSecret(): string {
               <el-badge v-if="sectionCounts.structure > 0" :value="`已启用 ${sectionCounts.structure}`" class="section-badge" type="primary" />
             </template>
             <div class="switch-grid">
-              <div class="switch-item">
+              <div v-if="!isDisabled('enable_frontend_split')" class="switch-item">
                 <div class="switch-item__head">
                   <span class="switch-item__label">前后端分离</span>
                   <el-switch v-model="form.enable_frontend_split" @change="onSwitchChange" />
@@ -761,7 +804,7 @@ function generateRandomSecret(): string {
               <el-badge v-if="sectionCounts.deploy > 0" :value="`已启用 ${sectionCounts.deploy}`" class="section-badge" type="primary" />
             </template>
             <div class="switch-grid">
-              <div class="switch-item">
+              <div v-if="!isDisabled('enable_nginx_config')" class="switch-item">
                 <div class="switch-item__head">
                   <span class="switch-item__label">Nginx 配置</span>
                   <el-switch v-model="form.enable_nginx_config" @change="onSwitchChange" />

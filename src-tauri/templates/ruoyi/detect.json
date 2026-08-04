@@ -1,18 +1,18 @@
 {
-  "name": "RuoYi-Vue",
-  "_comment_required": "ruoyi-ui/package.json 列为必备：单体版（RuoYi）后端模块与 Vue 版几乎相同，靠「是否有独立前端目录 ruoyi-ui」做区分",
+  "name": "RuoYi",
+  "_comment": "RuoYi 官方单体版（Shiro + Thymeleaf 内嵌前端，无 ruoyi-ui）。与 RuoYi-Vue 后端模块几乎相同，区别是无独立前端目录。",
   "required_files": [
     "pom.xml",
     "ruoyi-admin/pom.xml",
     "ruoyi-framework/pom.xml",
     "ruoyi-system/pom.xml",
-    "ruoyi-common/pom.xml",
-    "ruoyi-ui/package.json"
+    "ruoyi-common/pom.xml"
   ],
   "optional_files": [
-    "ruoyi-generator/pom.xml",
     "ruoyi-quartz/pom.xml",
-    "ruoyi-generator/src/main/resources/vm/java/domain.java.vm"
+    "ruoyi-generator/pom.xml",
+    "ruoyi-generator/src/main/resources/vm/java/domain.java.vm",
+    "ruoyi-admin/src/main/resources/templates/index.html"
   ],
   "config_files": [
     "ruoyi-admin/src/main/resources/application.yml",

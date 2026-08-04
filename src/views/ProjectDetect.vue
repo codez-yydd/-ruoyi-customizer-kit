@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
 import * as api from '@/api'
+import { getTemplateMeta } from '@/constants/template-capabilities'
 import { Search } from '@element-plus/icons-vue'
 import LogPanel from '@/components/LogPanel.vue'
 
@@ -15,6 +16,10 @@ const { rootPath, projectInfo, sourceType, extractRoot } = storeToRefs(store)
 
 const hasResult = computed(() => projectInfo.value !== null)
 const recognized = computed(() => projectInfo.value?.confidence.recognized ?? false)
+/** 当前项目类型的一句话说明（单体版会提示前端内嵌、不支持分离部署） */
+const templateDesc = computed(() =>
+  getTemplateMeta(projectInfo.value?.template_dir || '').desc
+)
 
 /** 回首页重新选择项目：清理 zip 临时目录并重置流程 */
 async function backToHome() {
@@ -81,6 +86,9 @@ function goConfig() {
             <el-tag :type="recognized ? 'success' : 'danger'" size="large">
               {{ projectInfo.project_type }}
             </el-tag>
+          </div>
+          <div v-if="templateDesc" class="confidence">
+            <span class="muted">{{ templateDesc }}</span>
           </div>
           <div class="confidence">
             <span>

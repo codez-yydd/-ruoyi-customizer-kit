@@ -1,0 +1,13 @@
+{
+  "_comment": "RuoYi 单体版模块清单。与 RuoYi-Vue 后端模块一致；frontend_modules 为空（单体版前端内嵌于 ruoyi-admin 的 Thymeleaf 模板，无独立前端目录），所有前端改造任务据此自动跳过。",
+  "default_prefix": "ruoyi",
+  "modules": [
+    "ruoyi-admin",
+    "ruoyi-common",
+    "ruoyi-framework",
+    "ruoyi-system",
+    "ruoyi-generator",
+    "ruoyi-quartz"
+  ],
+  "frontend_modules": []
+}

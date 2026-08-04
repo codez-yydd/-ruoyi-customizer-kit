@@ -1,0 +1,13 @@
+{
+  "target_files": [
+    "application.yaml",
+    "application-dev.yaml",
+    "application-prod.yaml"
+  ],
+  "legacy_druid_files": [
+    "application-druid.yml",
+    "application-druid.yaml"
+  ],
+  "active_profile": "dev",
+  "log_path_value": "logs"
+}

@@ -384,8 +384,13 @@ fn is_valid_uniapp_prefix(id: &str) -> bool {
 pub struct ProjectInfo {
     /// 项目根绝对路径
     pub root_path: String,
-    /// 项目类型（识别到的模板名，如 "RuoYi-Vue"）
+    /// 项目类型（识别到的模板显示名，如 "RuoYi-Vue"）
     pub project_type: String,
+    /// 命中的模板目录名（如 "ruoyi-vue"），由 detect_project 命令填充。
+    /// preview/execute 据此加载对应模板，消除主模板名硬编码。
+    /// 旧持久化数据可能为空，回退 "ruoyi-vue" 保证向后兼容。
+    #[serde(default)]
+    pub template_dir: String,
     /// 后端模块名清单（存在的，如 ruoyi-admin / ruoyi-common ...）
     pub backend_modules: Vec<String>,
     /// 前端目录名清单（如 ruoyi-ui）

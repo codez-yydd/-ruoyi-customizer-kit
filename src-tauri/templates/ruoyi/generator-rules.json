@@ -1,0 +1,12 @@
+{
+  "enable_mybatis_plus_templates": true,
+  "enable_long_id_json_string": true,
+  "template_files": {
+    "domain": "ruoyi-generator/src/main/resources/vm/java/domain.java.vm",
+    "mapper": "ruoyi-generator/src/main/resources/vm/java/mapper.java.vm",
+    "service": "ruoyi-generator/src/main/resources/vm/java/service.java.vm",
+    "service_impl": "ruoyi-generator/src/main/resources/vm/java/serviceImpl.java.vm",
+    "xml_mapper": "ruoyi-generator/src/main/resources/vm/xml/mapper.xml.vm"
+  },
+  "long_id_annotation": "@JsonSerialize(using = ToStringSerializer.class)"
+}

@@ -33,6 +33,10 @@ pub fn setup_oss(
     let mut created = 0usize;
     let mut summary = Vec::new();
 
+    // 检测 Spring Boot 大版本：SB2 用 javax.annotation，SB3 用 jakarta.annotation。
+    // 与 mybatis_plus 的 starter 选择保持同一判定来源。
+    let boot_major = crate::core::mybatis_plus::detect_boot_major_version(root);
+
     // 1. 注入 SDK 依赖
     if add_oss_dependency(root, backend_modules, &params.oss_provider, log)? {
         modified += 1;
@@ -40,7 +44,7 @@ pub fn setup_oss(
     summary.push(format!("OSS 厂商：{}", provider_cn(&params.oss_provider)));
 
     // 2. 生成配置类 + OssClient + OssController
-    created += add_oss_classes(root, params, backend_modules, log)?;
+    created += add_oss_classes(root, params, backend_modules, boot_major, log)?;
 
     // 3. 追加 yml 配置
     if append_oss_yml(root, params, log)? {
@@ -130,6 +134,7 @@ fn add_oss_classes(
     root: &Path,
     params: &CustomizeParams,
     backend_modules: &[String],
+    boot_major: Option<u32>,
     log: &dyn Fn(&str),
 ) -> Result<usize, String> {
     let admin = backend_modules
@@ -159,7 +164,7 @@ fn add_oss_classes(
     // OssClient.java
     let client_file = config_dir.join("OssClient.java");
     if !client_file.exists() {
-        std::fs::write(&client_file, render_oss_client(params))
+        std::fs::write(&client_file, render_oss_client(params, boot_major))
             .map_err(|e| format!("写入 OssClient.java 失败：{e}"))?;
         created += 1;
         log("已生成 OssClient.java");
@@ -193,7 +198,8 @@ fn render_oss_properties(params: &CustomizeParams) -> String {
 }
 
 /// 渲染 OssClient.java（按 provider 分支初始化对应 SDK 客户端，提供统一 upload 方法）
-fn render_oss_client(params: &CustomizeParams) -> String {
+/// boot_major 决定 @PostConstruct 注解包名：SB2(<3)→javax.annotation，SB3/未知→jakarta.annotation
+fn render_oss_client(params: &CustomizeParams, boot_major: Option<u32>) -> String {
     let pkg = &params.new_package;
     let prefix = &params.new_module_prefix;
     // 各厂商的 import 与初始化代码
@@ -254,8 +260,15 @@ fn render_oss_client(params: &CustomizeParams) -> String {
         _ => "    private final String bucketName;\n",
     };
 
+    // @PostConstruct 注解包名随 Boot 大版本切换：SB2→javax，SB3/未知→jakarta
+    let postconstruct_ns = match boot_major {
+        Some(major) if major < 3 => "javax.annotation",
+        _ => "jakarta.annotation",
+    };
+    let postconstruct = format!("@{postconstruct_ns}.PostConstruct");
+
     format!(
-        "package {pkg}.framework.config;\n\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;\nimport org.springframework.stereotype.Component;\n{imports}\n\n/**\n * OSS 客户端：按厂商封装统一的上传方法。\n * 仅当 {prefix}.oss.enabled=true 时生效。\n */\n@Component\n@ConditionalOnProperty(prefix = \"{prefix}.oss\", name = \"enabled\", havingValue = \"true\")\npublic class OssClient\n{{\n    @Autowired\n    private OssProperties props;\n{fields}\n    /**\n     * 初始化（构造后由 Spring 注入 props，这里延迟初始化厂商客户端）。\n     */\n    @jakarta.annotation.PostConstruct\n    public void init()\n    {{{init_block}\n    }}\n\n    /**\n     * 上传文件到 OSS，返回可访问的 URL。\n     *\n     * @param objectKey  对象 key（含路径，如 upload/2024/xxx.jpg）\n     * @param inputStream 文件输入流\n     * @return 访问 URL\n     */\n    public String upload(String objectKey, InputStream inputStream) throws Exception\n    {{{upload_body}\n    }}\n}}\n"
+        "package {pkg}.framework.config;\n\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;\nimport org.springframework.stereotype.Component;\n{imports}\n\n/**\n * OSS 客户端：按厂商封装统一的上传方法。\n * 仅当 {prefix}.oss.enabled=true 时生效。\n */\n@Component\n@ConditionalOnProperty(prefix = \"{prefix}.oss\", name = \"enabled\", havingValue = \"true\")\npublic class OssClient\n{{\n    @Autowired\n    private OssProperties props;\n{fields}\n    /**\n     * 初始化（构造后由 Spring 注入 props，这里延迟初始化厂商客户端）。\n     */\n    {postconstruct}\n    public void init()\n    {{{init_block}\n    }}\n\n    /**\n     * 上传文件到 OSS，返回可访问的 URL。\n     *\n     * @param objectKey  对象 key（含路径，如 upload/2024/xxx.jpg）\n     * @param inputStream 文件输入流\n     * @return 访问 URL\n     */\n    public String upload(String objectKey, InputStream inputStream) throws Exception\n    {{{upload_body}\n    }}\n}}\n"
     )
 }
 
@@ -370,4 +383,60 @@ fn find_resources_dir(root: &Path) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 验证 SB3（或未知版本）生成 jakarta.annotation.PostConstruct
+    #[test]
+    fn oss_client_uses_jakarta_for_boot3() {
+        let mut params = CustomizeParams::default();
+        params.new_package = "com.example".into();
+        params.new_module_prefix = "demo".into();
+        params.oss_provider = "aliyun".into();
+
+        let src = render_oss_client(&params, Some(3));
+        assert!(
+            src.contains("@jakarta.annotation.PostConstruct"),
+            "SB3 应使用 jakarta，生成内容:\n{src}"
+        );
+        assert!(
+            !src.contains("@javax.annotation.PostConstruct"),
+            "SB3 不应出现 javax"
+        );
+
+        // 检测不到版本（None）也默认 jakarta（现代若依多为 SB3）
+        let src_unknown = render_oss_client(&params, None);
+        assert!(src_unknown.contains("@jakarta.annotation.PostConstruct"));
+    }
+
+    /// 验证 SB2 生成 javax.annotation.PostConstruct（避免 SB2 项目编译失败）
+    #[test]
+    fn oss_client_uses_javax_for_boot2() {
+        let mut params = CustomizeParams::default();
+        params.new_package = "com.example".into();
+        params.new_module_prefix = "demo".into();
+        params.oss_provider = "minio".into();
+
+        let src = render_oss_client(&params, Some(2));
+        assert!(
+            src.contains("@javax.annotation.PostConstruct"),
+            "SB2 应使用 javax，生成内容:\n{src}"
+        );
+        assert!(
+            !src.contains("@jakarta.annotation.PostConstruct"),
+            "SB2 不应出现 jakarta"
+        );
+    }
+
+    /// 验证 SB 2.x 具体版本号（如 2.5.15）也能正确判定为 javax
+    #[test]
+    fn oss_client_uses_javax_for_boot_2_5() {
+        let params = CustomizeParams::default();
+        // major=2 即触发 javax 分支（detect_boot_major_version 返回 Some(2)）
+        let src = render_oss_client(&params, Some(2));
+        assert!(src.contains("@javax.annotation.PostConstruct"));
+    }
 }

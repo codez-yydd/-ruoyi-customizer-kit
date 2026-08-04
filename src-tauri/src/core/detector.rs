@@ -50,6 +50,8 @@ pub fn detect(project_root: &Path, template: &Template) -> ProjectInfo {
     ProjectInfo {
         root_path: project_root.to_string_lossy().to_string(),
         project_type: template.detect.name.clone(),
+        // 模板目录名由 detect_project 命令覆盖（detector 不感知目录名）
+        template_dir: String::new(),
         backend_modules,
         frontend_dirs,
         config_files,

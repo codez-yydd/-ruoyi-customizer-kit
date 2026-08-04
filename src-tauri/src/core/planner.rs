@@ -580,21 +580,24 @@ pub fn plan(
         error_message: String::new(),
     });
 
-    // 前端开发脚本生成（始终，输出到 output_dir 根目录）：npm install + npm run dev 一键启动
-    tasks.push(Task {
-        id: next_id(&tasks),
-        name: format!(
-            "生成前端开发脚本（run-ui.sh / run-ui.bat，cd {}-ui）",
-            params.new_module_prefix
-        ),
-        task_type: TaskType::GenerateDevUiScripts,
-        risk_level: RiskLevel::Low,
-        affected_files: vec![],
-        affected_dirs: vec![],
-        created_files: vec!["run-ui.sh".into(), "run-ui.bat".into()],
-        status: TaskStatus::Pending,
-        error_message: String::new(),
-    });
+    // 前端开发脚本生成（仅当模板含前端目录时，输出到 output_dir 根目录）：npm install + npm run dev 一键启动。
+    // 单体版（Thymeleaf 内嵌前端，无 ruoyi-ui）不生成 run-ui 脚本。
+    if has_frontend(template) {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "生成前端开发脚本（run-ui.sh / run-ui.bat，cd {}-ui）",
+                params.new_module_prefix
+            ),
+            task_type: TaskType::GenerateDevUiScripts,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec!["run-ui.sh".into(), "run-ui.bat".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
 
     // admin pom 打包名改造（始终）：finalName → {prefix}-admin（产出 {prefix}-admin.jar）
     tasks.push(Task {
@@ -685,6 +688,12 @@ pub fn summarize(tasks: &[Task]) -> PreviewSummary {
 /// 由当前任务列表长度推导两位序号
 fn next_id(tasks: &[Task]) -> String {
     format!("{:02}", tasks.len() + 1)
+}
+
+/// 模板是否含独立前端目录（如 ruoyi-ui）。
+/// 单体版（RuoYi）frontend_modules 为空 → false，据此跳过前端开发脚本等前端专属任务。
+fn has_frontend(template: &Template) -> bool {
+    !template.module.frontend_modules.is_empty()
 }
 
 fn rel(root: &Path, p: &Path) -> String {

@@ -69,7 +69,9 @@ pub fn detect_project(
         };
         match build_template(&tpl_dir) {
             Ok(template) => {
-                let project = detector::detect(&root, &template);
+                let mut project = detector::detect(&root, &template);
+                // 记录命中的模板目录名，供 preview/execute 反查，消除主模板名硬编码
+                project.template_dir = tpl_name.clone();
                 diag(&format!(
                     "detect_project 识别完成：type={} recognized={} hit={}/{} backend={} frontend={} config={} logback={} gen={}",
                     project.project_type,
@@ -131,12 +133,9 @@ fn list_template_names(app: &AppHandle) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default();
-    // ruoyi-vue 排最前（向后兼容的首选）
-    names.sort_by(|a, b| {
-        let av = (a == "ruoyi-vue") as u8;
-        let bv = (b == "ruoyi-vue") as u8;
-        bv.cmp(&av).then_with(|| a.cmp(b))
-    });
+    // 按识别严格度排序：ruoyi-vue（要求 ruoyi-ui，最严格）→ ruoyi（单体，5 个后端 pom）→ ruoyi-cloud（gateway）。
+    // 严格模板优先尝试，避免单体项目误命中 ruoyi-vue、或 Vue 项目误命中 ruoyi。
+    sort_templates_by_specificity(&mut names);
     names
 }
 
@@ -356,6 +355,50 @@ fn resolve_template_dir(app: &AppHandle, name: &str) -> Option<PathBuf> {
         Some(dir)
     } else {
         None
+    }
+}
+
+/// 模板识别优先级表：越靠前越严格（先尝试），避免宽松模板抢先命中。
+/// ruoyi-vue 要求 ruoyi-ui（最严格）→ ruoyi 单体（5 个后端 pom）→ ruoyi-cloud（gateway）。
+/// 未列出的模板按字母序排在末尾。
+fn sort_templates_by_specificity(names: &mut Vec<String>) {
+    const PRIORITY: &[&str] = &["ruoyi-vue", "ruoyi", "ruoyi-cloud"];
+    names.sort_by(|a, b| {
+        let pa = PRIORITY.iter().position(|p| *p == a.as_str()).unwrap_or(usize::MAX);
+        let pb = PRIORITY.iter().position(|p| *p == b.as_str()).unwrap_or(usize::MAX);
+        pa.cmp(&pb).then_with(|| a.cmp(b))
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sort_priority_order() {
+        // 乱序输入应排成 ruoyi-vue → ruoyi → ruoyi-cloud
+        let mut names = vec!["ruoyi-cloud".into(), "ruoyi".into(), "ruoyi-vue".into()];
+        sort_templates_by_specificity(&mut names);
+        assert_eq!(names, vec!["ruoyi-vue", "ruoyi", "ruoyi-cloud"]);
+    }
+
+    #[test]
+    fn sort_unknown_templates_go_last_alphabetical() {
+        // 未登记的模板排末尾，按字母序
+        let mut names = vec!["zzz".into(), "ruoyi".into(), "aaa".into(), "ruoyi-vue".into()];
+        sort_templates_by_specificity(&mut names);
+        assert_eq!(names, vec!["ruoyi-vue", "ruoyi", "aaa", "zzz"]);
+    }
+
+    #[test]
+    fn sort_empty_and_single() {
+        let mut empty: Vec<String> = vec![];
+        sort_templates_by_specificity(&mut empty);
+        assert!(empty.is_empty());
+
+        let mut single = vec!["ruoyi-cloud".into()];
+        sort_templates_by_specificity(&mut single);
+        assert_eq!(single, vec!["ruoyi-cloud"]);
     }
 }
 
