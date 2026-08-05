@@ -73,13 +73,20 @@ function createRequestClient(baseURL: string) {
   // 若依有三种成功响应形态，拦截器需统一处理：
   //   ① 普通对象：{code:200, msg, data}        → 返回 data
   //   ② 分页列表：{code:200, msg, rows, total} → 返回 {rows, total}（业务层自行取用）
-  //   ③ 登录特例：{code:200, msg, token}        → 登录用 baseRequestClient 单独处理，不走此处
+  //   ③ 扁平聚合：{code:200, msg, data, roles, posts, ...} → 需保留全部顶层字段，调用方
+  //      在请求 config 中设置 rawResponse: true 即可跳过自动解包，拿到完整响应体
+  //   ④ 登录特例：{code:200, msg, token}        → 登录用 baseRequestClient 单独处理，不走此处
   client.addResponseInterceptor<HttpResponse>({
     fulfilled: (response) => {
-      const { data: responseData, status } = response;
+      const { data: responseData, status, config } = response;
 
       const { code } = responseData;
       if (status >= 200 && status < 400 && code === 200) {
+        // 请求时设置 rawResponse: true 的接口（如用户详情，需保留 roles/posts 等顶层字段），
+        // 直接原样返回完整响应体，不做 data 解包
+        if ((config as any)?.rawResponse) {
+          return responseData;
+        }
         // 优先取 data；若依分页接口无 data 而有 rows，则原样返回含 rows/total 的对象
         if (responseData.data !== undefined) {
           return responseData.data;

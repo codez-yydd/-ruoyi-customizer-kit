@@ -44,7 +44,14 @@ export function listUser(query: UserQuery) {
   });
 }
 
-/** GET /system/user/{userId} 或 GET /system/user/ —— 用户详情（含角色/岗位选项） */
+/**
+ * GET /system/user/{userId} 或 GET /system/user/ —— 用户详情（含角色/岗位选项）
+ *
+ * 注意：若依该接口返回的是扁平聚合结构
+ *   {code, msg, data: SysUser, roles, posts, roleIds, postIds}
+ * 顶层除 data 外还携带 roles/posts 等字段，必须用 rawResponse 跳过全局拦截器的
+ * 自动 data 解包，否则这些字段会被丢弃，导致编辑弹框无法回显。
+ */
 export function getUser(userId?: number) {
   return requestClient.get<{
     data: SysUser;
@@ -52,7 +59,7 @@ export function getUser(userId?: number) {
     roleIds: number[];
     posts: { postId: number; postName: string; status: string }[];
     postIds: number[];
-  }>(`/system/user/${parseStrEmpty(userId)}`);
+  }>(`/system/user/${parseStrEmpty(userId)}`, { rawResponse: true });
 }
 
 /** POST /system/user —— 新增 */
