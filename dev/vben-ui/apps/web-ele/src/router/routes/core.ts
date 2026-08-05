@@ -2,7 +2,7 @@ import type { RouteRecordRaw } from 'vue-router';
 
 import { DEFAULT_HOME_PATH, LOGIN_PATH } from '@vben/constants';
 
-import { AuthPageLayout } from '#/layouts';
+import { AuthPageLayout, BasicLayout } from '#/layouts';
 import { $t } from '#/locales';
 import Login from '#/views/_core/authentication/login.vue';
 
@@ -28,6 +28,30 @@ const coreRoutes: RouteRecordRaw[] = [
     name: 'Root',
     path: '/',
     redirect: DEFAULT_HOME_PATH,
+  },
+  // 个人中心：后端菜单无此页，作为隐藏路由常驻（经 BasicLayout 渲染，不在侧边栏显示）
+  // 仅 coreRoutes 会始终注册；modules/* 的静态路由在后端模式下不会注册，故放在这里。
+  {
+    component: BasicLayout,
+    meta: {
+      hideInMenu: true,
+      title: '个人中心',
+    },
+    name: 'UserProfile',
+    path: '/user',
+    redirect: '/user/profile',
+    children: [
+      {
+        name: 'Profile',
+        path: 'profile',
+        component: () => import('#/views/system/user/profile/index.vue'),
+        meta: {
+          hideInMenu: true,
+          icon: 'lucide:user',
+          title: '个人中心',
+        },
+      },
+    ],
   },
   {
     component: AuthPageLayout,

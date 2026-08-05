@@ -48,16 +48,40 @@ export async function getUserInfoApi() {
   // 缓存若依权限码，供 v-hasPermi 指令使用
   cachedPermissions = raw.permissions ?? [];
 
+  // 头像 URL 处理：若依 avatar 存的是相对路径（如 /profile/avatar/.../xx.png），
+  // 需拼上 API 前缀（开发态 /api，由 vite proxy 转发；生产态同理）。
+  // 若是完整 http(s) URL 则原样使用；为空则交由组件回退到默认头像。
+  const rawAvatar = raw.user.avatar ?? '';
+  const avatar = /^https?:\/\//i.test(rawAvatar)
+    ? rawAvatar
+    : rawAvatar
+      ? `${import.meta.env.VITE_GLOB_API_URL}${rawAvatar}`
+      : '';
+
   const userInfo: UserInfo = {
     userId: String(raw.user.userId),
     username: raw.user.userName,
     realName: raw.user.nickName,
-    avatar: raw.user.avatar ?? '',
+    avatar,
     roles: raw.roles ?? [],
     desc: raw.user.dept?.deptName ?? '',
-    homePath: '/dashboard/workspace',
+    // 若依后端菜单无 dashboard/工作台页，登录后直接进系统管理-用户管理
+    // （后端模式下静态 dashboard 路由不会注册，必须指向真实存在的菜单路径）
+    homePath: '/system/user',
     token: '',
   };
 
+  // 缓存完整用户信息（邮箱/手机/部门等，供个人中心等页面取用，避免重复请求）
+  cachedRuoYiUser = raw.user;
+
   return userInfo;
+}
+
+/**
+ * 缓存若依 /getInfo 返回的原始 user 对象，
+ * 供个人中心等需要更多字段的页面取用（避免再请求一次 /getInfo）。
+ */
+let cachedRuoYiUser: RuoYiGetInfoResponse['user'] | null = null;
+export function getCachedRuoYiUser() {
+  return cachedRuoYiUser;
 }

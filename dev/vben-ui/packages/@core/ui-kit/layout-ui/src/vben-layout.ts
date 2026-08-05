@@ -142,6 +142,11 @@ interface VbenLayoutProps {
    */
   sidebarWidth?: number;
   /**
+   * 侧边栏是否可拖拽调整宽度
+   * @default false
+   */
+  sidebarDraggable?: boolean;
+  /**
    *  侧边菜单折叠宽度
    * @default 48
    */

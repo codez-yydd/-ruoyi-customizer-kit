@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { VbenFormSchema } from '@vben/common-ui';
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import { AuthenticationLogin, z } from '@vben/common-ui';
 import { $t } from '@vben/locales';
@@ -42,6 +42,28 @@ onBeforeUnmount(() => {
   captchaUuid.value = '';
 });
 
+/**
+ * 验证码图片渲染函数：作为 form schema 的 suffix 渲染在输入框右侧。
+ *
+ * 说明：AuthenticationLogin 组件本身没有 captcha-image 插槽，
+ * 因此必须用表单字段的 suffix（form-field.vue 会把 suffix 渲染在
+ * FormControl 右侧），否则验证码图片无处显示。
+ */
+// 返回 any 以匹配 VbenFormSchema.suffix 的类型签名
+// （CustomRenderType 标注为 () => Component | string，但运行时作为
+//  函数式组件由 VbenRenderContent 直接 h() 渲染其 VNode 返回值）
+function renderCaptchaImage(): any {
+  return captchaImg.value
+    ? h('img', {
+        src: captchaImg.value,
+        alt: '验证码',
+        title: '点击刷新验证码',
+        class: 'captcha-img',
+        onClick: refreshCaptcha,
+      })
+    : null;
+}
+
 const formSchema = computed((): VbenFormSchema[] => {
   const fields: VbenFormSchema[] = [
     {
@@ -64,7 +86,7 @@ const formSchema = computed((): VbenFormSchema[] => {
     },
   ];
 
-  // 若依启用验证码时，追加验证码输入字段
+  // 若依启用验证码时，追加验证码输入字段 + 右侧图片（suffix）
   if (captchaEnabled.value) {
     fields.push({
       component: 'VbenInput',
@@ -74,6 +96,8 @@ const formSchema = computed((): VbenFormSchema[] => {
       fieldName: 'code',
       label: '验证码',
       rules: z.string().min(1, { message: '请输入验证码' }),
+      // 右侧渲染验证码图片，点击刷新
+      suffix: renderCaptchaImage,
     });
   }
 
@@ -97,23 +121,17 @@ async function handleSubmit(values: Record<string, any>) {
   <AuthenticationLogin
     :form-schema="formSchema"
     :loading="authStore.loginLoading"
+    :show-code-login="false"
+    :show-forget-password="false"
+    :show-qrcode-login="false"
+    :show-register="false"
+    :show-third-party-login="false"
     @submit="handleSubmit"
-  >
-    <!-- 若依图形验证码图片，点击刷新 -->
-    <template v-if="captchaEnabled && captchaImg" #captcha-image>
-      <img
-        :src="captchaImg"
-        alt="验证码"
-        title="点击刷新验证码"
-        class="captcha-img"
-        @click="refreshCaptcha"
-      />
-    </template>
-  </AuthenticationLogin>
+  />
 </template>
 
 <style scoped>
-.captcha-img {
+:deep(.captcha-img) {
   height: 38px;
   cursor: pointer;
   border-radius: 4px;

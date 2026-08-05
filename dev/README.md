@@ -63,8 +63,13 @@ cd dev && ./run-ui.sh       # 或 Windows 双击 run-ui.bat
 
 ## 适配进度
 - [x] 对接层（auth/user/menu/captcha/request）
+- [x] 登录页验证码图片显示（form schema suffix 渲染）+ 隐藏手机/扫码/第三方登录入口
 - [x] 字典系统 + DictTag + v-hasPermi 权限指令
 - [x] system: user/role/menu/dept/post/dict/config/notice
 - [x] monitor: operlog/logininfor/online/server/cache/job
+- [x] 外链菜单适配（若依 path=完整URL → 移到 meta.link，避免 addRoute 崩溃）
+- [x] 登录后跳首页（homePath 指向真实菜单 /system/user，无 dashboard 页）
+- [x] 顶部栏用户信息（头像/昵称接 /getInfo；头像补 API 前缀）
+- [x] 个人中心页（/user/profile：基本资料/修改密码/头像上传，隐藏路由）
 - [ ] 联调验证（需真实后端 + 数据库）
 - [ ] UI 细节打磨（边看边调）

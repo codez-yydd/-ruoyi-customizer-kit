@@ -52,6 +52,7 @@ const props = withDefaults(defineProps<Props>(), {
   sidebarExtraCollapsedWidth: 60,
   sidebarHidden: false,
   sidebarMixedWidth: 80,
+  sidebarDraggable: false,
   sidebarTheme: 'dark',
   sidebarWidth: 180,
   sideCollapseWidth: 60,
@@ -60,7 +61,11 @@ const props = withDefaults(defineProps<Props>(), {
   zIndex: 200,
 });
 
-const emit = defineEmits<{ sideMouseLeave: []; toggleSidebar: [] }>();
+const emit = defineEmits<{
+  sideMouseLeave: [];
+  toggleSidebar: [];
+  'update:sidebarWidth': [value: number];
+}>();
 const sidebarCollapse = defineModel<boolean>('sidebarCollapse');
 const sidebarExtraVisible = defineModel<boolean>('sidebarExtraVisible');
 const sidebarExtraCollapse = defineModel<boolean>('sidebarExtraCollapse');
@@ -467,6 +472,7 @@ const idMainContent = ELEMENT_ID_MAIN_CONTENT;
     <LayoutSidebar
       v-if="sidebarEnableState"
       v-model:collapse="sidebarCollapse"
+      :draggable="sidebarDraggable"
       v-model:expand-on-hover="sidebarExpandOnHover"
       v-model:expand-on-hovering="sidebarExpandOnHovering"
       v-model:extra-collapse="sidebarExtraCollapse"
@@ -484,6 +490,7 @@ const idMainContent = ELEMENT_ID_MAIN_CONTENT;
       :width="getSidebarWidth"
       :z-index="sidebarZIndex"
       @leave="() => emit('sideMouseLeave')"
+      @update:width="(w: number) => emit('update:sidebarWidth', w)"
     >
       <template v-if="isSideMode && !isMixedNav" #logo>
         <slot name="logo"></slot>

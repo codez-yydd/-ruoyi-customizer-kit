@@ -47,6 +47,11 @@ const {
 const lockStore = useLockStore();
 const { refresh } = useRefresh();
 
+// 侧边栏可拖拽改宽度：仅非混合导航、非移动端、侧边栏可见时启用
+const sidebarDraggable = computed(
+  () => !isMixedNav.value && !isMobile.value && !preferences.sidebar.hidden,
+);
+
 const sidebarTheme = computed(() => {
   const dark = isDark.value || preferences.theme.semiDarkSidebar;
   return dark ? 'dark' : 'light';
@@ -179,6 +184,7 @@ const headerSlots = computed(() => {
     :sidebar-expand-on-hover="preferences.sidebar.expandOnHover"
     :sidebar-extra-collapse="preferences.sidebar.extraCollapse"
     :sidebar-hidden="preferences.sidebar.hidden"
+    :sidebar-draggable="sidebarDraggable"
     :sidebar-theme="sidebarTheme"
     :sidebar-width="preferences.sidebar.width"
     :tabbar-enable="preferences.tabbar.enable"
@@ -190,6 +196,9 @@ const headerSlots = computed(() => {
     "
     @update:sidebar-enable="
       (value: boolean) => updatePreferences({ sidebar: { enable: value } })
+    "
+    @update:sidebar-width="
+      (value: number) => updatePreferences({ sidebar: { width: value } })
     "
     @update:sidebar-expand-on-hover="
       (value: boolean) =>

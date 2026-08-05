@@ -15,20 +15,35 @@ echo "  Redis:  localhost:6379 db=15 (无密码)"
 echo "============================================"
 echo ""
 
-# 方式1：Maven 启动
+# 注意：若依 ruoyi-admin 的 spring-boot-maven-plugin 没配 mainClass，
+# 直接 `mvn spring-boot:run` 会报 "Unable to find a suitable main class"。
+# 所以采用若依官方标准做法：先打 jar 再 java -jar 启动。
+JAR="ruoyi-admin/target/ruoyi-admin.jar"
+
 if command -v mvn >/dev/null 2>&1; then
-    echo "使用 Maven 启动..."
-    mvn -pl ruoyi-admin -am spring-boot:run
+    if [ ! -f "$JAR" ]; then
+        echo "首次运行，正在打包 ruoyi-admin.jar（首次较慢，请耐心等待）..."
+        echo ""
+        mvn -pl ruoyi-admin -am package -DskipTests || exit 1
+    fi
+    if [ -f "$JAR" ]; then
+        echo "启动 ruoyi-admin.jar ..."
+        echo ""
+        java -jar "$JAR"
+        exit $?
+    fi
+    echo "[错误] 打包未生成 $JAR"
+    exit 1
+fi
+
+# 无 mvn：检查已有 jar
+if [ -f "$JAR" ]; then
+    echo "未找到 mvn，使用已有 jar 启动..."
+    echo ""
+    java -jar "$JAR"
     exit $?
 fi
 
-# 方式2：已有 jar 则直接跑
-if [ -f "ruoyi-admin/target/ruoyi-admin.jar" ]; then
-    echo "使用已打包 jar 启动..."
-    java -jar ruoyi-admin/target/ruoyi-admin.jar
-    exit $?
-fi
-
-echo "[错误] 未找到 mvn，也未找到 ruoyi-admin/target/ruoyi-admin.jar"
+echo "[错误] 未找到 mvn，也未找到 $JAR"
 echo "请先安装 Maven（并确保 JDK17），或先执行 mvn -pl ruoyi-admin -am package 打包。"
 exit 1

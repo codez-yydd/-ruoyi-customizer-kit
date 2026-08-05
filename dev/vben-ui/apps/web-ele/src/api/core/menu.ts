@@ -34,6 +34,30 @@ interface RuoYiRouter {
 }
 
 /**
+ * 判断是否为外链（http/https 开头）。
+ * 若依外链菜单会把完整 URL 直接放在 path 字段（如 http://ruoyi.vip），
+ * 而 vue-router 要求 path 必须以 "/" 开头，直接透传会导致 addRoute 抛错。
+ */
+function isExternalLink(p?: string): boolean {
+  return !!p && /^https?:\/\//i.test(p);
+}
+
+/**
+ * 为外链生成一个合法的路由 path（以 "/" 开头）。
+ * 取 URL 的 host 作为路径段，避免与既有路由冲突；无法解析时回退到固定占位。
+ */
+function toExternalRoutePath(url: string): string {
+  try {
+    const { host, pathname } = new URL(url);
+    // 去掉末尾斜杠，拼成 /host/path 形式
+    const tail = (pathname || '').replace(/\/+$/, '');
+    return `/${host}${tail}`;
+  } catch {
+    return `/external/${Date.now()}`;
+  }
+}
+
+/**
  * 将若依菜单转换为 vben 的 RouteRecordStringComponent 结构。
  *
  * 核心转换：
@@ -43,6 +67,8 @@ interface RuoYiRouter {
  * 3. hidden → meta.hideInMenu（vben 用此字段控制侧边栏显隐）
  * 4. noCache 反转 → meta.keepAlive（若依 noCache=true 表示不缓存，vben keepAlive=true 表示缓存）
  * 5. query 解析进 meta.query（JSON 字符串 → 对象）
+ * 6. 外链处理：若依把完整 URL 放 path，vue-router 不接受；需把 URL 移到 meta.link，
+ *    并生成合法 /path，菜单点击时 vben 的 use-navigation 检测到 http URL 会在新标签页打开。
  */
 function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] {
   return menus.map((menu) => {
@@ -69,9 +95,15 @@ function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] 
       }
     }
 
+    // 外链 path 处理：若依外链菜单 path 是完整 URL，需移到 meta.link 并生成合法 /path
+    // （否则 router.addRoute 会抛 "Route paths should start with a /"）
+    const external = isExternalLink(menu.path);
+    const finalPath = external ? toExternalRoutePath(menu.path) : menu.path;
+    const finalLink = external ? menu.path : meta?.link;
+
     const transformed: RouteRecordStringComponent = {
       name: menu.name,
-      path: menu.path,
+      path: finalPath,
       component: mappedComponent as any,
       redirect: menu.redirect,
       meta: {
@@ -81,7 +113,7 @@ function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] 
         hideInMenu: menu.hidden,
         // 若依 noCache=true 表示不缓存；vben keepAlive=true 表示缓存，需反转
         keepAlive: meta?.noCache === false,
-        link: meta?.link,
+        link: finalLink,
         query,
         // 保留若依原始标识，便于调试
         order: 0,

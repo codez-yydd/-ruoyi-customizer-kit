@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useTemplateRef } from 'vue';
 import { useRouter } from 'vue-router';
 
 import {
@@ -57,6 +57,21 @@ const userList = ref<SysUser[]>([]);
 const ids = ref<number[]>([]);
 const single = ref(true);
 const multiple = ref(true);
+
+// ===== 表格自适应高度 =====
+// 让表格撑满内容区剩余空间（减去搜索栏/工具栏/分页），避免表格太矮
+const tableWrapRef = useTemplateRef<HTMLElement>('tableWrapRef');
+const tableHeight = ref<number>(0);
+
+function calcTableHeight() {
+  const wrap = tableWrapRef.value;
+  if (!wrap) return;
+  // 父容器（.ruoyi-content）高度 - 分页高度(约 56) - 内边距
+  const parentH = wrap.parentElement?.clientHeight ?? 0;
+  tableHeight.value = Math.max(parentH - 56, 240);
+}
+
+let resizeObserver: null | ResizeObserver = null;
 
 // ===== 部门树 =====
 const deptOptions = ref<any[]>([]);
@@ -250,6 +265,18 @@ const columns = reactive({
 onMounted(() => {
   getList();
   getDeptTree();
+  // 表格高度自适应
+  nextTick(() => {
+    calcTableHeight();
+    resizeObserver = new ResizeObserver(() => calcTableHeight());
+    if (tableWrapRef.value?.parentElement) {
+      resizeObserver.observe(tableWrapRef.value.parentElement);
+    }
+  });
+});
+
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
 });
 </script>
 
@@ -314,7 +341,8 @@ onMounted(() => {
       </div>
 
       <!-- 表格 -->
-      <ElTable v-loading="loading" :data="userList" border @selection-change="handleSelectionChange">
+      <div ref="tableWrapRef" class="table-wrap">
+        <ElTable v-loading="loading" :data="userList" :height="tableHeight" border @selection-change="handleSelectionChange">
         <ElTableColumn type="selection" width="50" align="center" />
         <ElTableColumn v-if="columns.userId" label="用户编号" align="center" prop="userId" width="100" />
         <ElTableColumn v-if="columns.userName" label="用户名称" align="center" prop="userName" show-overflow-tooltip />
@@ -349,6 +377,7 @@ onMounted(() => {
           </template>
         </ElTableColumn>
       </ElTable>
+      </div>
 
       <!-- 分页 -->
       <div class="pagination">
@@ -458,13 +487,24 @@ onMounted(() => {
   gap: 12px;
   padding: 12px;
   height: 100%;
+  /* el-dialog 即使关闭也会作为子元素留在 flex 流里，会挤占内容区宽度，
+     这里强制它脱离文档流，避免破坏 flex 布局 */
+}
+/* 将 el-dialog 移出 flex 布局流（关闭态占位元素不应占空间） */
+.ruoyi-page :deep(el-dialog) {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
 }
 .dept-sidebar {
   width: 240px;
   flex-shrink: 0;
   background: var(--el-bg-color);
-  border-radius: 4px;
-  padding: 8px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
 }
@@ -472,26 +512,29 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 8px;
+  padding: 0 4px 8px;
   font-weight: 600;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  margin-bottom: 8px;
 }
 .dept-filter {
-  margin: 8px 0;
+  margin-bottom: 8px;
 }
 .dept-tree {
   flex: 1;
   overflow: auto;
 }
 .ruoyi-content {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
 .search-form {
   background: var(--el-bg-color);
-  padding: 12px 12px 0;
-  border-radius: 4px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  padding: 16px 16px 0;
   margin-bottom: 12px;
 }
 .toolbar {
@@ -499,9 +542,17 @@ onMounted(() => {
   gap: 8px;
   margin-bottom: 12px;
 }
+.table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--el-bg-color);
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+}
 .pagination {
   display: flex;
   justify-content: flex-end;
-  padding: 12px 0;
+  padding: 12px 0 4px;
 }
 </style>
