@@ -37,6 +37,24 @@ components.d.ts
 # 应用运行产物
 .ry-forge-report/
 .ry-customizer-backup/
+
+# 开发工作区：vben 适配工程 + 若依后端（纳入主仓库持续提交）
+# 仅排除大体积产物目录与构建缓存，源码（含改造）正常入库
+# 注意：dev/vben-ui 与 dev/ruoyi-backend 克隆自上游，已删除各自的 .git，作为普通目录管理
+dev/**/node_modules/
+dev/**/target/
+dev/**/dist/
+dev/**/.turbo/
+dev/**/.cache/
+dev/**/*.log
+dev/**/logs/
+dev/**/.nitro/
+dev/**/.output/
+# 编译产物 / IDE
+dev/**/*.class
+dev/**/uploadPath/
+
+
 # docs/ 默认忽略，仅放行 README 引用的截图（img/）
 # 注意：git 不允许重新包含已被忽略目录的子目录，故先放行 docs/ 再忽略其余
 

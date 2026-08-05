@@ -6,6 +6,7 @@ pub mod detector;
 pub mod config_rewrite;
 pub mod mybatis_plus;
 pub mod uniapp;
+pub mod replace_ui;
 pub mod wechat;
 pub mod ai_rules;
 pub mod security;
@@ -65,6 +66,11 @@ fn default_jwt_expire() -> i32 {
 /// serde 默认值辅助：后端服务端口默认 8080
 fn default_server_port() -> i32 {
     8080
+}
+
+/// serde 默认值辅助：后台 UI 模板默认 vben-web-ele
+fn default_ui_template() -> String {
+    "vben-web-ele".into()
 }
 
 /// 用户改造参数
@@ -241,6 +247,14 @@ pub struct CustomizeParams {
     /// 是否生成启动/停止脚本（start.sh/stop.sh/start.bat/stop.bat）
     #[serde(default)]
     pub enable_startup_scripts: bool,
+    // ---- 替换后台 UI ----
+    /// 是否用预置后台模板（如 vben-web-ele）替换若依原 ruoyi-ui 前端
+    /// 仅 ruoyi-vue（前后端分离版）支持，单体/微服务禁用。
+    #[serde(default)]
+    pub enable_replace_ui: bool,
+    /// 后台 UI 模板标识（对应 templates/ruoyi-vue/ui/{ui_template} 目录名），默认 vben-web-ele
+    #[serde(default = "default_ui_template")]
+    pub ui_template: String,
 }
 
 impl Default for CustomizeParams {
@@ -308,6 +322,8 @@ impl Default for CustomizeParams {
             server_name: String::new(),
             use_https: false,
             enable_startup_scripts: false,
+            enable_replace_ui: false,
+            ui_template: "vben-web-ele".into(),
         }
     }
 }

@@ -368,6 +368,25 @@ pub fn plan(
         }
     }
 
+    // 13. 替换后台 UI（可选）：复制预置后台前端工程（如 vben-web-ele）到 output_dir
+    if params.enable_replace_ui {
+        let ui_dir = format!("{}-ui", params.new_module_prefix);
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "生成替换后台 UI 工程：{}（模板 {}）",
+                ui_dir, params.ui_template
+            ),
+            task_type: TaskType::ReplaceUI,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![format!("{}/package.json", ui_dir)],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // OSS 对象存储（可选）：注入 SDK 依赖 + 配置类/Client/Controller + yml
     if params.enable_oss {
         let provider_cn = match params.oss_provider.as_str() {

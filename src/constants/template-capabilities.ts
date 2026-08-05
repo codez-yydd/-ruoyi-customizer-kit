@@ -46,7 +46,8 @@ export const DISABLED_FEATURES: Record<string, (keyof CustomizeParams)[]> = {
     'enable_frontend_split', // 前后端分离（单体版前端内嵌，无独立目录可拆）
     'enable_uniapp', // UniApp 小程序（依赖独立前端作参考）
     'pay_included', // 微信支付（随 UniApp 一起禁用）
-    'enable_nginx_config' // Nginx 反代（单体版通常内嵌 Tomcat 单体运行）
+    'enable_nginx_config', // Nginx 反代（单体版通常内嵌 Tomcat 单体运行）
+    'enable_replace_ui' // 替换后台 UI（单体版无独立前端目录，不适用）
   ]
   // ruoyi-vue / ruoyi-cloud：支持全部，无需列出
 }
@@ -66,4 +67,52 @@ export function isFeatureDisabled(
 ): boolean {
   const list = DISABLED_FEATURES[templateDir]
   return !!list && list.includes(feature)
+}
+
+// ===== 替换后台 UI 模板注册表 =====
+//
+// 「替换后台 UI」用预置的现代化前端工程（如 vben-web-ele）替换若依原 ruoyi-ui。
+// 每个模板对应 templates/ruoyi-vue/ui/{key} 目录，由后端 replace_ui.rs 复制到
+// output_dir/{new_module_prefix}-ui/。UI 侧据此渲染选择列表与预览。
+
+/** 单个后台 UI 模板的展示信息 */
+export interface UiTemplateMeta {
+  /** 模板标识（与 templates/ruoyi-vue/ui/{key} 目录名一致，与 CustomizeParams.ui_template 对应） */
+  key: string
+  /** 展示名 */
+  label: string
+  /** 技术栈说明 */
+  stack: string
+  /** 一句话描述，帮助用户了解该模板特点 */
+  desc: string
+  /** 官方在线 Demo 链接（供「查看在线 Demo」按钮使用） */
+  demoUrl: string
+  /** 预览截图（相对 docs/img/ 的路径），用于 ParamConfig 轮播预览 */
+  screenshots: string[]
+}
+
+/** 内置后台 UI 模板清单 */
+export const UI_TEMPLATES: UiTemplateMeta[] = [
+  {
+    key: 'vben-web-ele',
+    label: 'Vben Admin（Element Plus）',
+    stack: 'Vue3 + Element Plus + Vite + Monorepo',
+    desc: '基于 vue-vben-admin 的 web-ele 版适配若依后端，组件库与若依 Vue3 版同源，现代化界面与交互体验',
+    demoUrl: 'https://vben.pro',
+    screenshots: ['img/ui-vben-01.png', 'img/ui-vben-02.png', 'img/ui-vben-03.png']
+  }
+]
+
+const DEFAULT_UI_TEMPLATE: UiTemplateMeta = {
+  key: '',
+  label: '未知',
+  stack: '',
+  desc: '',
+  demoUrl: '',
+  screenshots: []
+}
+
+/** 取后台 UI 模板元信息（未知 key 回退） */
+export function getUiTemplateMeta(key: string): UiTemplateMeta {
+  return UI_TEMPLATES.find((t) => t.key === key) ?? DEFAULT_UI_TEMPLATE
 }

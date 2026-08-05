@@ -173,6 +173,11 @@ export interface CustomizeParams {
   // ---- 部署：启动脚本 ----
   /** 是否生成启动/停止脚本（.sh + .bat） */
   enable_startup_scripts: boolean
+  // ---- 替换后台 UI ----
+  /** 是否用预置后台模板（如 vben-web-ele）替换若依原 ruoyi-ui 前端（仅 ruoyi-vue 支持） */
+  enable_replace_ui: boolean
+  /** 后台 UI 模板标识（对应 templates/ruoyi-vue/ui/{ui_template}），默认 vben-web-ele */
+  ui_template: string
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -190,6 +195,7 @@ export type TaskType =
   | 'UpdateGeneratorTemplatesForMybatisPlus'
   | 'AddLongIdJsonSerializeAnnotation'
   | 'GenerateUniappProject'
+  | 'ReplaceUI'
   | 'AppendWechatConfig'
   | 'AddWechatPayDependency'
   | 'AddWechatPayConfig'

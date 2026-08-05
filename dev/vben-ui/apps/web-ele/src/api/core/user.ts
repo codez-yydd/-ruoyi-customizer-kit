@@ -1,0 +1,63 @@
+import type { UserInfo } from '@vben/types';
+
+import { requestClient } from '#/api/request';
+
+/**
+ * 若依 /getInfo 响应结构（原始）
+ * { code, msg, user, roles, permissions, pwdChrtype, isDefaultModifyPwd, isPasswordExpired }
+ * 其中 user 是 SysUser 实体，roles/permissions 是权限标识字符串数组。
+ */
+interface RuoYiGetInfoResponse {
+  user: {
+    userId: number;
+    deptId?: number;
+    userName: string;
+    nickName: string;
+    email?: string;
+    phonenumber?: string;
+    sex?: string;
+    avatar?: string;
+    status?: string;
+    dept?: Record<string, any>;
+    roles?: string[];
+  };
+  roles: string[];
+  permissions: string[];
+  pwdChrtype?: string;
+  isDefaultModifyPwd?: boolean;
+  isPasswordExpired?: boolean;
+}
+
+/**
+ * 获取用户信息（适配若依 GET /getInfo）
+ *
+ * 若依返回 {user, roles, permissions}，这里映射成 vben 的 UserInfo：
+ * - userId / username / realName(←nickName) / avatar / roles
+ * - permissions 暂存到模块级变量，供 hasPermi 权限指令取用（若依按钮权限标识）
+ *
+ * 注意：requestClient 的响应拦截器会自动解包 data，故此处拿到的是 data 内容本身。
+ */
+let cachedPermissions: string[] = [];
+export function getCachedPermissions(): string[] {
+  return cachedPermissions;
+}
+
+export async function getUserInfoApi() {
+  const raw = await requestClient.get<RuoYiGetInfoResponse>('/getInfo');
+
+  // 缓存若依权限码，供 v-hasPermi 指令使用
+  cachedPermissions = raw.permissions ?? [];
+
+  const userInfo: UserInfo = {
+    userId: String(raw.user.userId),
+    username: raw.user.userName,
+    realName: raw.user.nickName,
+    avatar: raw.user.avatar ?? '',
+    roles: raw.roles ?? [],
+    desc: raw.user.dept?.deptName ?? '',
+    homePath: '/dashboard/workspace',
+    token: '',
+  };
+
+  return userInfo;
+}

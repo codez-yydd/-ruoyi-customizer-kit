@@ -21,6 +21,7 @@ pub enum TaskType {
     AddLongIdJsonSerializeAnnotation,
     InjectSnowflakeId,
     GenerateUniappProject,
+    ReplaceUI,
     AppendWechatConfig,
     AddWechatPayDependency,
     AddWechatPayConfig,
