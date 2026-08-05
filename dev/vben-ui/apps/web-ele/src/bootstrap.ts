@@ -7,7 +7,12 @@ import '@vben/styles';
 import '@vben/styles/ele';
 
 import { useTitle } from '@vueuse/core';
-import { ElLoading } from 'element-plus';
+// 全局注册 Element Plus：若依业务页（system/monitor 等）大量使用小写 <el-xxx> 标签，
+// vben 原工程为追求 tree-shaking 仅按需 import，但移植若依页面时手写 import 极易遗漏
+// （el-tree / el-dialog / el-tree-select 等会导致 "Failed to resolve component" 报错刷屏）。
+// 这里改为全局注册 + 引入完整样式，与若依 ruoyi-ui 原生做法一致。
+import ElementPlus, { ElLoading } from 'element-plus';
+import 'element-plus/dist/index.css';
 
 import { $t, setupI18n } from '#/locales';
 
@@ -20,6 +25,9 @@ async function bootstrap(namespace: string) {
   // 初始化组件适配器
   await initComponentAdapter();
   const app = createApp(App);
+
+  // 全局注册 Element Plus（见文件顶部注释）
+  app.use(ElementPlus);
 
   // 注册Element Plus提供的v-loading指令
   app.directive('loading', ElLoading.directive);
