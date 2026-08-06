@@ -96,13 +96,21 @@ const rules = {
 };
 
 function reset() {
+  // 用全新对象整体替换 form，确保清掉上一次（修改/数据权限）操作残留的字段。
+  // 注意：仅用 Object.assign 合并会保留 form 上未列出的旧字段（如
+  // dataScope/deptIds/createTime 等），导致新增弹框回显上一个角色的数据。
+  Object.keys(form).forEach((k) => {
+    delete (form as any)[k];
+  });
   Object.assign(form, {
     roleId: undefined,
     roleName: '',
     roleKey: '',
     roleSort: 0,
     status: '0',
+    dataScope: '1',
     menuIds: [],
+    deptIds: [],
     remark: '',
   });
   formRef.value?.resetFields();
