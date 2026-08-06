@@ -23,7 +23,11 @@ export function listData(query: Record<string, any>) {
 }
 
 export function getData(dictCode: number) {
-  return requestClient.get<{ data: SysDictData }>(`/system/dict/data/${dictCode}`);
+  // rawResponse: true —— 保留若依 {code,msg,data} 完整响应体，由调用方取 res.data。
+  // 不设置会被全局响应拦截器自动剥离外层 data，导致 res.data 为 undefined（表单无法回显）。
+  return requestClient.get<{ data: SysDictData }>(`/system/dict/data/${dictCode}`, {
+    rawResponse: true,
+  });
 }
 
 export function addData(data: Partial<SysDictData>) {
