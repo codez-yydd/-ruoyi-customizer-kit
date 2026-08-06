@@ -279,6 +279,19 @@ const builtinMenus: RuoYiRouter[] = [
       },
     ],
   },
+  // 个人中心：后端菜单无此页；必须走动态路由注入，不能放 coreRoutes，
+  // 否则刷新时守卫按 coreRouteNames 直接放行，侧边栏菜单不会生成。
+  {
+    name: 'Profile',
+    path: '/user/profile',
+    hidden: true,
+    component: 'system/user/profile/index',
+    meta: {
+      title: '个人中心',
+      icon: 'user',
+      noCache: false,
+    },
+  },
   // 分配角色页：后端菜单表无此路由，隐藏注入；一级仅作目录，实际布局由 Root 提供
   {
     name: 'SystemUserAuth',

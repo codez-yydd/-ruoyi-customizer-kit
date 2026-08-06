@@ -1,6 +1,7 @@
 import type { UserInfo } from '@vben/types';
 
 import { requestClient } from '#/api/request';
+import { setPwdChrType } from '#/utils/passwordRule';
 
 /**
  * 若依 /getInfo 响应结构（原始）
@@ -47,6 +48,9 @@ export async function getUserInfoApi() {
 
   // 缓存若依权限码，供 v-hasPermi 指令使用
   cachedPermissions = raw.permissions ?? [];
+
+  // 同步密码字符范围规则，供个人中心改密等前端校验与后端配置一致
+  setPwdChrType(raw.pwdChrtype);
 
   // 头像 URL 处理：若依 avatar 存的是相对路径（如 /profile/avatar/.../xx.png），
   // 需拼上 API 前缀（开发态 /api，由 vite proxy 转发；生产态同理）。

@@ -1,4 +1,4 @@
-import { baseRequestClient, requestClient } from '#/api/request';
+import { requestClient } from '#/api/request';
 
 /**
  * 个人中心相关接口（适配若依 SysProfileController，basePath: /system/user/profile）
@@ -28,14 +28,20 @@ export interface ProfileResult {
  * 获取个人中心详情（GET /system/user/profile）
  *
  * 该接口返回 {code, msg, data(user), roleGroup, postGroup}，roleGroup/postGroup 在顶层。
- * requestClient 的响应拦截器会取 data 字段（即 user 对象），从而丢掉 roleGroup/postGroup，
- * 因此这里改用 baseRequestClient（未挂解包拦截器）取完整响应再手动解析。
+ * 必须 rawResponse: true，否则拦截器只解包 data，丢掉 roleGroup/postGroup。
+ * 不可用 baseRequestClient：其未挂 Authorization，会导致鉴权失败、页面字段全空。
  */
 export async function getProfileApi(): Promise<ProfileResult> {
-  const resp = await baseRequestClient.get('/system/user/profile');
-  const body = (resp as any)?.data ?? resp;
+  const body = await requestClient.get<{
+    code?: number;
+    data?: ProfileUser;
+    msg?: string;
+    postGroup?: string;
+    roleGroup?: string;
+  }>('/system/user/profile', { rawResponse: true });
+
   return {
-    data: body?.data ?? {},
+    data: body?.data ?? ({} as ProfileUser),
     roleGroup: body?.roleGroup ?? '',
     postGroup: body?.postGroup ?? '',
   };
@@ -61,14 +67,23 @@ export function updateUserPwdApi(oldPassword: string, newPassword: string) {
 
 /**
  * 上传头像（POST /system/user/profile/avatar）
- * 若依字段名为 avatarfile，返回 {code, msg, imgUrl}（拦截器解包后取到 imgUrl）。
+ * 若依字段名为 avatarfile，返回 {code, msg, imgUrl}（无 data 字段）。
+ * 使用 rawResponse 保留 imgUrl，避免拦截器解包异常。
  */
-export function uploadAvatarApi(file: File) {
+export async function uploadAvatarApi(
+  file: Blob | File,
+  filename = 'avatar.png',
+): Promise<{ imgUrl: string }> {
   const formData = new FormData();
-  formData.append('avatarfile', file);
-  return requestClient.post<{ imgUrl: string }>(
+  const name = file instanceof File ? file.name : filename;
+  formData.append('avatarfile', file, name);
+  const resp = await requestClient.post<{ imgUrl?: string; code?: number }>(
     '/system/user/profile/avatar',
     formData,
-    { headers: { 'Content-Type': 'multipart/form-data' } },
+    {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      rawResponse: true,
+    },
   );
+  return { imgUrl: resp?.imgUrl ?? '' };
 }

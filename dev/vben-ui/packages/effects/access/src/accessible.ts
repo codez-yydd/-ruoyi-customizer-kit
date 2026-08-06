@@ -25,6 +25,10 @@ import {
  * 由 Root 统一使用 BasicLayout。若依每个一级目录都带 Layout，若各自
  * addRoute 成独立 BasicLayout，跨模块切换会卸载重建整壳（侧栏/顶栏/Tab），
  * 表现为“偶发整页刷新”。
+ *
+ * 挂载方式：使用 router.addRoute('Root', route) 追加子路由，
+ * 避免对 getRoutes() 返回的 normalize 记录做 remove/add 整棵 Root，
+ * 降低刷新后布局/菜单异常的风险。
  */
 async function generateAccessible(
   mode: AccessModeType,
@@ -36,41 +40,28 @@ async function generateAccessible(
   // 生成路由
   const accessibleRoutes = await generateRoutes(mode, options);
 
-  const root = router.getRoutes().find((item) => item.path === '/');
-
-  // 获取已有的路由名称列表（core 里已挂到 Root 的子路由，如个人中心）
-  const names = root?.children?.map((item) => item.name) ?? [];
+  const root = router.getRoutes().find((item) => item.name === 'Root');
+  const rootName = root?.name;
 
   // 动态添加到 router：默认作为 Root 子路由，避免多个并列 BasicLayout
   accessibleRoutes.forEach((route) => {
-    if (root && !route.meta?.noBasicLayout) {
+    if (rootName && !route.meta?.noBasicLayout) {
       // 含有子路由时去掉自身 component，防止嵌套多层 BasicLayout
       if (route.children && route.children.length > 0) {
         delete route.component;
       }
-      // 同名路由已存在则更新，避免切换用户后一级目录残留导致 404
-      if (names?.includes(route.name)) {
-        const index = root.children?.findIndex(
-          (item) => item.name === route.name,
-        );
-        if (index !== undefined && index !== -1 && root.children) {
-          root.children[index] = route;
-        }
-      } else {
-        root.children?.push(route);
+      // 同名路由先移除再挂到 Root，保证切换用户后一级目录能更新
+      if (route.name && router.hasRoute(route.name)) {
+        router.removeRoute(route.name);
       }
+      router.addRoute(rootName, route);
     } else {
+      if (route.name && router.hasRoute(route.name)) {
+        router.removeRoute(route.name);
+      }
       router.addRoute(route);
     }
   });
-
-  // 重新注册 Root，使新增的 children 生效
-  if (root) {
-    if (root.name) {
-      router.removeRoute(root.name);
-    }
-    router.addRoute(root);
-  }
 
   // 生成菜单（仍用 accessibleRoutes 顶层树，侧边栏结构不变）
   const accessibleMenus = await generateMenus(accessibleRoutes, options.router);

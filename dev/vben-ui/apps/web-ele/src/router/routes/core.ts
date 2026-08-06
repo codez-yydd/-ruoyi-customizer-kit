@@ -23,7 +23,7 @@ const fallbackNotFoundRoute: RouteRecordRaw = {
 const coreRoutes: RouteRecordRaw[] = [
   /**
    * 根路由：唯一 BasicLayout 容器。
-   * 后端动态菜单、个人中心等都挂到 children，跨模块切换时布局不重建，
+   * 后端动态菜单通过 generateAccessible 挂到 children，跨模块切换时布局不重建，
    * 避免若依多 Layout 映射成多个并列壳导致的“假刷新”。
    */
   {
@@ -35,19 +35,10 @@ const coreRoutes: RouteRecordRaw[] = [
     name: 'Root',
     path: '/',
     redirect: DEFAULT_HOME_PATH,
-    children: [
-      // 个人中心：后端菜单无此页，作为隐藏子路由常驻（不在侧边栏显示）
-      {
-        name: 'Profile',
-        path: '/user/profile',
-        component: () => import('#/views/system/user/profile/index.vue'),
-        meta: {
-          hideInMenu: true,
-          icon: 'lucide:user',
-          title: '个人中心',
-        },
-      },
-    ],
+    // 个人中心等业务隐藏页不要挂在 coreRoutes：其 name 会进入 coreRouteNames，
+    // 刷新时守卫会直接放行、跳过动态菜单生成，导致侧边栏空白。
+    // 这类页面改由 menu.ts builtinMenus 注入，并挂到 Root.children。
+    children: [],
   },
   {
     component: AuthPageLayout,
