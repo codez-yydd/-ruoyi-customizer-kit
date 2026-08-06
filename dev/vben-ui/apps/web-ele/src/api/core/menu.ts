@@ -10,7 +10,7 @@ import { requestClient } from '#/api/request';
  * - path：路由地址
  * - component：组件路径，特殊值 Layout / ParentView / InnerLink，或 system/user/index 这种相对 views 的路径
  * - hidden：是否隐藏
- * - redirect：重定向
+ * - redirect：重定向（若依目录常用占位值 noRedirect，表示侧栏只展开不跳转）
  * - query：路由参数（JSON 字符串）
  * - alwaysShow：始终显示根路由
  * - meta：{ title, icon, noCache, link }
@@ -40,6 +40,18 @@ interface RuoYiRouter {
  */
 function isExternalLink(p?: string): boolean {
   return !!p && /^https?:\/\//i.test(p);
+}
+
+/**
+ * 拼接父子路由 path，兼容相对路径与已是绝对路径的子 path。
+ */
+function joinRoutePath(parentPath: string, childPath: string): string {
+  if (!childPath) return parentPath || '/';
+  if (isExternalLink(childPath) || childPath.startsWith('/')) {
+    return childPath;
+  }
+  const base = parentPath.endsWith('/') ? parentPath.slice(0, -1) : parentPath;
+  return `${base || ''}/${childPath}`.replace(/\/+/g, '/');
 }
 
 /**
@@ -125,28 +137,32 @@ function toExternalRoutePath(url: string): string {
  * 将若依菜单转换为 vben 的 RouteRecordStringComponent 结构。
  *
  * 核心转换：
- * 1. component 特殊值映射：Layout → BasicLayout（一级目录布局），InnerLink → IFrameView（内嵌外链），
- *    ParentView → 移除 component（vben 靠 children 自动处理多级菜单父视图）
+ * 1. component 特殊值：
+ *    - Layout → 不设 component（目录节点）。真正的壳由 Root 的 BasicLayout 统一提供，
+ *      避免每个一级菜单各自挂 BasicLayout，跨模块切换整壳重建。
+ *    - InnerLink → IFrameView，并把 meta.link 写入 meta.iframeSrc（内嵌 iframe）
+ *    - ParentView → 不设 component（多级目录，靠 children 嵌套；菜单层级保留）
  * 2. meta 字段透传（title / icon / noCache / link）
- * 3. hidden → meta.hideInMenu（vben 用此字段控制侧边栏显隐）
- * 4. noCache 反转 → meta.keepAlive（若依 noCache=true 表示不缓存，vben keepAlive=true 表示缓存）
- * 5. query 解析进 meta.query（JSON 字符串 → 对象）
- * 6. 外链处理：若依把完整 URL 放 path，vue-router 不接受；需把 URL 移到 meta.link，
- *    并生成合法 /path，菜单点击时 vben 的 use-navigation 检测到 http URL 会在新标签页打开。
+ * 3. hidden → meta.hideInMenu
+ * 4. noCache 反转 → meta.keepAlive
+ * 5. query 解析进 meta.query
+ * 6. 外链：path 上的 http(s) URL 挪到 meta.link，并生成合法 /path；新窗口打开
+ * 7. redirect=noRedirect：删除（vue-router 不能把它当真实 redirect），并尽量指向首个可见子路由
  */
-function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] {
+function transformRuoYiMenu(
+  menus: RuoYiRouter[],
+  parentPath = '',
+): RouteRecordStringComponent[] {
   return menus.map((menu) => {
     const { component, meta } = menu;
+    const isInnerLink = component === 'InnerLink';
 
-    // component 特殊值映射
+    // component 特殊值映射：Layout/ParentView 仅作目录，不渲染独立布局组件
     let mappedComponent: string | undefined = component;
-    if (component === 'Layout') {
-      mappedComponent = 'BasicLayout';
-    } else if (component === 'InnerLink') {
-      mappedComponent = 'IFrameView';
-    } else if (component === 'ParentView') {
-      // ParentView 在 vben 中不需要独立组件，靠 children 嵌套自动渲染
+    if (component === 'Layout' || component === 'ParentView') {
       mappedComponent = undefined;
+    } else if (isInnerLink) {
+      mappedComponent = 'IFrameView';
     }
 
     // query 解析（若依用 JSON 字符串，如 {"id": 1}）
@@ -159,37 +175,53 @@ function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] 
       }
     }
 
-    // 外链 path 处理：若依外链菜单 path 是完整 URL，需移到 meta.link 并生成合法 /path
-    // （否则 router.addRoute 会抛 "Route paths should start with a /"）
+    // 外链 path：完整 URL 挪到 meta.link，并生成合法路由 path
     const external = isExternalLink(menu.path);
-    const finalPath = external ? toExternalRoutePath(menu.path) : menu.path;
-    const finalLink = external ? menu.path : meta?.link;
+    const rawPath = external ? toExternalRoutePath(menu.path) : menu.path;
+    // 相对 path 拼到父级，便于 redirect 与菜单 path 使用绝对地址
+    const finalPath =
+      parentPath && !external && !rawPath.startsWith('/')
+        ? joinRoutePath(parentPath, rawPath)
+        : rawPath;
+
+    // 外链新窗口：meta.link = 原始 URL
+    // 内嵌 InnerLink：只用 iframeSrc，避免 generateMenus 用 link 覆盖 path 后被当成外链 window.open
+    const finalLink = external ? menu.path : isInnerLink ? undefined : meta?.link;
+    const iframeSrc = isInnerLink ? meta?.link : undefined;
 
     const transformed: RouteRecordStringComponent = {
       name: menu.name,
       path: finalPath,
       component: mappedComponent as any,
-      redirect: menu.redirect,
       meta: {
         title: meta?.title ?? menu.name,
         icon: normalizeMenuIcon(meta?.icon),
-        // vben 隐藏菜单用 hideInMenu
         hideInMenu: menu.hidden,
         // 若依 noCache=true 表示不缓存；vben keepAlive=true 表示缓存，需反转
         keepAlive: meta?.noCache === false,
         link: finalLink,
+        iframeSrc,
         query,
-        // 保留若依原始标识，便于调试
         order: 0,
       },
     };
 
-    if (menu.alwaysShow) {
-      (transformed.meta as any).noBasicLayout = false;
-    }
-
     if (menu.children && menu.children.length > 0) {
-      transformed.children = transformRuoYiMenu(menu.children);
+      transformed.children = transformRuoYiMenu(menu.children, finalPath);
+
+      // 清洗若依目录占位 redirect，并补到第一个可见子路由（绝对 path）
+      if (!menu.redirect || menu.redirect === 'noRedirect') {
+        const firstVisibleChild = transformed.children.find(
+          (child) => !child.meta?.hideInMenu,
+        );
+        if (firstVisibleChild?.path) {
+          transformed.redirect = firstVisibleChild.path;
+        }
+      } else if (menu.redirect !== 'noRedirect') {
+        transformed.redirect = menu.redirect;
+      }
+    } else if (menu.redirect && menu.redirect !== 'noRedirect') {
+      transformed.redirect = menu.redirect;
     }
 
     return transformed;
@@ -207,6 +239,8 @@ function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] 
  * 生成 pageMap 做匹配，key 经 normalizeViewPath 处理后形如
  * '/dashboard/analytics/index.vue'，故此处 component 写成 'dashboard/analytics/index'
  * （不带 /views 前缀、不带 .vue 后缀）。
+ *
+ * 一级不再需要 Layout 组件：Root 已提供唯一 BasicLayout。
  */
 const builtinMenus: RuoYiRouter[] = [
   {
@@ -244,9 +278,7 @@ const builtinMenus: RuoYiRouter[] = [
       },
     ],
   },
-  // 分配角色页：若依原版为独立页面，但后端菜单表无此路由（通过用户列表按钮进入）。
-  // 这里以隐藏菜单注入：一级用 Layout（BasicLayout）承载布局，子路由带 :userId 参数，
-  // component 指向 views/system/user/authRole.vue。hidden=true 不出现在侧边栏。
+  // 分配角色页：后端菜单表无此路由，隐藏注入；一级仅作目录，实际布局由 Root 提供
   {
     name: 'SystemUserAuth',
     path: '/system/user-auth',
@@ -269,8 +301,7 @@ const builtinMenus: RuoYiRouter[] = [
       },
     ],
   },
-  // 调度日志页：若依原版为前端静态隐藏路由（router/index.js），后端菜单表无此条目。
-  // 从定时任务页「日志 / 调度日志」按钮进入，jobId=0 表示查看全部。
+  // 调度日志页：若依原版为前端静态隐藏路由，后端菜单表无此条目
   {
     name: 'MonitorJobLogRoot',
     path: '/monitor/job-log',
@@ -293,8 +324,7 @@ const builtinMenus: RuoYiRouter[] = [
       },
     ],
   },
-  // 代码生成编辑页：若依原版为前端静态隐藏路由 /tool/gen-edit/index/:tableId，
-  // 后端菜单表无此条目，从代码生成列表「编辑」进入。
+  // 代码生成编辑页：若依原版为前端静态隐藏路由 /tool/gen-edit/index/:tableId
   {
     name: 'ToolGenEditRoot',
     path: '/tool/gen-edit',
@@ -326,10 +356,10 @@ const builtinMenus: RuoYiRouter[] = [
  * 再经 transformRuoYiMenu 转成 vben 期望的结构。
  *
  * 这里在转换后的若依菜单前，注入 vben 原生首页/工作台菜单，使二者并存于侧边栏。
+ * 返回的顶层路由由 generateAccessible 挂到 Root.children，共享唯一 BasicLayout。
  */
 export async function getAllMenusApi() {
   const raw = await requestClient.get<RuoYiRouter[]>('/getRouters');
-  // builtinMenus 同样走 transformRuoYiMenu，使其 Layout→BasicLayout 等映射与后端菜单一致
   const builtin = transformRuoYiMenu(builtinMenus);
   // 将首页菜单 order 置为 -1，确保它排在所有若依业务菜单（默认 order 0）之前
   if (builtin[0]?.meta) {

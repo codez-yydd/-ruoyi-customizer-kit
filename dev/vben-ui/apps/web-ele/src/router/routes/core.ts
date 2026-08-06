@@ -21,29 +21,25 @@ const fallbackNotFoundRoute: RouteRecordRaw = {
 
 /** 基本路由，这些路由是必须存在的 */
 const coreRoutes: RouteRecordRaw[] = [
+  /**
+   * 根路由：唯一 BasicLayout 容器。
+   * 后端动态菜单、个人中心等都挂到 children，跨模块切换时布局不重建，
+   * 避免若依多 Layout 映射成多个并列壳导致的“假刷新”。
+   */
   {
+    component: BasicLayout,
     meta: {
+      hideInBreadcrumb: true,
       title: 'Root',
     },
     name: 'Root',
     path: '/',
     redirect: DEFAULT_HOME_PATH,
-  },
-  // 个人中心：后端菜单无此页，作为隐藏路由常驻（经 BasicLayout 渲染，不在侧边栏显示）
-  // 仅 coreRoutes 会始终注册；modules/* 的静态路由在后端模式下不会注册，故放在这里。
-  {
-    component: BasicLayout,
-    meta: {
-      hideInMenu: true,
-      title: '个人中心',
-    },
-    name: 'UserProfile',
-    path: '/user',
-    redirect: '/user/profile',
     children: [
+      // 个人中心：后端菜单无此页，作为隐藏子路由常驻（不在侧边栏显示）
       {
         name: 'Profile',
-        path: 'profile',
+        path: '/user/profile',
         component: () => import('#/views/system/user/profile/index.vue'),
         meta: {
           hideInMenu: true,
