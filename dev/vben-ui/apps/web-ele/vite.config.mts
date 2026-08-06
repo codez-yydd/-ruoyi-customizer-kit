@@ -22,6 +22,13 @@ export default defineConfig(async () => {
             target: 'http://localhost:14001',
             ws: true,
           },
+          // SpringDoc Swagger UI 的 configUrl / urls 是绝对路径 /v3/api-docs/**，
+          // 不会走 /api 前缀；需单独代理（与 ruoyi-ui vue.config.js 一致），
+          // 否则 iframe 内嵌系统接口页会 404。
+          '/v3/api-docs': {
+            changeOrigin: true,
+            target: 'http://localhost:14001',
+          },
         },
       },
     },

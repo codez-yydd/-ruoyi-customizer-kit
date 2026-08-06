@@ -293,6 +293,30 @@ const builtinMenus: RuoYiRouter[] = [
       },
     ],
   },
+  // 代码生成编辑页：若依原版为前端静态隐藏路由 /tool/gen-edit/index/:tableId，
+  // 后端菜单表无此条目，从代码生成列表「编辑」进入。
+  {
+    name: 'ToolGenEditRoot',
+    path: '/tool/gen-edit',
+    hidden: true,
+    component: 'Layout',
+    meta: {
+      title: '修改生成配置',
+      noCache: true,
+    },
+    children: [
+      {
+        name: 'ToolGenEdit',
+        path: 'index/:tableId(.*)',
+        hidden: true,
+        component: 'tool/gen/editTable',
+        meta: {
+          title: '修改生成配置',
+          noCache: true,
+        },
+      },
+    ],
+  },
 ];
 
 /**
