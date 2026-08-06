@@ -269,6 +269,30 @@ const builtinMenus: RuoYiRouter[] = [
       },
     ],
   },
+  // 调度日志页：若依原版为前端静态隐藏路由（router/index.js），后端菜单表无此条目。
+  // 从定时任务页「日志 / 调度日志」按钮进入，jobId=0 表示查看全部。
+  {
+    name: 'MonitorJobLogRoot',
+    path: '/monitor/job-log',
+    hidden: true,
+    component: 'Layout',
+    meta: {
+      title: '调度日志',
+      noCache: true,
+    },
+    children: [
+      {
+        name: 'MonitorJobLog',
+        path: 'index/:jobId(.*)',
+        hidden: true,
+        component: 'monitor/job/log',
+        meta: {
+          title: '调度日志',
+          noCache: true,
+        },
+      },
+    ],
+  },
 ];
 
 /**
