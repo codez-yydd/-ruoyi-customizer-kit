@@ -50,12 +50,23 @@ function handleResetQuery() {
   getList();
 }
 
-/** 平铺转树 */
+/**
+ * 平铺转树（参考若依 handleTree）。
+ *
+ * 关键点：搜索等场景下后端只返回满足条件的菜单，可能不含父节点。
+ * 此时若仍按 parentId===0 取根，会因父节点被过滤而整棵子树丢失（表现为“暂无数据”）。
+ * 因此先把“父节点不在当前列表中”的项也视作根节点，保证搜索子菜单也能展示。
+ */
 function buildTree(items: SysMenu[], parentId = 0): SysMenu[] {
-  return items
-    .filter((i) => i.parentId === parentId)
-    .map((i) => ({ ...i, children: buildTree(items, i.menuId) }))
-    .sort((a, b) => (a.orderNum ?? 0) - (b.orderNum ?? 0));
+  const idSet = new Set(items.map((i) => i.menuId));
+  const isRoot = (i: SysMenu) => i.parentId === parentId || !idSet.has(i.parentId);
+  const recur = (roots: SysMenu[]): SysMenu[] =>
+    roots
+      .map((i) => ({ ...i, children: buildChildren(i.menuId) }))
+      .sort((a, b) => (a.orderNum ?? 0) - (b.orderNum ?? 0));
+  const buildChildren = (pid: number): SysMenu[] =>
+    recur(items.filter((i) => i.parentId === pid));
+  return recur(items.filter(isRoot));
 }
 const treeData = computed(() => buildTree(list.value));
 
@@ -168,7 +179,7 @@ onMounted(getList);
       <ElButton type="primary" plain :icon="Plus" v-hasPermi="['system:menu:add']" @click="handleAdd()">新增</ElButton>
     </div>
 
-    <ElTable v-loading="loading" :data="treeData" row-key="menuId" border default-expand-all>
+    <ElTable v-loading="loading" :data="treeData" row-key="menuId" border>
       <ElTableColumn label="菜单名称" prop="menuName" width="200" />
       <ElTableColumn label="图标" prop="icon" width="80" align="center" />
       <ElTableColumn label="排序" prop="orderNum" width="80" align="center" />

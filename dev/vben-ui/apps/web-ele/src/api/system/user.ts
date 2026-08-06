@@ -91,3 +91,81 @@ export function resetUserPwd(userId: number, password: string) {
 export function deptTreeSelect() {
   return requestClient.get<any[]>('/system/user/deptTree');
 }
+
+/**
+ * GET /system/user/authRole/{userId} —— 进入分配角色页：取用户信息 + 全部角色（含已勾选标记）。
+ *
+ * 后端返回扁平聚合结构 {code, msg, user, roles}（顶层带 user/roles，非 data 包裹），
+ * 必须用 rawResponse 跳过全局拦截器的 data 解包，否则 user/roles 会丢失。
+ * roles 中每个角色带 checked 字段（true 表示该用户已分配此角色）。
+ */
+export function authRole(userId: number) {
+  return requestClient.get<{
+    user: SysUser;
+    roles: {
+      roleId: number;
+      roleName: string;
+      roleKey: string;
+      roleSort: number;
+      status: string;
+      createTime?: string;
+      checked?: boolean;
+    }[];
+  }>(`/system/user/authRole/${userId}`, { rawResponse: true });
+}
+
+/**
+ * PUT /system/user/authRole —— 保存分配的角色。
+ *
+ * 注意：后端用表单参数接收 userId 和 roleIds（roleIds 可重复多次），
+ * 非 JSON body。这里用 params 传递，roleIds 拼成逗号分隔字符串。
+ */
+export function updateAuthRole(userId: number, roleIds: (number | string)[]) {
+  return requestClient.put('/system/user/authRole', undefined, {
+    params: { userId, roleIds: roleIds.join(',') },
+  });
+}
+
+/**
+ * POST /system/user/export —— 导出用户 Excel。
+ *
+ * 若依导出返回二进制流（Content-Disposition: attachment; filename=...）。
+ *
+ * 注意：不能用 requestClient.download！框架的 FileDownloader.download 内部调用
+ * client.get，而 get() 会用 method:'GET' 覆盖 config 里的 method（见 request-client.ts
+ * 的 get 实现：this.request(url, { ...config, method: 'GET' })），导致 POST 被改写成 GET。
+ * 若依导出接口是 POST，GET /system/user/export 会被 /system/user/{userId} 路由匹配，
+ * 后端把 "export" 当 userId 解析成 Long 失败，报「请求参数类型不匹配」。
+ * 故这里直接用 post + responseType:'blob'，响应拦截器已对 blob 响应短路原样返回。
+ *
+ * @param query 查询条件（同列表查询）；为空则导出全部
+ */
+export function exportUser(query?: Partial<UserQuery>) {
+  return requestClient.post('/system/user/export', query, {
+    responseType: 'blob',
+  });
+}
+
+/**
+ * POST /system/user/importTemplate —— 下载导入模板 Excel。
+ *
+ * 同 exportUser，不能用 download（会被改写成 GET），直接 post + responseType:'blob'。
+ */
+export function downloadUserTemplate() {
+  return requestClient.post('/system/user/importTemplate', undefined, {
+    responseType: 'blob',
+  });
+}
+
+/**
+ * POST /system/user/importData —— 导入用户 Excel。
+ *
+ * @param file Excel 文件
+ * @param updateSupport 是否更新已存在的用户数据（true=覆盖，false=跳过）
+ */
+export function importUser(file: File, updateSupport: boolean) {
+  return requestClient.upload(
+    '/system/user/importData',
+    { file, updateSupport },
+  );
+}

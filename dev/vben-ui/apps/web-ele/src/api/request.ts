@@ -18,6 +18,15 @@ import { useAuthStore } from '#/store';
 
 import { refreshTokenApi } from './core';
 
+// 扩展 axios config，支持若依业务约定的自定义标记：
+//   rawResponse: true —— 跳过全局响应拦截器的 data 自动解包，保留完整响应体
+//   （若依扁平聚合接口如用户详情 {data,roles,posts,...} 需要此标记）
+declare module '@vben/request' {
+  interface AxiosRequestConfig {
+    rawResponse?: boolean;
+  }
+}
+
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 
 function createRequestClient(baseURL: string) {
@@ -88,6 +97,13 @@ function createRequestClient(baseURL: string) {
     fulfilled: (response) => {
       const { data: responseData, status, config } = response;
 
+      // 文件下载/上传二进制响应（responseType 为 blob/arraybuffer）：无 {code,msg} 结构，
+      // 不能走若依业务解包，直接原样返回完整响应，由调用方从 response.data 取 Blob。
+      const responseType = (config as any)?.responseType;
+      if (responseType === 'blob' || responseType === 'arraybuffer') {
+        return response;
+      }
+
       const { code } = responseData ?? {};
 
       if (status >= 200 && status < 400 && code === 200) {
@@ -106,7 +122,7 @@ function createRequestClient(baseURL: string) {
       // 若依风格：HTTP 成功但业务失败（code !== 200）。
       // 构造标准化错误：把若依业务码放进 response.status，原始响应体放进 response.data，
       // 这样认证拦截器（识别 401）与错误提示（读取 msg）都能正确工作。
-      const bizError = Object.assign(new Error(responseData?.msg), {
+      const bizError = Object.assign(new Error((responseData as any)?.msg), {
         config,
         response: {
           ...response,

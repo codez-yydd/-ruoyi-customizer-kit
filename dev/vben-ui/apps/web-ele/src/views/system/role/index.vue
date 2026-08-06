@@ -86,7 +86,7 @@ const formRef = ref();
 const menuTreeRef = ref<InstanceType<typeof ElTree>>();
 const form = reactive<Partial<SysRole>>({});
 const menuOptionsData = ref<any[]>([]);
-const menuExpandAll = ref(true);
+const menuExpandAll = ref(false);
 const menuCheckStrictly = ref(true);
 
 const rules = {
@@ -135,7 +135,7 @@ async function handleUpdate(row?: SysRole) {
   const roleId = row?.roleId ?? ids.value[0];
   if (!roleId) return;
   const res = await getRole(roleId);
-  Object.assign(form, res.data);
+  Object.assign(form, res);
   open.value = true;
   title.value = '修改角色';
   menuCheckStrictly.value = true;
@@ -190,8 +190,8 @@ const dataScopeOptions = [
 
 async function handleDataScope(row: SysRole) {
   Object.assign(formScope, row);
-  const res = await getDeptTreeSelect();
-  deptOptionsScope.value = res.data ?? [];
+  const res = await getDeptTreeSelect(row.roleId);
+  deptOptionsScope.value = res.depts ?? [];
   openDataScope.value = true;
   await nextTick();
   deptTreeScopeRef.value?.setCheckedKeys(res.checkedKeys ?? []);

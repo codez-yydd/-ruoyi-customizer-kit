@@ -180,6 +180,31 @@ const builtinMenus: RuoYiRouter[] = [
       },
     ],
   },
+  // 分配角色页：若依原版为独立页面，但后端菜单表无此路由（通过用户列表按钮进入）。
+  // 这里以隐藏菜单注入：一级用 Layout（BasicLayout）承载布局，子路由带 :userId 参数，
+  // component 指向 views/system/user/authRole.vue。hidden=true 不出现在侧边栏。
+  {
+    name: 'SystemUserAuth',
+    path: '/system/user-auth',
+    hidden: true,
+    component: 'Layout',
+    meta: {
+      title: '分配角色',
+      noCache: true,
+    },
+    children: [
+      {
+        name: 'SystemUserAuthRole',
+        path: 'role/:userId(.*)',
+        hidden: true,
+        component: 'system/user/authRole',
+        meta: {
+          title: '分配角色',
+          noCache: true,
+        },
+      },
+    ],
+  },
 ];
 
 /**

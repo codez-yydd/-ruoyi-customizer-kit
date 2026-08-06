@@ -26,15 +26,19 @@ import {
   changeUserStatus,
   delUser,
   deptTreeSelect,
+  downloadUserTemplate,
+  exportUser,
   getUser,
+  importUser,
   listUser,
   resetUserPwd,
   updateUser,
   type SysUser,
 } from '#/api/system/user';
+import { getConfigKey } from '#/api/system/config';
 import { useDict } from '#/composables/useDict';
 import { usePagination } from '#/composables/usePagination';
-import { addDateRange, parseTime } from '#/utils/ruoyi';
+import { addDateRange, parseTime, saveBlobFile } from '#/utils/ruoyi';
 
 defineOptions({ name: 'SystemUser' });
 
@@ -247,8 +251,75 @@ async function handleResetPwd(row: SysUser) {
 }
 
 // ===== 分配角色 =====
+// 跳转到独立分配角色页（views/system/user/authRole.vue），路由通过 builtinMenus 注入。
 function handleAuthRole(row: SysUser) {
   router.push(`/system/user-auth/role/${row.userId}`);
+}
+
+// ===== 导出 =====
+// 若依导出：POST /system/user/export，返回 Excel 二进制流。
+// 若勾选了行则按所选导出，否则按当前查询条件导出。
+async function handleExport() {
+  try {
+    await ElMessageBox.confirm('是否确认导出所有用户数据项?', '警告', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+  } catch {
+    return; // 用户取消
+  }
+  // 选中了行就只导选中的（通过 userName/ids 限定），否则按查询条件导出
+  const params =
+    ids.value.length > 0
+      ? undefined
+      : addDateRange({ ...queryParams }, dateRange.value, 'CreateTime');
+  const response: any = await exportUser(params);
+  await saveBlobFile(response, 'user.xlsx');
+  ElMessage.success('导出成功');
+}
+
+// ===== 导入 =====
+const importOpen = ref(false);
+const importUploading = ref(false);
+const importUpdateSupport = ref(false);
+const importFileRef = ref();
+
+function handleImport() {
+  importOpen.value = true;
+  importUpdateSupport.value = false;
+}
+
+// el-upload http-request 自定义上传：选中文件后立即上传（弹框内拖拽/点击即触发）。
+// options.file 是原生 File；必须返回 false / Promise 以阻止 el-upload 默认请求。
+async function handleImportSubmit(options: { file: File }) {
+  const file = options.file;
+  if (!/\.(xlsx|xls)$/i.test(file.name)) {
+    ElMessage.error('仅允许导入 xls、xlsx 格式文件');
+    return false;
+  }
+  importUploading.value = true;
+  try {
+    // requestClient.upload 走全局拦截器解包，若依导入成功返回 {code:200,msg}
+    await importUser(file, importUpdateSupport.value);
+    ElMessage.success('导入成功');
+    importOpen.value = false;
+    getList();
+  } finally {
+    importUploading.value = false;
+  }
+  return false;
+}
+
+async function handleImportTemplate() {
+  const response: any = await downloadUserTemplate();
+  await saveBlobFile(response, 'user_template.xlsx');
+}
+
+function handleImportClose() {
+  importOpen.value = false;
+  // 重置 el-upload 状态（清空已选文件列表）
+  importFileRef.value?.clearFiles?.();
 }
 
 // ===== 列显隐 =====
@@ -265,6 +336,11 @@ const columns = reactive({
 onMounted(() => {
   getList();
   getDeptTree();
+  // 取系统参数「sys.user.initPassword」作为新增用户默认密码（与若依原版一致）。
+  // getConfigKey 返回 {code:200,data:"明文密码"}，全局拦截器解包后得到字符串。
+  getConfigKey('sys.user.initPassword').then((pwd: any) => {
+    initPassword.value = typeof pwd === 'string' ? pwd : '';
+  });
   // 表格高度自适应
   nextTick(() => {
     calcTableHeight();
@@ -336,8 +412,8 @@ onBeforeUnmount(() => {
         <ElButton type="primary" plain :icon="Plus" v-hasPermi="['system:user:add']" @click="handleAdd">新增</ElButton>
         <ElButton type="success" plain :icon="Edit" :disabled="single" v-hasPermi="['system:user:edit']" @click="handleUpdate(undefined)">修改</ElButton>
         <ElButton type="danger" plain :icon="Delete" :disabled="multiple" v-hasPermi="['system:user:remove']" @click="handleDelete({} as SysUser)">删除</ElButton>
-        <ElButton type="info" plain :icon="Upload" v-hasPermi="['system:user:import']">导入</ElButton>
-        <ElButton type="warning" plain :icon="Download" v-hasPermi="['system:user:export']">导出</ElButton>
+        <ElButton type="info" plain :icon="Upload" v-hasPermi="['system:user:import']" @click="handleImport">导入</ElButton>
+        <ElButton type="warning" plain :icon="Download" v-hasPermi="['system:user:export']" @click="handleExport">导出</ElButton>
       </div>
 
       <!-- 表格 -->
@@ -405,7 +481,7 @@ onBeforeUnmount(() => {
           </ElCol>
           <ElCol :span="12">
             <ElFormItem label="归属部门" prop="deptId">
-              <el-tree-select v-model="form.deptId" :data="deptOptions" :props="{ label: 'label', children: 'children' }" check-strictly placeholder="请选择归属部门" style="width: 100%" />
+              <el-tree-select v-model="form.deptId" :data="deptOptions" :props="{ value: 'id', label: 'label', children: 'children', disabled: 'disabled' }" check-strictly node-key="id" placeholder="请选择归属部门" style="width: 100%" />
             </ElFormItem>
           </ElCol>
         </ElRow>
@@ -477,6 +553,36 @@ onBeforeUnmount(() => {
         <ElButton type="primary" @click="submitForm">确 定</ElButton>
         <ElButton @click="cancel">取 消</ElButton>
       </template>
+    </el-dialog>
+
+    <!-- 导入对话框 -->
+    <el-dialog v-model="importOpen" title="用户导入" width="420px" append-to-body @close="handleImportClose">
+      <el-upload
+        ref="importFileRef"
+        :limit="1"
+        accept=".xlsx, .xls"
+        :auto-upload="true"
+        :show-file-list="true"
+        :http-request="handleImportSubmit"
+        drag
+      >
+        <el-icon class="el-icon--upload"><Upload /></el-icon>
+        <div class="el-upload__text">
+          将文件拖到此处，或<em>点击上传</em>
+        </div>
+        <template #tip>
+          <div class="el-upload__tip text-center">
+            <span>仅允许导入 xls、xlsx 格式文件。</span>
+            <el-link type="primary" :underline="false" style="font-size: 12px; vertical-align: baseline" @click="handleImportTemplate">下载模板</el-link>
+          </div>
+        </template>
+      </el-upload>
+
+      <div style="text-align: center" class="mt-2">
+        <el-checkbox v-model="importUpdateSupport">
+          是否更新已经存在的用户数据
+        </el-checkbox>
+      </div>
     </el-dialog>
   </div>
 </template>
