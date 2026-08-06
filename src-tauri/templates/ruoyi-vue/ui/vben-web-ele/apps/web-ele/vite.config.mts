@@ -6,11 +6,23 @@ import { defineConfig } from '@vben/vite-config';
  * - 禁止再使用 unplugin-element-plus 按需注入 `.../style/css`
  *   否则开发态切换菜单时 Vite 会不断 `new dependencies optimized` → `reloading`，
  *   表现为整页刷新（与路由无关）。
+ * - 生产 API 前缀见 .env.production：VITE_GLOB_API_URL=/prod-api（与 ruoyi-ui 的
+ *   VUE_APP_BASE_API、Nginx location /prod-api/ 同一套模板）。
+ * - 打包产物文件名带 hash，输出到 static/，与 ruoyi-ui assetsDir 习惯一致。
  */
 export default defineConfig(async () => {
   return {
     application: {},
     vite: {
+      build: {
+        rollupOptions: {
+          output: {
+            assetFileNames: 'static/[ext]/[name]-[hash].[ext]',
+            chunkFileNames: 'static/js/[name]-[hash].js',
+            entryFileNames: 'static/js/[name]-[hash].js',
+          },
+        },
+      },
       server: {
         port: 5777,
         proxy: {

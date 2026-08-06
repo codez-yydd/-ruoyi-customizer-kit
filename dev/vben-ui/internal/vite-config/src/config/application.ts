@@ -58,11 +58,13 @@ function defineApplicationConfig(userConfigPromise?: DefineApplicationOptions) {
     const applicationConfig: UserConfig = {
       base,
       build: {
+        // 产物文件名带内容 hash，与若依 ruoyi-ui（assetsDir: static + filenameHashing）对齐，
+        // 便于 Nginx 对 js/css 做长期缓存（immutable）。
         rollupOptions: {
           output: {
-            assetFileNames: '[ext]/[name]-[hash].[ext]',
-            chunkFileNames: 'js/[name]-[hash].js',
-            entryFileNames: 'jse/index-[name]-[hash].js',
+            assetFileNames: 'static/[ext]/[name]-[hash].[ext]',
+            chunkFileNames: 'static/js/[name]-[hash].js',
+            entryFileNames: 'static/js/[name]-[hash].js',
           },
         },
         target: 'es2015',

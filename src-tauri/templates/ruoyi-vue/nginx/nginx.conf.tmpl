@@ -47,7 +47,7 @@ server {
         add_header Cache-Control "public, immutable";
     }
 
-    # 后端接口反代（若依默认前缀 /prod-api）
+    # 后端接口反代（与 ruoyi-ui VUE_APP_BASE_API、Vben VITE_GLOB_API_URL 统一为 /prod-api）
     location /prod-api/ {
         proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
