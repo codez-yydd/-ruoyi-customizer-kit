@@ -26,6 +26,7 @@
     "#/*": "./src/*"
   },
   "dependencies": {
+    "@iconify/json": "catalog:",
     "@vben/access": "workspace:*",
     "@vben/common-ui": "workspace:*",
     "@vben/constants": "workspace:*",

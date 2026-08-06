@@ -571,6 +571,9 @@ importers:
 
   apps/web-ele:
     dependencies:
+      '@iconify/json':
+        specifier: 'catalog:'
+        version: 2.2.289
       '@vben/access':
         specifier: workspace:*
         version: link:../../packages/effects/access
@@ -6641,12 +6644,14 @@ packages:
 
   lodash.get@4.4.2:
     resolution: {integrity: sha512-z+Uw/vLuy6gQe8cfaFWD7p0wVv8fJl3mbzXh33RS+0oW2wvUqiRXiQ69gLWSLpgB5/6sU+r6BlQR0MBILadqTQ==}
+    deprecated: This package is deprecated. Use the optional chaining (?.) operator instead.
 
   lodash.isarguments@3.1.0:
     resolution: {integrity: sha512-chi4NHZlZqZD18a0imDHnZPrDeBbTtVN7GXMwuGdRH9qotxAjYs3aVLKc7zNOG9eddR5Ksd8rvFEBc9SsggPpg==}
 
   lodash.isequal@4.5.0:
     resolution: {integrity: sha512-pDo3lu8Jhfjqls6GkMgpahsF9kCyayhgykjyLMNFTKWrpVdAQtYyB4muAMWozBB4ig/dtWAmsMxLEI8wuz+DYQ==}
+    deprecated: This package is deprecated. Use require('node:util').isDeepStrictEqual instead.
 
   lodash.isplainobject@4.0.6:
     resolution: {integrity: sha512-oSXzaWypCMHkPC3NvBEaPHf0KsA5mvPrOPgQWDsbg8n7orZ290M0BmC/jgRZ4vcJ6DTAhjrsSYgdsW/F+MFOBA==}
@@ -8142,6 +8147,7 @@ packages:
   rollup-plugin-visualizer@5.13.1:
     resolution: {integrity: sha512-vMg8i6BprL8aFm9DKvL2c8AwS8324EgymYQo9o6E26wgVvwMhsJxS37aNL6ZsU7X9iAcMYwdME7gItLfG5fwJg==}
     engines: {node: '>=18'}
+    deprecated: Contains unintended breaking changes
     hasBin: true
     peerDependencies:
       rolldown: 1.x
@@ -9297,6 +9303,7 @@ packages:
   whatwg-encoding@3.1.1:
     resolution: {integrity: sha512-6qN4hJdMwfYBtE3YBTTHhoeuUrDBPZmbQaxWAqSALV/MeEnR5z1xd8UKud2RAkFoPkmB+hli1TZSnyi84xz1vQ==}
     engines: {node: '>=18'}
+    deprecated: Use @exodus/bytes instead for a more spec-conformant and faster implementation
 
   whatwg-mimetype@3.0.0:
     resolution: {integrity: sha512-nt+N2dzIutVRxARx1nghPKGv1xHikU7HKdfafKkLNLindmPU/ch3U31NOCGGA/dmPcmb1VlofO0vnKAcsm0o/Q==}
@@ -12287,7 +12294,7 @@ snapshots:
       chai: 5.1.2
       tinyrainbow: 1.2.0
 
-  '@vitest/mocker@2.1.8(vite@5.4.11(@types/node@22.10.2)(less@4.2.1)(terser@5.37.0))':
+  '@vitest/mocker@2.1.8(vite@5.4.11(@types/node@22.10.2)(less@4.2.1)(sass@1.80.6)(terser@5.37.0))':
     dependencies:
       '@vitest/spy': 2.1.8
       estree-walker: 3.0.3
@@ -18038,7 +18045,7 @@ snapshots:
   vitest@2.1.8(@types/node@22.10.2)(happy-dom@15.11.7)(less@4.2.1)(sass@1.80.6)(terser@5.37.0):
     dependencies:
       '@vitest/expect': 2.1.8
-      '@vitest/mocker': 2.1.8(vite@5.4.11(@types/node@22.10.2)(less@4.2.1)(terser@5.37.0))
+      '@vitest/mocker': 2.1.8(vite@5.4.11(@types/node@22.10.2)(less@4.2.1)(sass@1.80.6)(terser@5.37.0))
       '@vitest/pretty-format': 2.1.8
       '@vitest/runner': 2.1.8
       '@vitest/snapshot': 2.1.8

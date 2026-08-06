@@ -1,6 +1,10 @@
 import { createApp, watchEffect } from 'vue';
 
+// Element Plus 图标集（Iconify 数据，293 个），离线注册后供 IconPicker 和 VbenIcon 使用。
+// 不依赖运行时联网拉取 iconify.design。
+import epIcons from '@iconify/json/json/ep.json';
 import { registerAccessDirective } from '@vben/access';
+import { addCollection } from '@vben/icons';
 import { preferences } from '@vben/preferences';
 import { initStores } from '@vben/stores';
 import '@vben/styles';
@@ -24,6 +28,12 @@ import { hasPermi, hasRole } from './directives/hasPermi';
 async function bootstrap(namespace: string) {
   // 初始化组件适配器
   await initComponentAdapter();
+
+  // 离线注册 Element Plus 图标集（ep:xxx）。
+  // 注册后：1) 菜单管理 IconPicker 的 listIcons('','ep') 能枚举全部 293 个图标；
+  //         2) 侧边栏 VbenIcon 渲染 ep:xxx 图标时离线可用，无需联网。
+  addCollection(epIcons as any);
+
   const app = createApp(App);
 
   // 全局注册 Element Plus（见文件顶部注释）

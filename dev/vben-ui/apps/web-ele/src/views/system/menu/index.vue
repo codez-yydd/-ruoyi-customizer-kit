@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 
 import {
   ElButton,
+  ElEmpty,
   ElForm,
   ElFormItem,
   ElInput,
@@ -10,6 +11,8 @@ import {
   ElMessage,
   ElMessageBox,
   ElOption,
+  ElPagination,
+  ElPopover,
   ElRadio,
   ElRadioGroup,
   ElSelect,
@@ -19,7 +22,10 @@ import {
 } from 'element-plus';
 import { Search, Refresh, Plus } from '@element-plus/icons-vue';
 
+import { IconifyIcon, listIcons } from '@vben/icons';
+
 import { addMenu, delMenu, getMenu, listMenu, treeselect as getTreeselect, updateMenu, type SysMenu } from '#/api/system/menu';
+import { normalizeMenuIcon } from '#/api/core/menu';
 import { useDict } from '#/composables/useDict';
 import DictTag from '#/components/DictTag/index.vue';
 import { parseTime } from '#/utils/ruoyi';
@@ -86,7 +92,39 @@ const rules = {
 /** 是否显示路由地址/组件等（目录 M 和 菜单 C 显示） */
 const isDirOrMenu = computed(() => form.menuType === 'M' || form.menuType === 'C');
 
+// ===== 菜单图标选择器 =====
+// 用 Element Plus 自带的 el-popover 渲染图标网格，避免 VbenPopover(radix) 在 el-dialog
+// 内被 overlay 遮挡无法点击的问题（el-popover 与 el-dialog 共用同一套 z-index 体系）。
+// 图标源：bootstrap 中已离线注册的 Element Plus 图标集(ep:)，listIcons('', 'ep') 取全部 293 个。
+const epIconList = ref<string[]>(listIcons('', 'ep'));
+const iconPopoverVisible = ref(false);
+const iconKeyword = ref('');
+const iconPage = ref(1);
+const iconPageSize = 36;
+// 关键词过滤后的图标
+const filteredIcons = computed(() => {
+  const kw = iconKeyword.value.trim().toLowerCase();
+  const list = epIconList.value;
+  return kw ? list.filter((n) => n.toLowerCase().includes(kw)) : list;
+});
+// 当前页图标
+const pagedIcons = computed(() =>
+  filteredIcons.value.slice((iconPage.value - 1) * iconPageSize, iconPage.value * iconPageSize),
+);
+function pickIcon(name: string) {
+  form.icon = name;
+  iconPopoverVisible.value = false;
+}
+function clearIcon() {
+  form.icon = '';
+}
+function onIconKeywordChange() {
+  iconPage.value = 1;
+}
+
 function reset() {
+  // 仅清空表单数据。校验态的清除放在弹框打开后的 nextTick（见 handleAdd/handleUpdate），
+  // 避免 resetFields() 因 formRef 未就绪或基准被上次详情数据污染而偶发残留旧值。
   Object.assign(form, {
     menuId: undefined,
     parentId: 0,
@@ -104,7 +142,6 @@ function reset() {
     perms: '',
     icon: '',
   });
-  formRef.value?.resetFields();
 }
 
 async function loadTreeOptions() {
@@ -112,6 +149,7 @@ async function loadTreeOptions() {
 }
 
 async function handleAdd(row?: SysMenu) {
+  // 先清数据，再开弹框；开框后 nextTick 清校验态（此时 formRef 已就绪且基准干净）。
   reset();
   await loadTreeOptions();
   if (row?.menuId) {
@@ -119,6 +157,8 @@ async function handleAdd(row?: SysMenu) {
   }
   open.value = true;
   title.value = '添加菜单';
+  await nextTick();
+  formRef.value?.clearValidate();
 }
 
 async function handleUpdate(row?: SysMenu) {
@@ -129,6 +169,8 @@ async function handleUpdate(row?: SysMenu) {
   Object.assign(form, res.data);
   open.value = true;
   title.value = '修改菜单';
+  await nextTick();
+  formRef.value?.clearValidate();
 }
 
 async function submitForm() {
@@ -181,7 +223,11 @@ onMounted(getList);
 
     <ElTable v-loading="loading" :data="treeData" row-key="menuId" border>
       <ElTableColumn label="菜单名称" prop="menuName" width="200" />
-      <ElTableColumn label="图标" prop="icon" width="80" align="center" />
+      <ElTableColumn label="图标" width="80" align="center">
+        <template #default="{ row }">
+          <IconifyIcon v-if="row.icon" :icon="normalizeMenuIcon(row.icon)" class="inline-block size-4" />
+        </template>
+      </ElTableColumn>
       <ElTableColumn label="排序" prop="orderNum" width="80" align="center" />
       <ElTableColumn label="权限标识" prop="perms" show-overflow-tooltip />
       <ElTableColumn label="组件路径" prop="component" show-overflow-tooltip />
@@ -200,7 +246,7 @@ onMounted(getList);
       </ElTableColumn>
     </ElTable>
 
-    <el-dialog v-model="open" :title="title" width="700px" append-to-body>
+    <el-dialog v-model="open" :title="title" width="700px" append-to-body :close-on-click-modal="false">
       <ElForm ref="formRef" :model="form" :rules="rules" label-width="100px">
         <el-row>
           <el-col :span="24">
@@ -234,6 +280,49 @@ onMounted(getList);
           </el-col>
           <el-col :span="12">
             <ElFormItem label="显示排序" prop="orderNum"><ElInputNumber v-model="form.orderNum" :min="0" controls-position="right" /></ElFormItem>
+          </el-col>
+        </el-row>
+        <el-row v-if="isDirOrMenu">
+          <el-col :span="24">
+            <ElFormItem label="菜单图标" prop="icon">
+              <ElPopover v-model:visible="iconPopoverVisible" placement="bottom" :width="360" trigger="click">
+                <template #reference>
+                  <ElInput :model-value="form.icon" placeholder="点击选择图标" readonly>
+                    <template #prepend>
+                      <IconifyIcon v-if="form.icon" :icon="normalizeMenuIcon(form.icon)" class="size-4" />
+                      <span v-else class="text-xs text-gray-400">无</span>
+                    </template>
+                    <template #append v-if="form.icon">
+                      <ElButton link @click="clearIcon">清除</ElButton>
+                    </template>
+                  </ElInput>
+                </template>
+                <div style="display: flex; flex-direction: column; gap: 8px">
+                  <ElInput v-model="iconKeyword" placeholder="搜索图标名称（如 user）" clearable size="small" @input="onIconKeywordChange" />
+                  <ElEmpty v-if="pagedIcons.length === 0" :image-size="60" description="无匹配图标" />
+                  <div v-else class="icon-picker-grid">
+                    <div
+                      v-for="name in pagedIcons"
+                      :key="name"
+                      class="icon-cell"
+                      :class="{ 'is-active': form.icon === name }"
+                      :title="name"
+                      @click="pickIcon(name)"
+                    >
+                      <IconifyIcon :icon="name" class="size-5" />
+                    </div>
+                  </div>
+                  <ElPagination
+                    v-if="filteredIcons.length > iconPageSize"
+                    v-model:current-page="iconPage"
+                    :page-size="iconPageSize"
+                    :total="filteredIcons.length"
+                    layout="prev, pager, next"
+                    small
+                  />
+                </div>
+              </ElPopover>
+            </ElFormItem>
           </el-col>
         </el-row>
         <el-row v-if="isDirOrMenu">
@@ -302,4 +391,32 @@ onMounted(getList);
 
 <style scoped>
 @import '../_common/page.css';
+
+/* 图标选择器网格（el-popover 内） */
+.icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.icon-picker-grid .icon-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--el-text-color-regular);
+  transition: all 0.15s;
+}
+.icon-picker-grid .icon-cell:hover {
+  background: var(--el-fill-color-light);
+  color: var(--el-color-primary);
+}
+.icon-picker-grid .icon-cell.is-active {
+  background: var(--el-color-primary-light-9);
+  color: var(--el-color-primary);
+}
 </style>

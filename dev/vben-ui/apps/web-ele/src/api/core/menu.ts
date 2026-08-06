@@ -43,6 +43,70 @@ function isExternalLink(p?: string): boolean {
 }
 
 /**
+ * 若依遗留图标短名 → Element Plus 图标（ep:xxx）映射。
+ *
+ * 背景：若依原生 ruoyi-ui 用本地 SVG 图标目录（src/assets/icons/svg），数据库存的是
+ * 短名（system / user / monitor 等）。vben 侧边栏通过 VbenIcon 渲染，只认 Iconify 全名
+ * （prefix:name，如 ep:user），所以这些短名直接传过去无法显示。
+ * 这里做一层归一化：已含 ":" 的（新建菜单选的 ep:xxx）原样返回，遗留短名查表映射。
+ * 未命中则返回空串（不显示图标，但不报错）。
+ */
+const RUOYI_ICON_MAP: Record<string, string> = {
+  system: 'ep:tools',
+  monitor: 'ep:monitor',
+  tool: 'ep:set-up',
+  user: 'ep:user',
+  peoples: 'ep:user-filled',
+  role: 'ep:user',
+  'tree-table': 'ep:grid',
+  tree: 'ep:share',
+  menu: 'ep:menu',
+  dept: 'ep:office-building',
+  post: 'ep:postcard',
+  dict: 'ep:document',
+  date: 'ep:calendar',
+  edit: 'ep:edit',
+  log: 'ep:document',
+  logininfor: 'ep:document',
+  message: 'ep:bell',
+  server: 'ep:cpu',
+  sql: 'ep:data-line',
+  druid: 'ep:coin',
+  online: 'ep:user-filled',
+  job: 'ep:alarm-clock',
+  chart: 'ep:data-line',
+  build: 'ep:tools',
+  code: 'ep:document-copy',
+  swagger: 'ep:link',
+  guide: 'ep:link',
+  eye: 'ep:view',
+  'eye-open': 'ep:view',
+  form: 'ep:document',
+  number: 'ep:document',
+  tab: 'ep:document',
+  table: 'ep:grid',
+  nested: 'ep:share',
+  bug: 'ep:warning',
+  star: 'ep:star',
+  validCode: 'ep:key',
+  wechat: 'ep:chat-dot-round',
+  redis: 'ep:data-board',
+  list: 'ep:list',
+  lock: 'ep:lock',
+  slider: 'ep:set-up',
+  skill: 'ep:star',
+};
+
+export function normalizeMenuIcon(icon?: string): string {
+  if (!icon) return '';
+  // 已是 Iconify 全名（ep:xxx / lucide:xxx 等）直接用
+  if (icon.includes(':')) return icon;
+  // http 外链图标直接用（VbenIcon 支持 img）
+  if (/^https?:\/\//i.test(icon)) return icon;
+  return RUOYI_ICON_MAP[icon] ?? '';
+}
+
+/**
  * 为外链生成一个合法的路由 path（以 "/" 开头）。
  * 取 URL 的 host 作为路径段，避免与既有路由冲突；无法解析时回退到固定占位。
  */
@@ -108,7 +172,7 @@ function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] 
       redirect: menu.redirect,
       meta: {
         title: meta?.title ?? menu.name,
-        icon: meta?.icon,
+        icon: normalizeMenuIcon(meta?.icon),
         // vben 隐藏菜单用 hideInMenu
         hideInMenu: menu.hidden,
         // 若依 noCache=true 表示不缓存；vben keepAlive=true 表示缓存，需反转
