@@ -6,12 +6,16 @@ import { computed, h, onBeforeUnmount, onMounted, ref } from 'vue';
 import { AuthenticationLogin, z } from '@vben/common-ui';
 import { $t } from '@vben/locales';
 
+import { ElMessage } from 'element-plus';
+
 import { getCaptchaApi } from '#/api';
 import { useAuthStore } from '#/store';
 
 defineOptions({ name: 'Login' });
 
 const authStore = useAuthStore();
+/** AuthenticationLogin 实例，用于登录失败后清空验证码输入 */
+const loginRef = ref<InstanceType<typeof AuthenticationLogin>>();
 
 // ===== 适配若依图形验证码 =====
 const captchaImg = ref('');
@@ -34,6 +38,15 @@ async function refreshCaptcha() {
     // 获取验证码失败时不阻塞登录（后端可能关闭验证码）
     captchaEnabled.value = false;
   }
+}
+
+/**
+ * 登录失败后刷新验证码：旧 uuid 已失效，并清空输入避免用户重复提交旧码。
+ */
+async function refreshCaptchaAfterLoginFail() {
+  if (!captchaEnabled.value) return;
+  await refreshCaptcha();
+  loginRef.value?.getFormApi?.()?.setFieldValue?.('code', '');
 }
 
 onMounted(refreshCaptcha);
@@ -65,6 +78,9 @@ function renderCaptchaImage(): any {
 }
 
 const formSchema = computed((): VbenFormSchema[] => {
+  // 依赖 captchaImg，保证刷新验证码后 suffix 重新渲染新图片
+  void captchaImg.value;
+
   const fields: VbenFormSchema[] = [
     {
       component: 'VbenInput',
@@ -105,20 +121,29 @@ const formSchema = computed((): VbenFormSchema[] => {
 });
 
 /**
- * 提交登录：组装若依所需参数（username/password/code/uuid）
+ * 提交登录：组装若依所需参数（username/password/code/uuid）。
+ *
+ * 登录走 baseRequestClient，无全局错误提示拦截器；失败时需自行
+ * ElMessage 提示，并刷新验证码（若依一次校验后 uuid 即失效）。
  */
 async function handleSubmit(values: Record<string, any>) {
-  await authStore.authLogin({
-    username: values.username,
-    password: values.password,
-    code: values.code,
-    uuid: captchaUuid.value,
-  });
+  try {
+    await authStore.authLogin({
+      username: values.username,
+      password: values.password,
+      code: values.code,
+      uuid: captchaUuid.value,
+    });
+  } catch (error: any) {
+    ElMessage.error(error?.message || '登录失败');
+    await refreshCaptchaAfterLoginFail();
+  }
 }
 </script>
 
 <template>
   <AuthenticationLogin
+    ref="loginRef"
     :form-schema="formSchema"
     :loading="authStore.loginLoading"
     :show-code-login="false"

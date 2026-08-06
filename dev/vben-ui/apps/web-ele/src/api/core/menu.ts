@@ -249,7 +249,8 @@ const builtinMenus: RuoYiRouter[] = [
     hidden: false,
     component: 'Layout',
     meta: {
-      title: 'Dashboard',
+      // 与 locales/zh-CN/page.json 的 page.dashboard.title 保持一致
+      title: '概览',
       icon: 'lucide:layout-dashboard',
       noCache: false,
     },
