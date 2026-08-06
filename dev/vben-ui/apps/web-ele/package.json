@@ -45,6 +45,7 @@
     "dayjs": "catalog:",
     "element-plus": "catalog:",
     "pinia": "catalog:",
+    "quill": "2.0.2",
     "vue": "catalog:",
     "vue-router": "catalog:"
   },

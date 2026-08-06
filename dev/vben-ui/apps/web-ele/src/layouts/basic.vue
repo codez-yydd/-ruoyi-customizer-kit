@@ -1,7 +1,11 @@
 <script lang="ts" setup>
+/**
+ * 基础布局：接入若依顶部通知公告（listTop / markRead / markReadAll），
+ * 替换原先的演示用假数据。
+ */
 import type { NotificationItem } from '@vben/layouts';
 
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { AuthenticationLoginExpiredModal } from '@vben/common-ui';
@@ -16,39 +20,21 @@ import {
 import { preferences } from '@vben/preferences';
 import { useAccessStore, useUserStore } from '@vben/stores';
 
+import {
+  listNoticeTop,
+  markNoticeRead,
+  markNoticeReadAll,
+  type SysNotice,
+} from '#/api/system/notice';
 import { useAuthStore } from '#/store';
 import LoginForm from '#/views/_core/authentication/login.vue';
+import NoticeDetailView from '#/views/system/notice/DetailView.vue';
 
-const notifications = ref<NotificationItem[]>([
-  {
-    avatar: 'https://avatar.vercel.sh/vercel.svg?text=VB',
-    date: '3小时前',
-    isRead: true,
-    message: '描述信息描述信息描述信息',
-    title: '收到了 14 份新周报',
-  },
-  {
-    avatar: 'https://avatar.vercel.sh/1',
-    date: '刚刚',
-    isRead: false,
-    message: '描述信息描述信息描述信息',
-    title: '朱偏右 回复了你',
-  },
-  {
-    avatar: 'https://avatar.vercel.sh/1',
-    date: '2024-01-01',
-    isRead: false,
-    message: '描述信息描述信息描述信息',
-    title: '曲丽丽 评论了你',
-  },
-  {
-    avatar: 'https://avatar.vercel.sh/satori',
-    date: '1天前',
-    isRead: false,
-    message: '描述信息描述信息描述信息',
-    title: '代办提醒',
-  },
-]);
+/** 扩展通知项：携带公告 ID，便于点击时标记已读并打开详情 */
+type NoticeNotificationItem = NotificationItem & { noticeId: number };
+
+const notifications = ref<NoticeNotificationItem[]>([]);
+const noticeDetailRef = ref<InstanceType<typeof NoticeDetailView>>();
 
 const userStore = useUserStore();
 const authStore = useAuthStore();
@@ -58,6 +44,29 @@ const { destroyWatermark, updateWatermark } = useWatermark();
 const showDot = computed(() =>
   notifications.value.some((item) => !item.isRead),
 );
+
+/** 将后端公告映射为布局 Notification 组件所需结构 */
+function mapNoticeToItem(notice: SysNotice): NoticeNotificationItem {
+  return {
+    avatar: preferences.app.defaultAvatar,
+    date: notice.createTime || '',
+    isRead: !!notice.isRead,
+    message: notice.noticeType === '1' ? '通知' : '公告',
+    noticeId: notice.noticeId,
+    title: notice.noticeTitle,
+  };
+}
+
+async function loadNoticeTop() {
+  try {
+    const res = await listNoticeTop();
+    const list = res.data ?? [];
+    notifications.value = list.map(mapNoticeToItem);
+  } catch {
+    // 未登录或无权限时静默失败，避免打断布局渲染
+    notifications.value = [];
+  }
+}
 
 // 用户下拉菜单：仅保留「个人中心」（退出登录由组件内置项处理）
 const menus = computed(() => [
@@ -87,9 +96,40 @@ function handleNoticeClear() {
   notifications.value = [];
 }
 
-function handleMakeAll() {
-  notifications.value.forEach((item) => (item.isRead = true));
+async function handleMakeAll() {
+  const ids = notifications.value.map((n) => n.noticeId).join(',');
+  if (!ids) return;
+  try {
+    await markNoticeReadAll(ids);
+  } catch {
+    /* 接口失败仍本地标记，避免交互卡死 */
+  }
+  notifications.value = notifications.value.map((item) => ({
+    ...item,
+    isRead: true,
+  }));
 }
+
+/** 点击单条：标记已读并打开公告详情 */
+async function handleNoticeRead(item: NotificationItem) {
+  const noticeItem = item as NoticeNotificationItem;
+  if (!noticeItem.isRead && noticeItem.noticeId) {
+    try {
+      await markNoticeRead(noticeItem.noticeId);
+    } catch {
+      /* ignore */
+    }
+    noticeItem.isRead = true;
+  }
+  if (noticeItem.noticeId) {
+    noticeDetailRef.value?.open(noticeItem.noticeId);
+  }
+}
+
+function handleViewAll() {
+  router.push('/system/notice');
+}
+
 watch(
   () => preferences.app.watermark,
   async (enable) => {
@@ -105,6 +145,8 @@ watch(
     immediate: true,
   },
 );
+
+onMounted(loadNoticeTop);
 </script>
 
 <template>
@@ -124,6 +166,8 @@ watch(
         :notifications="notifications"
         @clear="handleNoticeClear"
         @make-all="handleMakeAll"
+        @read="handleNoticeRead"
+        @view-all="handleViewAll"
       />
     </template>
     <template #extra>
@@ -133,6 +177,7 @@ watch(
       >
         <LoginForm />
       </AuthenticationLoginExpiredModal>
+      <NoticeDetailView ref="noticeDetailRef" />
     </template>
     <template #lock-screen>
       <LockScreen :avatar @to-login="handleLogout" />

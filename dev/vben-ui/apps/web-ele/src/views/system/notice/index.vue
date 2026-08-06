@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+/**
+ * 通知公告管理页
+ * 对齐若依 system/notice：列表检索、增删改、富文本内容、标题点开详情、阅读用户。
+ */
+import { nextTick, onMounted, reactive, ref } from 'vue';
 
 import {
   ElButton,
@@ -19,11 +23,22 @@ import {
 } from 'element-plus';
 import { Search, Refresh, Plus, Edit, Delete } from '@element-plus/icons-vue';
 
-import { addNotice, delNotice, getNotice, listNotice, updateNotice, type SysNotice } from '#/api/system/notice';
+import {
+  addNotice,
+  delNotice,
+  getNotice,
+  listNotice,
+  updateNotice,
+  type SysNotice,
+} from '#/api/system/notice';
 import { useDict } from '#/composables/useDict';
 import { usePagination } from '#/composables/usePagination';
 import DictTag from '#/components/DictTag/index.vue';
+import Editor from '#/components/Editor/index.vue';
 import { parseTime } from '#/utils/ruoyi';
+
+import DetailView from './DetailView.vue';
+import ReadUsers from './ReadUsers.vue';
 
 defineOptions({ name: 'SystemNotice' });
 
@@ -42,6 +57,9 @@ const list = ref<SysNotice[]>([]);
 const ids = ref<number[]>([]);
 const single = ref(true);
 const multiple = ref(true);
+
+const detailViewRef = ref<InstanceType<typeof DetailView>>();
+const readUsersRef = ref<InstanceType<typeof ReadUsers>>();
 
 async function getList() {
   loading.value = true;
@@ -82,6 +100,7 @@ const rules = {
 };
 
 function reset() {
+  // 仅清空表单数据；校验态在弹框打开后的 nextTick 清除，避免残留上一次详情数据
   Object.assign(form, {
     noticeId: undefined,
     noticeTitle: '',
@@ -89,22 +108,26 @@ function reset() {
     noticeContent: '',
     status: '0',
   });
-  formRef.value?.resetFields();
 }
 
 async function handleAdd() {
   reset();
   open.value = true;
   title.value = '添加公告';
+  await nextTick();
+  formRef.value?.clearValidate();
 }
 
 async function handleUpdate(row?: SysNotice) {
   reset();
   const noticeId = row?.noticeId ?? ids.value[0]!;
+  // 拦截器已解包 data，res 即公告对象本身
   const res = await getNotice(noticeId);
-  Object.assign(form, res.data);
+  Object.assign(form, res);
   open.value = true;
   title.value = '修改公告';
+  await nextTick();
+  formRef.value?.clearValidate();
 }
 
 async function submitForm() {
@@ -120,11 +143,23 @@ async function submitForm() {
   getList();
 }
 
-async function handleDelete(row: SysNotice) {
-  const noticeIds = row.noticeId || ids.value;
+/** 点击标题查看公告详情 */
+function handleViewData(row: SysNotice) {
+  detailViewRef.value?.open(row.noticeId);
+}
+
+/** 查看已读用户 */
+function handleReadUsers(row: SysNotice) {
+  readUsersRef.value?.open(row);
+}
+
+async function handleDelete(row?: SysNotice) {
+  const noticeIds = row?.noticeId ?? ids.value;
   try {
-    await ElMessageBox.confirm(`是否确认删除公告编号为"${noticeIds}"的数据项？`, '提示', { type: 'warning' });
-    await delNotice(noticeIds as any);
+    await ElMessageBox.confirm(`是否确认删除公告编号为"${noticeIds}"的数据项？`, '提示', {
+      type: 'warning',
+    });
+    await delNotice(noticeIds);
     getList();
     ElMessage.success('删除成功');
   } catch {
@@ -139,14 +174,31 @@ onMounted(getList);
   <div class="ruoyi-page">
     <ElForm :inline="true" :model="queryParams" size="small" class="search-form">
       <ElFormItem label="公告标题">
-        <ElInput v-model="queryParams.noticeTitle" placeholder="请输入公告标题" clearable style="width: 200px" @keyup.enter="handleSearch" />
+        <ElInput
+          v-model="queryParams.noticeTitle"
+          placeholder="请输入公告标题"
+          clearable
+          style="width: 200px"
+          @keyup.enter="handleSearch"
+        />
       </ElFormItem>
       <ElFormItem label="操作人员">
-        <ElInput v-model="queryParams.createBy" placeholder="请输入操作人员" clearable style="width: 200px" @keyup.enter="handleSearch" />
+        <ElInput
+          v-model="queryParams.createBy"
+          placeholder="请输入操作人员"
+          clearable
+          style="width: 200px"
+          @keyup.enter="handleSearch"
+        />
       </ElFormItem>
       <ElFormItem label="类型">
         <ElSelect v-model="queryParams.noticeType" placeholder="公告类型" clearable style="width: 200px">
-          <ElOption v-for="d in dictMap.type" :key="d.dictValue" :label="d.dictLabel" :value="d.dictValue" />
+          <ElOption
+            v-for="d in dictMap.type"
+            :key="d.dictValue"
+            :label="d.dictLabel"
+            :value="d.dictValue"
+          />
         </ElSelect>
       </ElFormItem>
       <ElFormItem>
@@ -156,38 +208,100 @@ onMounted(getList);
     </ElForm>
 
     <div class="toolbar">
-      <ElButton type="primary" plain :icon="Plus" v-hasPermi="['system:notice:add']" @click="handleAdd">新增</ElButton>
-      <ElButton type="success" plain :icon="Edit" :disabled="single" v-hasPermi="['system:notice:edit']" @click="handleUpdate()">修改</ElButton>
-      <ElButton type="danger" plain :icon="Delete" :disabled="multiple" v-hasPermi="['system:notice:remove']" @click="handleDelete({} as SysNotice)">删除</ElButton>
+      <ElButton type="primary" plain :icon="Plus" v-hasPermi="['system:notice:add']" @click="handleAdd">
+        新增
+      </ElButton>
+      <ElButton
+        type="success"
+        plain
+        :icon="Edit"
+        :disabled="single"
+        v-hasPermi="['system:notice:edit']"
+        @click="handleUpdate()"
+      >
+        修改
+      </ElButton>
+      <ElButton
+        type="danger"
+        plain
+        :icon="Delete"
+        :disabled="multiple"
+        v-hasPermi="['system:notice:remove']"
+        @click="handleDelete()"
+      >
+        删除
+      </ElButton>
     </div>
 
     <ElTable v-loading="loading" :data="list" border @selection-change="handleSelectionChange">
       <ElTableColumn type="selection" width="50" align="center" />
       <ElTableColumn label="序号" align="center" prop="noticeId" width="90" />
-      <ElTableColumn label="公告标题" align="center" prop="noticeTitle" show-overflow-tooltip />
+      <ElTableColumn label="公告标题" align="center" prop="noticeTitle" show-overflow-tooltip>
+        <template #default="{ row }">
+          <a class="link-type" @click="handleViewData(row)">{{ row.noticeTitle }}</a>
+        </template>
+      </ElTableColumn>
       <ElTableColumn label="公告类型" align="center" prop="noticeType" width="100">
-        <template #default="{ row }"><DictTag :options="dictMap.type" :value="row.noticeType" /></template>
+        <template #default="{ row }">
+          <DictTag :options="dictMap.type" :value="row.noticeType" />
+        </template>
       </ElTableColumn>
       <ElTableColumn label="状态" align="center" prop="status" width="100">
-        <template #default="{ row }"><DictTag :options="dictMap.status" :value="row.status" /></template>
+        <template #default="{ row }">
+          <DictTag :options="dictMap.status" :value="row.status" />
+        </template>
       </ElTableColumn>
       <ElTableColumn label="创建者" align="center" prop="createBy" width="120" />
       <ElTableColumn label="创建时间" align="center" prop="createTime" width="160">
         <template #default="{ row }">{{ parseTime(row.createTime) }}</template>
       </ElTableColumn>
-      <ElTableColumn label="操作" align="center" width="160" fixed="right">
+      <ElTableColumn label="操作" align="center" width="220" fixed="right">
         <template #default="{ row }">
-          <ElButton link type="primary" size="small" v-hasPermi="['system:notice:edit']" @click="handleUpdate(row)">修改</ElButton>
-          <ElButton link type="danger" size="small" v-hasPermi="['system:notice:remove']" @click="handleDelete(row)">删除</ElButton>
+          <ElButton
+            link
+            type="primary"
+            size="small"
+            v-hasPermi="['system:notice:list']"
+            @click="handleReadUsers(row)"
+          >
+            阅读用户
+          </ElButton>
+          <ElButton
+            link
+            type="primary"
+            size="small"
+            v-hasPermi="['system:notice:edit']"
+            @click="handleUpdate(row)"
+          >
+            修改
+          </ElButton>
+          <ElButton
+            link
+            type="danger"
+            size="small"
+            v-hasPermi="['system:notice:remove']"
+            @click="handleDelete(row)"
+          >
+            删除
+          </ElButton>
         </template>
       </ElTableColumn>
     </ElTable>
 
     <div class="pagination">
-      <el-pagination v-model:current-page="queryParams.pageNum" v-model:page-size="queryParams.pageSize" :total="total" :page-sizes="[10, 20, 30, 50]" layout="total, sizes, prev, pager, next, jumper" background @size-change="getList" @current-change="getList" />
+      <el-pagination
+        v-model:current-page="queryParams.pageNum"
+        v-model:page-size="queryParams.pageSize"
+        :total="total"
+        :page-sizes="[10, 20, 30, 50]"
+        layout="total, sizes, prev, pager, next, jumper"
+        background
+        @size-change="getList"
+        @current-change="getList"
+      />
     </div>
 
-    <el-dialog v-model="open" :title="title" width="780px" append-to-body>
+    <el-dialog v-model="open" :title="title" width="780px" append-to-body destroy-on-close>
       <ElForm ref="formRef" :model="form" :rules="rules" label-width="80px">
         <ElRow>
           <ElCol :span="12">
@@ -198,20 +312,27 @@ onMounted(getList);
           <ElCol :span="12">
             <ElFormItem label="公告类型" prop="noticeType">
               <ElSelect v-model="form.noticeType" placeholder="请选择公告类型">
-                <ElOption v-for="d in dictMap.type" :key="d.dictValue" :label="d.dictLabel" :value="d.dictValue" />
+                <ElOption
+                  v-for="d in dictMap.type"
+                  :key="d.dictValue"
+                  :label="d.dictLabel"
+                  :value="d.dictValue"
+                />
               </ElSelect>
             </ElFormItem>
           </ElCol>
           <ElCol :span="24">
             <ElFormItem label="状态">
               <ElRadioGroup v-model="form.status">
-                <ElRadio v-for="d in dictMap.status" :key="d.dictValue" :value="d.dictValue">{{ d.dictLabel }}</ElRadio>
+                <ElRadio v-for="d in dictMap.status" :key="d.dictValue" :value="d.dictValue">
+                  {{ d.dictLabel }}
+                </ElRadio>
               </ElRadioGroup>
             </ElFormItem>
           </ElCol>
           <ElCol :span="24">
             <ElFormItem label="内容">
-              <ElInput v-model="form.noticeContent" type="textarea" :rows="6" placeholder="请输入内容" />
+              <Editor v-model="form.noticeContent" :min-height="192" />
             </ElFormItem>
           </ElCol>
         </ElRow>
@@ -221,9 +342,21 @@ onMounted(getList);
         <ElButton @click="open = false">取 消</ElButton>
       </template>
     </el-dialog>
+
+    <DetailView ref="detailViewRef" />
+    <ReadUsers ref="readUsersRef" />
   </div>
 </template>
 
 <style scoped>
 @import '../_common/page.css';
+
+.link-type {
+  color: var(--el-color-primary);
+  cursor: pointer;
+}
+
+.link-type:hover {
+  text-decoration: underline;
+}
 </style>
