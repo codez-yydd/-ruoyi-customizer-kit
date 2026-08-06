@@ -47,3 +47,65 @@ pub fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// 移动文件或目录：同盘优先 `rename`，跨盘（Windows EXDEV）回退为复制后删除源。
+///
+/// 临时目录常在 `C:\Users\...\AppData\Local\Temp`，用户输出目录可能在 `D:\`，
+/// 此时 `std::fs::rename` 会报「系统无法将文件移到不同的磁盘驱动器」(os error 17)。
+pub fn move_path(from: &Path, to: &Path) -> Result<(), String> {
+    if !from.exists() {
+        return Err(format!("源路径不存在：{}", from.display()));
+    }
+    if to.exists() {
+        return Err(format!("目标已存在：{}", to.display()));
+    }
+    // 同盘 rename 最快；跨盘失败后走复制
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    if from.is_dir() {
+        // 确保父目录存在
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目标父目录失败：{e}"))?;
+        }
+        copy_dir_recursive(from, to)?;
+        std::fs::remove_dir_all(from)
+            .map_err(|e| format!("跨盘移动后删除源目录 {} 失败：{e}", from.display()))?;
+    } else {
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目标父目录失败：{e}"))?;
+        }
+        std::fs::copy(from, to)
+            .map_err(|e| format!("跨盘复制 {} 失败：{e}", from.display()))?;
+        std::fs::remove_file(from)
+            .map_err(|e| format!("跨盘移动后删除源文件 {} 失败：{e}", from.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn move_path_file_and_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_file = tmp.path().join("a.txt");
+        let dst_file = tmp.path().join("b.txt");
+        fs::write(&src_file, "hello").unwrap();
+        move_path(&src_file, &dst_file).unwrap();
+        assert!(!src_file.exists());
+        assert_eq!(fs::read_to_string(&dst_file).unwrap(), "hello");
+
+        let src_dir = tmp.path().join("src_dir");
+        let dst_dir = tmp.path().join("dst_dir");
+        fs::create_dir_all(src_dir.join("sub")).unwrap();
+        fs::write(src_dir.join("sub/x.txt"), "x").unwrap();
+        move_path(&src_dir, &dst_dir).unwrap();
+        assert!(!src_dir.exists());
+        assert!(dst_dir.join("sub/x.txt").is_file());
+    }
+}

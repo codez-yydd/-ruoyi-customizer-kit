@@ -17,7 +17,7 @@ echo ""
 
 if command -v pnpm >/dev/null 2>&1; then
     echo "使用 pnpm 启动 web-ele..."
-    pnpm -F @vben/web-ele run dev
+    pnpm run dev:ele
     exit $?
 fi
 

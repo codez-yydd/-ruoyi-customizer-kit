@@ -1,16 +1,16 @@
 import { defineConfig } from '@vben/vite-config';
 
-import ElementPlus from 'unplugin-element-plus/vite';
-
+/**
+ * 若依适配说明：
+ * - bootstrap.ts 已全局 app.use(ElementPlus) + 引入 element-plus/dist/index.css
+ * - 禁止再使用 unplugin-element-plus 按需注入 `.../style/css`
+ *   否则开发态切换菜单时 Vite 会不断 `new dependencies optimized` → `reloading`，
+ *   表现为整页刷新（与路由无关）。
+ */
 export default defineConfig(async () => {
   return {
     application: {},
     vite: {
-      plugins: [
-        ElementPlus({
-          format: 'esm',
-        }),
-      ],
       server: {
         port: 5777,
         proxy: {

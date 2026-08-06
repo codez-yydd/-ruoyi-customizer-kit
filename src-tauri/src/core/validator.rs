@@ -220,6 +220,73 @@ pub fn validate(
         });
     }
 
+    // 9. 替换后台 UI 产物校验（仅在开启时）
+    if params.enable_replace_ui {
+        let ui_dir = root.join(format!("{}-ui", params.new_module_prefix));
+        let required = [
+            "package.json",
+            "pnpm-workspace.yaml",
+            "apps/web-ele/.env",
+            "apps/web-ele/package.json",
+            "apps/web-ele/vite.config.mts",
+        ];
+        let mut missing = Vec::new();
+        for f in &required {
+            if !ui_dir.join(f).is_file() {
+                missing.push(*f);
+            }
+        }
+        items.push(CheckItem {
+            item: "替换后台 UI 产物完整性".into(),
+            result: if missing.is_empty() {
+                CheckResult::Pass
+            } else {
+                CheckResult::Fail
+            },
+            message: if missing.is_empty() {
+                format!("{}-ui 为 Vben monorepo 结构", params.new_module_prefix)
+            } else {
+                format!("缺少文件：{}", missing.join("、"))
+            },
+        });
+        // 关键配置不得残留占位符
+        let check_files = [
+            "apps/web-ele/.env",
+            "apps/web-ele/vite.config.mts",
+            "apps/web-ele/src/preferences.ts",
+        ];
+        let placeholders = [
+            "{{FRONTEND_TITLE}}",
+            "{{API_BASE_URL_DEV}}",
+            "{{COPYRIGHT_HOLDER}}",
+            "{{COPYRIGHT_YEAR}}",
+        ];
+        let mut residue = Vec::new();
+        for rel in &check_files {
+            let p = ui_dir.join(rel);
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                for ph in &placeholders {
+                    if content.contains(ph) {
+                        residue.push(format!("{rel} 含 {ph}"));
+                    }
+                }
+            }
+        }
+        items.push(CheckItem {
+            item: "替换后台 UI 占位符残留".into(),
+            result: if residue.is_empty() {
+                CheckResult::Pass
+            } else {
+                CheckResult::Fail
+            },
+            message: if residue.is_empty() {
+                "标题/端口/版权占位符已替换".into()
+            } else {
+                residue.join("；")
+            },
+        });
+    }
+
     items
 }
 

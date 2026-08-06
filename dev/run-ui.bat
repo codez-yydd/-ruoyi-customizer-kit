@@ -25,7 +25,7 @@ where pnpm.cmd >nul 2>nul
 if %errorlevel%==0 (
     echo ??? pnpm ??? web-ele...
     echo.
-    call pnpm.cmd -F @vben/web-ele run dev
+    call pnpm.cmd run dev:ele
     goto :done
 )
 

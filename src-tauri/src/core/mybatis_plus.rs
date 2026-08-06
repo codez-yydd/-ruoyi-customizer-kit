@@ -272,12 +272,17 @@ fn adapt_mapper_xml_vm(content: &str) -> Option<String> {
 
 /// 扫描项目中已有的 Mapper/Service/ServiceImpl 源码，改造为 MyBatis-Plus 继承体系。
 /// 返回修改的文件数。幂等：已适配的跳过。
+///
+/// 注意：仅当存在对应 `{Entity}Mapper.java` 时才改造 ServiceImpl
+/// （如 SysUserOnline 无 Mapper、数据在 Redis，强行 extends ServiceImpl 会编译失败）。
 pub fn adapt_existing_sources(
     root: &Path,
     log: &dyn Fn(&str),
 ) -> Result<usize, String> {
+    // 先收集项目中真实存在的 Mapper 实体名，供 ServiceImpl 改造门禁
+    let mapper_entities = collect_mapper_entities(root);
+
     let mut count = 0usize;
-    // 扫描所有 .java 文件
     for entry in walkdir::WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| {
@@ -303,9 +308,35 @@ pub fn adapt_existing_sources(
         let new_content = if file_name.ends_with("Mapper.java") {
             adapt_existing_mapper(&content, &file_name)
         } else if file_name.ends_with("ServiceImpl.java") {
-            adapt_current_service_impl(&content, &file_name)
+            let entity = match extract_entity_name(&file_name) {
+                Some(e) => e,
+                None => continue,
+            };
+            // 无对应 Mapper 的 ServiceImpl（如在线用户）跳过，避免引入不存在的 XxxMapper
+            if !mapper_entities.contains(&entity) {
+                log(&format!(
+                    "跳过 MyBatis-Plus ServiceImpl 适配（无 {entity}Mapper）：{}",
+                    path.display()
+                ));
+                None
+            } else {
+                adapt_current_service_impl(&content, &file_name)
+            }
         } else if file_name.starts_with("I") && file_name.ends_with("Service.java") {
-            adapt_current_service(&content, &file_name)
+            let entity = match extract_entity_name(&file_name) {
+                Some(e) => e,
+                None => continue,
+            };
+            // 无对应 Mapper 的 Service（如在线用户）不继承 IService，否则 Impl 必须实现 MP 抽象方法
+            if !mapper_entities.contains(&entity) {
+                log(&format!(
+                    "跳过 MyBatis-Plus Service 适配（无 {entity}Mapper）：{}",
+                    path.display()
+                ));
+                None
+            } else {
+                adapt_current_service(&content, &file_name, root)
+            }
         } else {
             None
         };
@@ -319,6 +350,31 @@ pub fn adapt_existing_sources(
         }
     }
     Ok(count)
+}
+
+/// 收集项目中已有的 `*Mapper.java` 对应实体名（SysUserMapper → SysUser）
+fn collect_mapper_entities(root: &Path) -> std::collections::HashSet<String> {
+    let mut set = std::collections::HashSet::new();
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                !matches!(name.as_str(), "target" | "node_modules" | ".git" | ".idea" | "dist")
+            } else {
+                true
+            }
+        })
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.ends_with("Mapper.java") {
+            if let Some(entity) = extract_entity_name(&name) {
+                set.insert(entity);
+            }
+        }
+    }
+    set
 }
 
 /// 从文件名提取实体名：SysUserMapper → SysUser, SysUserServiceImpl → SysUser, ISysUserService → SysUser
@@ -366,19 +422,32 @@ fn adapt_existing_mapper(content: &str, file_name: &str) -> Option<String> {
     Some(out)
 }
 
-/// 改造已有 Service 接口：加 extends IService<Entity>
-fn adapt_current_service(content: &str, file_name: &str) -> Option<String> {
+/// 改造已有 Service 接口：加 extends IService<Entity>，并补齐实体 import。
+fn adapt_current_service(content: &str, file_name: &str, root: &Path) -> Option<String> {
     if content.contains("extends IService") {
         return None;
     }
     let entity = extract_entity_name(file_name)?;
     let iface_name = file_name.strip_suffix(".java").unwrap_or("");
-    let mut out = String::with_capacity(content.len() + 128);
+    let mut out = String::with_capacity(content.len() + 192);
     let mut import_added = false;
+    // 是否已有实体 import（如 import xxx.domain.SysNoticeRead;）
+    let has_entity_import = content.lines().any(|l| {
+        let t = l.trim_start();
+        t.starts_with("import ") && t.ends_with(&format!(".{entity};"))
+    });
+    let entity_import = if has_entity_import {
+        None
+    } else {
+        find_java_package(root, &entity).map(|pkg| format!("import {pkg}.{entity};\n"))
+    };
 
     for line in content.lines() {
         if !import_added && line.trim_start().starts_with("import ") {
             out.push_str("import com.baomidou.mybatisplus.extension.service.IService;\n");
+            if let Some(ref ei) = entity_import {
+                out.push_str(ei);
+            }
             import_added = true;
         }
         if line.contains(&format!("interface {iface_name}")) {
@@ -393,6 +462,35 @@ fn adapt_current_service(content: &str, file_name: &str) -> Option<String> {
         out.push('\n');
     }
     Some(out)
+}
+
+/// 在项目中查找 `{class_name}.java` 的 package 声明
+fn find_java_package(root: &Path, class_name: &str) -> Option<String> {
+    let target = format!("{class_name}.java");
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                !matches!(name.as_str(), "target" | "node_modules" | ".git" | ".idea" | "dist")
+            } else {
+                true
+            }
+        })
+        .flatten()
+    {
+        if entry.file_name().to_string_lossy() != target.as_str() {
+            continue;
+        }
+        let content = std::fs::read_to_string(entry.path()).ok()?;
+        for line in content.lines() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("package ") {
+                return Some(rest.trim_end_matches(';').trim().to_string());
+            }
+        }
+    }
+    None
 }
 
 /// 改造已有 ServiceImpl：加 extends ServiceImpl<Mapper, Entity> implements IService

@@ -84,6 +84,7 @@ pub async fn execute_transform(
     };
 
     // 将项目根内容移到用户选择的输出目录
+    // Windows 上临时目录常在 C:，用户输出可能在 D:，rename 跨盘会失败，需回退复制
     let _ = app.emit("transform:progress", LogEvent::info(format!("移动到输出目录：{}", output_dir.display())));
     if output_dir.exists() {
         // 输出目录已存在，将临时项目根的内容逐项移入
@@ -96,16 +97,16 @@ pub async fn execute_transform(
                     let _ = app.emit("transform:progress", LogEvent::info(format!("跳过已存在：{}", name.to_string_lossy())));
                     continue;
                 }
-                std::fs::rename(&from, &to).map_err(|e| format!("移动 {} 失败：{e}", from.display()))?;
+                crate::utils::file::move_path(&from, &to)
+                    .map_err(|e| format!("移动 {} 失败：{e}", from.display()))?;
             }
         }
     } else {
-        // 输出目录不存在，尝试重命名；跨文件系统失败时回退为复制
-        if std::fs::rename(&project_root_in_temp, &output_dir).is_err() {
-            crate::utils::file::copy_dir_recursive(&project_root_in_temp, &output_dir)?;
-        }
+        // 输出目录不存在：整目录移动（同盘 rename / 跨盘复制）
+        crate::utils::file::move_path(&project_root_in_temp, &output_dir)
+            .map_err(|e| format!("移动到输出目录失败：{e}"))?;
     }
-    // 始终清理临时目录
+    // 始终清理临时目录（跨盘移动后源项可能已删，整树删除幂等）
     let _ = std::fs::remove_dir_all(&temp_dest);
 
     let root = output_dir.clone();

@@ -1,9 +1,12 @@
-// 全局雪花 ID 集成：Hutool 依赖注入 + ServiceImpl insert 方法 setId + domain 主键 IdType.INPUT。
+// 全局雪花 ID 集成：Hutool 依赖注入 + ServiceImpl 主 insert 注入主键 setter + domain 主键 IdType.INPUT。
 //
 // 设计（与 mybatis_plus 同构的"模板驱动 + 源码扫描"模式）：
 // - 依赖：cn.hutool:hutool-all 加到公共模块 pom（幂等，已有则跳过）
-// - 模板：serviceImpl.java.vm 的 insert 方法体首行注入 ${className}.setId(IdUtil.getSnowflakeNextId())
-// - 源码：扫描 *ServiceImpl.java，对 public int insertXxx(Xxx xxx) { 注入 xxx.setId(...)
+// - 模板：serviceImpl.java.vm 的 insert 方法体注入
+//         ${className}.set${pkColumn.capJavaField}(IdUtil.getSnowflakeNextId())
+// - 源码：仅对「主实体 insert」（如 insertUser / insertSysUser）注入；
+//         setter 取自同文件 selectXxx(Long pkField) 的参数名（如 userId → setUserId），
+//         禁止误用通用 setId（若依实体主键是 userId/configId 等业务字段）
 // - 幂等：文件已含 IdUtil 则整体跳过，不重复注入
 //
 // 与 MyBatis-Plus 共存时：domain 主键注解标 @TableId(type = IdType.INPUT)，
@@ -61,7 +64,8 @@ pub fn add_hutool_dependency(
     Err("找不到合适的 pom.xml 来添加 Hutool 依赖".into())
 }
 
-/// 改造代码生成器模板 serviceImpl.java.vm：insert 方法体首行注入雪花 ID 赋值。
+/// 改造代码生成器模板 serviceImpl.java.vm：insert 方法体首行注入雪花主键赋值。
+/// 使用若依模板变量 ${pkColumn.capJavaField}，对应 setUserId / setConfigId 等真实 setter。
 /// 幂等：模板已含 IdUtil 则返回 None。
 pub fn inject_snowflake_to_service_impl_vm(content: &str) -> Option<String> {
     if content.contains("IdUtil") {
@@ -69,24 +73,23 @@ pub fn inject_snowflake_to_service_impl_vm(content: &str) -> Option<String> {
     }
     // 若依代码生成器模板的 insert 方法形如：
     //   public int insert${ClassName}(${ClassName} ${className}) {
-    // 在方法体 { 后插入赋值
     let re = regex::Regex::new(
         r"(public\s+int\s+insert\$\{ClassName\}\(\$\{ClassName\}\s+\$\{className\}\)\s*\{)",
     )
     .ok()?;
-    // 仅替换首个 insert 方法（每个 ServiceImpl 模板通常只有一个 insert）
     if !re.is_match(content) {
         return None;
     }
     let new_content = re.replace(
         content,
-        // $$ 转义为字面 $，使 ${className} 作为模板变量原样输出
-        "$1\n        $${className}.setId(cn.hutool.core.util.IdUtil.getSnowflakeNextId());",
-    ).to_string();
+        // $$ 转义为字面 $；pkColumn.capJavaField → UserId / ConfigId
+        "$1\n        $${className}.set$${pkColumn.capJavaField}(cn.hutool.core.util.IdUtil.getSnowflakeNextId());",
+    )
+    .to_string();
     Some(new_content)
 }
 
-/// 扫描项目中已有的 *ServiceImpl.java 源码，对 insert 方法注入雪花 ID 赋值。
+/// 扫描项目中已有的 *ServiceImpl.java 源码，对主 insert 方法注入雪花主键赋值。
 /// 返回修改的文件数。幂等：文件已含 IdUtil 则跳过。
 pub fn inject_snowflake_to_existing_sources(
     root: &Path,
@@ -133,28 +136,100 @@ pub fn inject_snowflake_to_existing_sources(
     Ok(count)
 }
 
-/// 改造单个 ServiceImpl 源码：对 public int insertXxx(Xxx xxx) { 注入 xxx.setId(...)。
+/// 改造单个 ServiceImpl 源码：仅对主实体 insert 注入 `{var}.set{Pk}(...)`。
+///
+/// 规则：
+/// 1. 方法名必须是 insert{Type} 或 insert{Type去掉Sys前缀}（insertRole ✓，insertRoleMenu ✗）
+/// 2. 主键 setter 按「当前实体」从同文件 `selectXxxById(Long pk)` / `public Entity selectXxx(Long pk)` 推导
+///    （禁止取第一个任意 select(Long)，否则会把 selectDeptListByRoleId 的 roleId 误当成部门主键）
+/// 3. 推导失败则跳过该 insert（避免写入错误 setter）
+///
 /// 幂等：文件已含 IdUtil 则返回 None。
 pub fn inject_snowflake_to_source(content: &str) -> Option<String> {
     if content.contains("IdUtil") {
         return None;
     }
-    // 匹配：public int insertXxx(Xxx xxx) {
-    // group1 = 整个方法签名+{
-    // group2 = 参数变量名（xxx）
+    // group1 = 签名+{；group2 = 方法名；group3 = 参数类型；group4 = 参数变量名
     let re = regex::Regex::new(
-        r"(public\s+int\s+insert\w+\(\s*\w+\s+(\w+)\s*\)\s*\{)",
+        r"(public\s+int\s+(insert\w+)\(\s*(\w+)\s+(\w+)\s*\)\s*\{)",
     )
     .ok()?;
     if !re.is_match(content) {
         return None;
     }
-    let new_content = re.replace_all(content, |caps: &regex::Captures| {
-        let sig = &caps[1];
-        let var = &caps[2];
-        format!("{sig}\n        {var}.setId(cn.hutool.core.util.IdUtil.getSnowflakeNextId());")
-    }).to_string();
-    Some(new_content)
+    let mut any = false;
+    let new_content = re
+        .replace_all(content, |caps: &regex::Captures| {
+            let sig = &caps[1];
+            let method = &caps[2];
+            let type_name = &caps[3];
+            let var = &caps[4];
+            if !is_primary_insert(method, type_name) {
+                return sig.to_string();
+            }
+            match resolve_pk_setter_for_entity(content, type_name) {
+                Some(pk_setter) => {
+                    any = true;
+                    format!(
+                        "{sig}\n        {var}.{pk_setter}(cn.hutool.core.util.IdUtil.getSnowflakeNextId());"
+                    )
+                }
+                None => sig.to_string(),
+            }
+        })
+        .to_string();
+    if any {
+        Some(new_content)
+    } else {
+        None
+    }
+}
+
+/// 判断是否为「主实体新增」方法（需写雪花主键），排除 insertRoleMenu / insertUserPost 等关联插入。
+fn is_primary_insert(method: &str, type_name: &str) -> bool {
+    let short = type_name.strip_prefix("Sys").unwrap_or(type_name);
+    method == format!("insert{type_name}") || method == format!("insert{short}")
+}
+
+/// 按实体类型推导主键 setter。
+///
+/// 优先顺序（避免误用 ByRoleId / ByUserId 等关联查询参数）：
+/// 1. `select{Entity|Short}ById(Long field)` —— 若依标准按主键查询
+/// 2. `public {Entity} selectXxx(Long field)` —— 返回实体本身的单 Long 参数查询
+fn resolve_pk_setter_for_entity(content: &str, type_name: &str) -> Option<String> {
+    let short = type_name.strip_prefix("Sys").unwrap_or(type_name);
+
+    // 1) selectDeptById / selectSysDeptById / selectDictDataById
+    let re_by_id = regex::Regex::new(&format!(
+        r"select(?:{type_name}|{short})ById\(\s*Long\s+(\w+)\s*\)"
+    ))
+    .ok()?;
+    if let Some(caps) = re_by_id.captures(content) {
+        return Some(field_to_setter(&caps[1]));
+    }
+
+    // 2) 返回类型就是该实体：public SysDept selectXxx(Long field)
+    let re_ret = regex::Regex::new(&format!(
+        r"public\s+{type_name}\s+select\w+\(\s*Long\s+(\w+)\s*\)"
+    ))
+    .ok()?;
+    if let Some(caps) = re_ret.captures(content) {
+        return Some(field_to_setter(&caps[1]));
+    }
+
+    None
+}
+
+fn field_to_setter(field: &str) -> String {
+    format!("set{}", capitalize_first(field))
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
 }
 
 /// 把 domain 模板/源码里 Long 主键的 @TableId 标记为 IdType.INPUT。
@@ -165,13 +240,8 @@ pub fn mark_domain_idtype_input(content: &str) -> Option<String> {
     if content.contains("IdType.INPUT") {
         return None;
     }
-    // 分两种情况：
-    // 1) 已有 @TableId（MP 已加）→ 改为 @TableId(type = IdType.INPUT)
-    // 2) 仅有 @TableId(type = ...) 其他类型 → 替换为 INPUT
-    // 同时确保 import 了 IdType
     let mut out = content.to_string();
     let changed;
-    // 情况：@TableId(type = ASSIGN_ID/xxx) 或 @TableId(type=AUTO)
     let re_typed = regex::Regex::new(r"@TableId\s*\(\s*type\s*=\s*\w+(\.\w+)?\s*\)").ok()?;
     if re_typed.is_match(&out) {
         out = re_typed
@@ -179,7 +249,6 @@ pub fn mark_domain_idtype_input(content: &str) -> Option<String> {
             .to_string();
         changed = true;
     } else if out.contains("@TableId") {
-        // 裸 @TableId（无 type）→ 改为带 type
         out = out.replace("@TableId\n", "@TableId(type = IdType.INPUT)\n");
         changed = true;
     } else {
@@ -188,9 +257,7 @@ pub fn mark_domain_idtype_input(content: &str) -> Option<String> {
     if !changed {
         return None;
     }
-    // 补 IdType import（若缺）
     if !out.contains("import com.baomidou.mybatisplus.annotation.IdType;") {
-        // 在首个 import 前插入
         if let Some(idx) = out.find("import ") {
             let mut s = String::with_capacity(out.len() + 64);
             s.push_str(&out[..idx]);
@@ -207,21 +274,28 @@ pub fn mark_domain_idtype_input(content: &str) -> Option<String> {
 /// 模块优先级排序：common > framework > admin > 其余
 fn prioritize_modules(modules: &[String]) -> Vec<String> {
     let mut sorted: Vec<String> = modules.to_vec();
-    sorted.sort_by_key(|m| match m.as_str() {
-        m if m.ends_with("-common") => 0,
-        m if m.ends_with("-framework") => 1,
-        m if m.ends_with("-admin") => 2,
-        _ => 3,
+    sorted.sort_by_key(|m| {
+        if m.contains("common") {
+            0
+        } else if m.contains("framework") {
+            1
+        } else if m.contains("admin") {
+            2
+        } else {
+            3
+        }
     });
     sorted
 }
 
-/// 检查任一 pom 是否已含某关键字
-fn any_pom_has(root: &Path, modules: &[String], marker: &str) -> bool {
+fn any_pom_has(root: &Path, modules: &[String], needle: &str) -> bool {
+    let mut paths = vec![root.join("pom.xml")];
     for m in modules {
-        let pom = root.join(m).join("pom.xml");
-        if let Ok(c) = std::fs::read_to_string(&pom) {
-            if c.contains(marker) {
+        paths.push(root.join(m).join("pom.xml"));
+    }
+    for p in paths {
+        if let Ok(c) = std::fs::read_to_string(p) {
+            if c.contains(needle) {
                 return true;
             }
         }
@@ -233,25 +307,22 @@ fn any_pom_has(root: &Path, modules: &[String], marker: &str) -> bool {
 mod tests {
     use super::*;
 
-    // ---------- 模板注入 ----------
+    // ---------- VM 注入 ----------
 
     #[test]
-    fn vm_inject_adds_setid_into_insert_body() {
+    fn vm_inject_uses_pk_column_setter() {
         let vm = "package ${packageName}.service.impl;\npublic class ${ClassName}ServiceImpl {\n    public int insert${ClassName}(${ClassName} ${className}) {\n        ${className}.setCreateTime(new Date());\n        return ${className}Mapper.insert${ClassName}(${className});\n    }\n}\n";
         let out = inject_snowflake_to_service_impl_vm(vm).unwrap();
-        assert!(out.contains("${className}.setId(cn.hutool.core.util.IdUtil.getSnowflakeNextId());"));
-        // 注入位置：在 { 之后、setCreateTime 之前
-        let idx_brace = out.find("insert${ClassName}(${ClassName} ${className}) {").unwrap()
-            + "insert${ClassName}(${ClassName} ${className}) {".len();
-        let idx_setid = out.find("setId").unwrap();
-        assert!(idx_setid > idx_brace, "setId 应在 insert 方法体 {{ 之后");
+        assert!(out.contains(
+            "${className}.set${pkColumn.capJavaField}(cn.hutool.core.util.IdUtil.getSnowflakeNextId());"
+        ));
+        assert!(!out.contains(".setId("), "不应再使用通用 setId");
     }
 
     #[test]
     fn vm_inject_is_idempotent() {
         let vm = "public int insert${ClassName}(${ClassName} ${className}) {\n}\n";
         let once = inject_snowflake_to_service_impl_vm(vm).unwrap();
-        // 已含 IdUtil → 第二次返回 None
         assert!(inject_snowflake_to_service_impl_vm(&once).is_none());
     }
 
@@ -264,33 +335,120 @@ mod tests {
     // ---------- 源码注入 ----------
 
     #[test]
-    fn source_inject_extracts_param_var_and_injects() {
-        let src = "public class SysUserServiceImpl {\n    public int insertSysUser(SysUser user) {\n        user.setCreateTime(new Date());\n        return userMapper.insertSysUser(user);\n    }\n}\n";
+    fn source_inject_uses_real_pk_setter() {
+        let src = r#"
+public class SysUserServiceImpl {
+    public SysUser selectUserById(Long userId) { return null; }
+    public int insertUser(SysUser user) {
+        user.setCreateTime(new Date());
+        return userMapper.insertUser(user);
+    }
+}
+"#;
         let out = inject_snowflake_to_source(src).unwrap();
-        // 变量名 user 应被正确提取并用于 setId
-        assert!(out.contains("user.setId(cn.hutool.core.util.IdUtil.getSnowflakeNextId());"));
-        assert!(!out.contains("xxx.setId"), "不应硬编码变量名");
+        assert!(out.contains("user.setUserId(cn.hutool.core.util.IdUtil.getSnowflakeNextId());"));
+        assert!(!out.contains("user.setId("));
     }
 
     #[test]
-    fn source_inject_handles_different_param_name() {
-        let src = "public int insertOrder(Order orderEntity) {\n    return orderMapper.insertOrder(orderEntity);\n}\n";
+    fn source_inject_prefers_by_id_over_association_select() {
+        // selectDeptListByRoleId 排在 selectDeptById 前面时，仍应取 deptId
+        let src = r#"
+public class SysDeptServiceImpl {
+    public List<Long> selectDeptListByRoleId(Long roleId) { return null; }
+    public SysDept selectDeptById(Long deptId) { return null; }
+    public int insertDept(SysDept dept) {
+        return deptMapper.insertDept(dept);
+    }
+}
+"#;
         let out = inject_snowflake_to_source(src).unwrap();
-        assert!(out.contains("orderEntity.setId(cn.hutool.core.util.IdUtil.getSnowflakeNextId());"));
+        assert!(out.contains("dept.setDeptId("));
+        assert!(!out.contains("dept.setRoleId("));
+    }
+
+    #[test]
+    fn source_inject_menu_ignores_user_id_selects() {
+        let src = r#"
+public class SysMenuServiceImpl {
+    public List<SysMenu> selectMenuList(Long userId) { return null; }
+    public SysMenu selectMenuById(Long menuId) { return null; }
+    public int insertMenu(SysMenu menu) {
+        return menuMapper.insertMenu(menu);
+    }
+}
+"#;
+        let out = inject_snowflake_to_source(src).unwrap();
+        assert!(out.contains("menu.setMenuId("));
+        assert!(!out.contains("menu.setUserId("));
+    }
+
+    #[test]
+    fn source_inject_skips_association_inserts() {
+        let src = r#"
+public class SysRoleServiceImpl {
+    public List<SysRole> selectRolesByUserId(Long userId) { return null; }
+    public SysRole selectRoleById(Long roleId) { return null; }
+    public int insertRole(SysRole role) {
+        return roleMapper.insertRole(role);
+    }
+    public int insertRoleMenu(SysRole role) {
+        return 1;
+    }
+}
+"#;
+        let out = inject_snowflake_to_source(src).unwrap();
+        assert!(out.contains("role.setRoleId("));
+        assert!(!out.contains("role.setUserId("));
+        let after_menu = out.split("insertRoleMenu").nth(1).unwrap_or("");
+        assert!(
+            !after_menu.contains("IdUtil"),
+            "关联 insert 不应注入雪花: {after_menu}"
+        );
+    }
+
+    #[test]
+    fn source_inject_handles_config_id() {
+        let src = r#"
+public class SysConfigServiceImpl {
+    public SysConfig selectConfigById(Long configId) { return null; }
+    public int insertConfig(SysConfig config) {
+        return configMapper.insertConfig(config);
+    }
+}
+"#;
+        let out = inject_snowflake_to_source(src).unwrap();
+        assert!(out.contains("config.setConfigId("));
     }
 
     #[test]
     fn source_inject_is_idempotent() {
-        let src = "public int insertSysUser(SysUser user) {\n    return userMapper.insertSysUser(user);\n}\n";
+        let src = r#"
+public class SysUserServiceImpl {
+    public SysUser selectUserById(Long userId) { return null; }
+    public int insertUser(SysUser user) {
+        return userMapper.insertUser(user);
+    }
+}
+"#;
         let once = inject_snowflake_to_source(src).unwrap();
-        // 已含 IdUtil → 第二次返回 None
         assert!(inject_snowflake_to_source(&once).is_none());
     }
 
     #[test]
-    fn source_inject_skips_when_no_insert_method() {
-        let src = "public class SysUserServiceImpl {\n    public List<SysUser> selectList() { return null; }\n}\n";
+    fn source_inject_skips_when_no_pk_hint() {
+        // 没有 selectXxxById / 返回实体的 select(Long) 时无法安全推导
+        let src = "public int insertOrder(Order orderEntity) {\n    return orderMapper.insertOrder(orderEntity);\n}\n";
         assert!(inject_snowflake_to_source(src).is_none());
+    }
+
+    #[test]
+    fn is_primary_insert_rules() {
+        assert!(is_primary_insert("insertRole", "SysRole"));
+        assert!(is_primary_insert("insertSysRole", "SysRole"));
+        assert!(is_primary_insert("insertUser", "SysUser"));
+        assert!(!is_primary_insert("insertRoleMenu", "SysRole"));
+        assert!(!is_primary_insert("insertUserPost", "SysUser"));
     }
 
     // ---------- domain IdType.INPUT ----------
@@ -329,16 +487,11 @@ mod tests {
             "<project>\n  <dependencies>\n  </dependencies>\n</project>",
         )
         .unwrap();
-        let modules = vec!["demo-common".to_string()];
-
-        let first = add_hutool_dependency(tmp.path(), &modules, &|_| {}).unwrap();
-        assert!(first, "首次应添加");
-        let content = std::fs::read_to_string(common.join("pom.xml")).unwrap();
-        assert!(content.contains("<artifactId>hutool-all</artifactId>"));
-        assert!(content.contains("cn.hutool"));
-
-        // 幂等：第二次应跳过
-        let second = add_hutool_dependency(tmp.path(), &modules, &|_| {}).unwrap();
-        assert!(!second, "已存在 hutool 应跳过");
+        let modules = vec!["demo-common".into()];
+        let log = |_m: &str| {};
+        assert!(add_hutool_dependency(tmp.path(), &modules, &log).unwrap());
+        let pom = std::fs::read_to_string(common.join("pom.xml")).unwrap();
+        assert!(pom.contains("hutool-all"));
+        assert!(!add_hutool_dependency(tmp.path(), &modules, &log).unwrap());
     }
 }

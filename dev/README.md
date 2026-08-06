@@ -16,6 +16,19 @@ dev/
 
 > 说明：`vben-ui` 与 `ruoyi-backend` 均克隆自上游，已删除各自 `.git`，作为本仓库普通目录管理。
 
+## 目录约定
+
+| 路径 | 用途 |
+|------|------|
+| `dev/vben-ui/` | **适配开发区**：本地联调改页面、对接若依接口，不直接作为改造产物 |
+| `src-tauri/templates/ruoyi-vue/ui/vben-web-ele/` | **工具内置模板**：锻造台执行「替换后台 UI」时从此复制到 `{prefix}-ui/` |
+
+适配完成后（或大改后）在仓库根目录快照：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/snapshot-vben-ui.ps1
+```
+
 ## 启动步骤
 
 ### 1. 准备数据库（仅首次）
@@ -73,3 +86,15 @@ cd dev && ./run-ui.sh       # 或 Windows 双击 run-ui.bat
 - [x] 个人中心页（/user/profile：基本资料/修改密码/头像上传，隐藏路由）
 - [ ] 联调验证（需真实后端 + 数据库）
 - [ ] UI 细节打磨（边看边调）
+- [x] 快照脚本：`scripts/snapshot-vben-ui.ps1` → `src-tauri/templates/ruoyi-vue/ui/vben-web-ele/`
+- [x] 占位符：标题 / 开发代理 / 版权（由锻造台 replace_ui 写入）
+
+## 快照到工具模板
+
+适配完成后（或每次大改前端后），在仓库根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/snapshot-vben-ui.ps1
+```
+
+会排除 `node_modules` 等目录，并把本地联调值替换为 `{{FRONTEND_TITLE}}` 等占位符。

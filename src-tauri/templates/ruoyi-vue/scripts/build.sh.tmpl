@@ -7,6 +7,7 @@
 #     └── dist/                         前端构建产物（交由 Nginx 托管）
 #
 # 用法：./build.sh
+# 前端自动识别：vben monorepo 用 pnpm build:ele，产物在 apps/web-ele/dist
 
 set -e
 
@@ -20,6 +21,7 @@ export LC_ALL=en_US.UTF-8
 export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8"
 
 FRONTEND_DIR="{{MODULE_PREFIX}}-ui"
+FRONTEND_DIST=""
 
 # ========== 1. 后端打包 ==========
 echo "========== Maven package =========="
@@ -31,12 +33,26 @@ if [ ! -d "$FRONTEND_DIR" ]; then
   echo "⚠️  未找到前端目录 $FRONTEND_DIR，跳过前端构建"
 else
   cd "$FRONTEND_DIR"
-  # 首次构建需安装依赖
-  if [ ! -d "node_modules" ]; then
-    echo "---------- npm install ----------"
-    npm install
+  if [ -f "pnpm-workspace.yaml" ]; then
+    if ! command -v pnpm >/dev/null 2>&1; then
+      echo "❌ 未找到 pnpm，请先安装：npm install -g pnpm"
+      exit 1
+    fi
+    if [ ! -d "node_modules" ]; then
+      echo "---------- pnpm install ----------"
+      pnpm install
+    fi
+    echo "---------- pnpm run build:ele ----------"
+    pnpm run build:ele
+    FRONTEND_DIST="$APP_HOME/$FRONTEND_DIR/apps/web-ele/dist"
+  else
+    if [ ! -d "node_modules" ]; then
+      echo "---------- npm install ----------"
+      npm install
+    fi
+    npm run build:prod
+    FRONTEND_DIST="$APP_HOME/$FRONTEND_DIR/dist"
   fi
-  npm run build:prod
   cd "$APP_HOME"
 fi
 
@@ -53,13 +69,20 @@ fi
 cp "$JAR_PATH" build/
 echo "✅ 已复制后端 jar：build/$(basename "$JAR_PATH")"
 
-# 前端 dist
-if [ -d "$FRONTEND_DIR/dist" ]; then
+# 前端 dist（兼容传统 ruoyi-ui 与 vben monorepo）
+if [ -z "$FRONTEND_DIST" ]; then
+  if [ -d "$FRONTEND_DIR/apps/web-ele/dist" ]; then
+    FRONTEND_DIST="$FRONTEND_DIR/apps/web-ele/dist"
+  elif [ -d "$FRONTEND_DIR/dist" ]; then
+    FRONTEND_DIST="$FRONTEND_DIR/dist"
+  fi
+fi
+if [ -n "$FRONTEND_DIST" ] && [ -d "$FRONTEND_DIST" ]; then
   rm -rf build/dist
-  cp -r "$FRONTEND_DIR/dist" build/dist
+  cp -r "$FRONTEND_DIST" build/dist
   echo "✅ 已复制前端产物：build/dist"
 else
-  echo "⚠️  未找到 $FRONTEND_DIR/dist，跳过前端产物汇总"
+  echo "⚠️  未找到前端 dist，跳过前端产物汇总"
 fi
 
 echo ""

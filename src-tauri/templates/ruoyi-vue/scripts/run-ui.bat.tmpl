@@ -2,6 +2,7 @@
 chcp 65001 >nul
 REM {{PROJECT_NAME}} 前端开发脚本（依赖安装 + 启动），由若依锻造台自动生成
 REM 用法：双击或 run-ui.bat
+REM 自动识别：若为 vben monorepo（存在 pnpm-workspace.yaml）则用 pnpm；否则 npm。
 
 REM 切到脚本所在目录（项目根）
 cd /d "%~dp0"
@@ -18,7 +19,29 @@ if not exist "%FRONTEND_DIR%" (
 
 cd /d "%FRONTEND_DIR%"
 
-REM 首次启动需安装依赖
+REM ---------- Vben Admin（pnpm monorepo）----------
+if exist "pnpm-workspace.yaml" (
+    where pnpm.cmd >nul 2>nul
+    if errorlevel 1 (
+        echo [ERROR] 未找到 pnpm，请先安装：npm install -g pnpm
+        pause
+        exit /b 1
+    )
+    if not exist "node_modules" (
+        echo ---------- pnpm install ----------
+        call pnpm.cmd install
+        if errorlevel 1 (
+            echo [ERROR] pnpm install failed!
+            pause
+            exit /b 1
+        )
+    )
+    echo ---------- pnpm run dev:ele ----------
+    call pnpm.cmd run dev:ele
+    goto :eof
+)
+
+REM ---------- 传统 ruoyi-ui（npm）----------
 if not exist "node_modules" (
     echo ---------- npm install ----------
     call npm install

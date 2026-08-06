@@ -22,7 +22,7 @@ import { pickSaveDirectory, pickSaveJsonFile, pickOpenJsonFile } from '@/api/dia
 import { saveConfigJson, loadConfigJson } from '@/api'
 import type { CustomizeParams } from '@/types'
 import { FEATURE_PRESETS, type Preset } from '@/constants/presets'
-import { isFeatureDisabled, DISABLED_FEATURES, UI_TEMPLATES, getUiTemplateMeta } from '@/constants/template-capabilities'
+import { isFeatureDisabled, DISABLED_FEATURES, UI_TEMPLATES, getUiTemplateMeta, normalizeUiTemplateKey, DEFAULT_UI_TEMPLATE_KEY } from '@/constants/template-capabilities'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { useUiPrefs } from '@/composables/useUiPrefs'
 
@@ -49,10 +49,13 @@ function isDisabled(feature: keyof CustomizeParams): boolean {
  */
 function sanitizeDisabledFeatures() {
   const disabled = DISABLED_FEATURES[templateDir.value]
-  if (!disabled) return
-  for (const key of disabled) {
-    ;(form[key] as unknown as boolean) = false
+  if (disabled) {
+    for (const key of disabled) {
+      ;(form[key] as unknown as boolean) = false
+    }
   }
+  // 纠正无效/空的 UI 模板 key，避免界面显示「未知」
+  form.ui_template = normalizeUiTemplateKey(form.ui_template)
 }
 
 // UI 偏好：折叠状态 + 当前预设（localStorage 持久化）
@@ -149,10 +152,12 @@ const defaults = (): CustomizeParams => ({
   enable_startup_scripts: false,
   // 替换后台 UI
   enable_replace_ui: false,
-  ui_template: 'vben-web-ele'
+  ui_template: DEFAULT_UI_TEMPLATE_KEY
 })
 
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
+// 历史配置可能缺 ui_template 或值已失效，统一纠正，避免开关旁显示「未知」
+form.ui_template = normalizeUiTemplateKey(form.ui_template)
 
 // 识别结果变化时重置原值
 watch(
@@ -190,8 +195,8 @@ const errors = computed(() => {
   if (!form.output_dir) {
     e.output_dir = '请选择输出目录'
   }
-  // 部署相关校验（仅当启用 Nginx 或脚本时）
-  if (form.enable_nginx_config || form.enable_startup_scripts) {
+  // 部署相关校验（启用 Nginx / 启动脚本 / 替换后台 UI 时都需要合法端口）
+  if (form.enable_nginx_config || form.enable_startup_scripts || form.enable_replace_ui) {
     if (!form.server_port || form.server_port < 1 || form.server_port > 65535) {
       e.server_port = '端口须在 1-65535 之间'
     }
@@ -235,24 +240,25 @@ const sectionCounts = computed(() => ({
   replaceUi: countTrue([form.enable_replace_ui])
 }))
 
-// ===== 替换后台 UI：预览轮播 =====
-const uiPreviewIndex = ref(0)
-/** 当前选中模板的截图列表 */
-const uiTemplateScreenshots = computed(() => getUiTemplateMeta(form.ui_template).screenshots)
-/** 切换模板时重置轮播到首张 */
-watch(() => form.ui_template, () => { uiPreviewIndex.value = 0 })
-/** 上一张 / 下一张（循环） */
-function uiPreviewPrev() {
-  const n = uiTemplateScreenshots.value.length
-  if (n > 0) uiPreviewIndex.value = (uiPreviewIndex.value - 1 + n) % n
-}
-function uiPreviewNext() {
-  const n = uiTemplateScreenshots.value.length
-  if (n > 0) uiPreviewIndex.value = (uiPreviewIndex.value + 1) % n
+// ===== 替换后台 UI：卡片选型 =====
+/** 当前选中模板元信息 */
+const selectedUiMeta = computed(() => getUiTemplateMeta(form.ui_template))
+/** 开启替换 UI 时校正模板 key，避免历史空值显示「未知」 */
+watch(
+  () => form.enable_replace_ui,
+  (on) => {
+    if (on) form.ui_template = normalizeUiTemplateKey(form.ui_template)
+  }
+)
+/** 点击卡片选中模板 */
+function selectUiTemplate(key: string) {
+  form.ui_template = key
+  form.enable_replace_ui = true
+  onSwitchChange()
 }
 /** 打开当前模板的官方在线 Demo */
 async function openUiDemo() {
-  const url = getUiTemplateMeta(form.ui_template).demoUrl
+  const url = selectedUiMeta.value.demoUrl
   if (!url) return
   try {
     await openUrl(url)
@@ -630,17 +636,51 @@ function generateRandomSecret(): string {
                   <template v-else>含请求封装、登录框架、环境配置</template>
                 </div>
               </div>
-              <div v-if="!isDisabled('enable_replace_ui')" class="switch-item">
+              <div v-if="!isDisabled('enable_replace_ui')" class="switch-item switch-item--wide">
                 <div class="switch-item__head">
                   <span class="switch-item__label">替换后台 UI</span>
                   <el-switch v-model="form.enable_replace_ui" @change="onSwitchChange" />
                 </div>
                 <div class="switch-item__hint muted">
                   <template v-if="form.enable_replace_ui">
-                    将使用模板：{{ getUiTemplateMeta(form.ui_template).label }}，生成到
+                    已选：{{ selectedUiMeta.label }} → 生成到
                     {{ form.new_module_prefix ? `${form.new_module_prefix}-ui` : '请先填写新模块前缀' }}
+                    （将删除原 ruoyi-ui）
                   </template>
-                  <template v-else>用现代开源后台（如 Vben Admin）替换若依原 ruoyi-ui，含完整系统管理页面</template>
+                  <template v-else>
+                    用现代开源后台替换若依原 ruoyi-ui；开启后点选下方卡片预览并选型（支持多模板扩展）
+                  </template>
+                </div>
+
+                <!-- 开启后：卡片选型（紧挨开关，避免滚到页面底部才看见） -->
+                <div v-if="form.enable_replace_ui" class="ui-picker">
+                  <div class="ui-cards">
+                    <button
+                      v-for="t in UI_TEMPLATES"
+                      :key="t.key"
+                      type="button"
+                      class="ui-card"
+                      :class="{ 'ui-card--active': form.ui_template === t.key }"
+                      @click="selectUiTemplate(t.key)"
+                    >
+                      <div class="ui-card__cover">
+                        <img :src="`/${t.cover}`" :alt="t.label" @error="(e: Event) => ((e.target as HTMLImageElement).style.opacity = '0.25')" />
+                        <span v-if="form.ui_template === t.key" class="ui-card__badge">已选</span>
+                      </div>
+                      <div class="ui-card__body">
+                        <div class="ui-card__title">{{ t.label }}</div>
+                        <div class="ui-card__stack">{{ t.stack }}</div>
+                        <div class="ui-card__desc">{{ t.desc }}</div>
+                      </div>
+                    </button>
+                  </div>
+
+                  <div class="ui-sync muted">
+                    <div>标题 / 版权 / 后端端口会写入所选模板。</div>
+                    <el-button size="small" type="primary" plain @click="openUiDemo">
+                      <el-icon><Link /></el-icon>&nbsp;在线 Demo
+                    </el-button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -955,69 +995,6 @@ function generateRandomSecret(): string {
               </div>
             </template>
           </el-collapse-item>
-
-          <!-- 后台 UI 模板（仅开启「替换后台 UI」时显示） -->
-          <el-collapse-item v-if="form.enable_replace_ui" :name="SECTION.replaceUi">
-            <template #title>
-              <span class="section-title">后台 UI 模板</span>
-              <el-badge v-if="sectionCounts.replaceUi > 0" value="已启用" class="section-badge" type="primary" />
-            </template>
-            <div class="ui-panel">
-              <el-form-item label="后台模板">
-                <el-select v-model="form.ui_template" placeholder="选择后台 UI 模板" style="width: 100%">
-                  <el-option
-                    v-for="t in UI_TEMPLATES"
-                    :key="t.key"
-                    :label="t.label"
-                    :value="t.key"
-                  >
-                    <span style="float: left">{{ t.label }}</span>
-                    <span class="muted" style="float: right; font-size: 12px">{{ t.stack }}</span>
-                  </el-option>
-                </el-select>
-              </el-form-item>
-
-              <!-- 当前模板说明 -->
-              <div class="ui-desc">
-                <div class="ui-desc__title">{{ getUiTemplateMeta(form.ui_template).label }}</div>
-                <div class="ui-desc__stack muted">{{ getUiTemplateMeta(form.ui_template).stack }}</div>
-                <div class="ui-desc__text">{{ getUiTemplateMeta(form.ui_template).desc }}</div>
-                <div class="ui-desc__hint muted">
-                  将在执行时复制完整工程到
-                  <code>{{ form.new_module_prefix || '前缀' }}-ui/</code>，生成后需
-                  <code>pnpm install</code> 后 <code>pnpm dev</code> 运行。
-                </div>
-              </div>
-
-              <!-- 截图预览轮播 -->
-              <div class="ui-preview" v-if="uiTemplateScreenshots.length > 0">
-                <div class="ui-preview__stage">
-                  <img
-                    :src="`/${uiTemplateScreenshots[uiPreviewIndex]}`"
-                    :alt="`预览 ${uiPreviewIndex + 1}`"
-                    class="ui-preview__img"
-                    @error="(e: Event) => ((e.target as HTMLImageElement).style.opacity = '0.3')"
-                  />
-                  <span v-if="uiTemplateScreenshots.length > 1" class="ui-preview__counter">
-                    {{ uiPreviewIndex + 1 }} / {{ uiTemplateScreenshots.length }}
-                  </span>
-                </div>
-                <div class="ui-preview__bar" v-if="uiTemplateScreenshots.length > 1">
-                  <el-button size="small" @click="uiPreviewPrev">上一张</el-button>
-                  <el-button size="small" @click="uiPreviewNext">下一张</el-button>
-                  <el-button size="small" type="primary" plain @click="openUiDemo">
-                    <el-icon><Link /></el-icon>&nbsp;查看在线 Demo
-                  </el-button>
-                </div>
-              </div>
-              <div v-else class="ui-preview-empty muted">
-                暂无预览截图
-                <el-button size="small" type="primary" plain @click="openUiDemo" style="margin-left: 8px">
-                  查看在线 Demo
-                </el-button>
-              </div>
-            </div>
-          </el-collapse-item>
         </el-collapse>
       </el-form>
 
@@ -1198,6 +1175,10 @@ function generateRandomSecret(): string {
   font-size: 12px;
   line-height: 1.5;
 }
+/* 替换后台 UI：占满两列，下面挂卡片选型 */
+.switch-item--wide {
+  grid-column: 1 / -1;
+}
 
 /* 详情面板：分区开关开启后展开的嵌套表单 */
 .detail-panel {
@@ -1215,7 +1196,6 @@ function generateRandomSecret(): string {
 .detail-grid .el-form-item {
   margin-bottom: 14px;
 }
-/* 详情面板内单独占满一行的项 */
 .detail-panel .pay-mode-row {
   margin-bottom: 14px;
 }
@@ -1232,90 +1212,92 @@ function generateRandomSecret(): string {
   font-size: 12px;
 }
 
-/* ===== 后台 UI 模板面板 ===== */
-.ui-panel {
+/* ===== 后台 UI 卡片选型 + 预览 ===== */
+.ui-picker {
+  margin-top: 10px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
-.ui-desc {
-  padding: 12px 14px;
-  background: #f7f8fa;
-  border: 1px solid #eef1f5;
-  border-radius: 6px;
+.ui-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
 }
-.ui-desc__title {
-  font-weight: 600;
+.ui-card {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 0;
+  border: 2px solid #e4e7ed;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  overflow: hidden;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.ui-card:hover {
+  border-color: #a0cfff;
+}
+.ui-card--active {
+  border-color: var(--el-color-primary);
+  box-shadow: 0 0 0 1px var(--el-color-primary-light-5);
+}
+.ui-card__cover {
+  position: relative;
+  height: 132px;
+  background: #eef1f6;
+  overflow: hidden;
+}
+.ui-card__cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.ui-card__badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--el-color-primary);
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.ui-card__body {
+  padding: 10px 12px 12px;
+}
+.ui-card__title {
   font-size: 14px;
+  font-weight: 600;
   color: #303133;
 }
-.ui-desc__stack {
-  font-size: 12px;
+.ui-card__stack {
   margin-top: 2px;
+  font-size: 11px;
+  color: #909399;
 }
-.ui-desc__text {
-  font-size: 13px;
-  line-height: 1.6;
-  margin-top: 8px;
+.ui-card__desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
   color: #606266;
-}
-.ui-desc__hint {
-  font-size: 12px;
-  line-height: 1.6;
-  margin-top: 8px;
-}
-.ui-desc code {
-  padding: 1px 5px;
-  background: #ecf0f5;
-  border-radius: 3px;
-  font-size: 12px;
-  color: #c7254e;
-}
-.ui-preview {
-  margin-top: 4px;
-}
-.ui-preview__stage {
-  position: relative;
-  width: 100%;
-  height: 360px;
-  background: #f0f2f5;
-  border: 1px solid #e4e7ed;
-  border-radius: 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.ui-sync {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-}
-.ui-preview__img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-  transition: opacity 0.2s;
-}
-.ui-preview__counter {
-  position: absolute;
-  right: 10px;
-  bottom: 8px;
-  padding: 2px 8px;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
+  justify-content: space-between;
+  gap: 8px 16px;
   font-size: 12px;
-  border-radius: 10px;
-}
-.ui-preview__bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 10px;
-}
-.ui-preview-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 120px;
-  background: #f7f8fa;
-  border: 1px dashed #dcdfe6;
-  border-radius: 6px;
-  font-size: 13px;
+  line-height: 1.5;
 }
 </style>

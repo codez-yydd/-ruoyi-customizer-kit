@@ -1,0 +1,29 @@
+.ruoyi-page {
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  height: 100%;
+  gap: 12px;
+}
+
+.search-form {
+  background: var(--el-bg-color);
+  padding: 12px 12px 0;
+  border-radius: 4px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 0;
+}
+
+/* 弹窗表单紧凑 */
+.el-form-item {
+  margin-bottom: 18px;
+}

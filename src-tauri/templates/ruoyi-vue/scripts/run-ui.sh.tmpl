@@ -1,6 +1,7 @@
 #!/bin/bash
 # {{PROJECT_NAME}} 前端开发脚本（依赖安装 + 启动），由若依锻造台自动生成
 # 用法：./run-ui.sh
+# 自动识别：若为 vben monorepo（存在 pnpm-workspace.yaml）则用 pnpm；否则 npm。
 
 # 项目根目录（脚本所在目录）
 APP_HOME="$(cd "$(dirname "$0")" && pwd)"
@@ -17,7 +18,26 @@ fi
 
 cd "$FRONTEND_DIR"
 
-# 首次启动需安装依赖
+# ---------- Vben Admin（pnpm monorepo）----------
+if [ -f "pnpm-workspace.yaml" ]; then
+    if ! command -v pnpm >/dev/null 2>&1; then
+        echo "❌ 未找到 pnpm，请先安装：npm install -g pnpm"
+        exit 1
+    fi
+    if [ ! -d "node_modules" ]; then
+        echo "---------- pnpm install ----------"
+        pnpm install
+        if [ $? -ne 0 ]; then
+            echo "pnpm install failed!"
+            exit 1
+        fi
+    fi
+    echo "---------- pnpm run dev:ele ----------"
+    pnpm run dev:ele
+    exit $?
+fi
+
+# ---------- 传统 ruoyi-ui（npm）----------
 if [ ! -d "node_modules" ]; then
     echo "---------- npm install ----------"
     npm install

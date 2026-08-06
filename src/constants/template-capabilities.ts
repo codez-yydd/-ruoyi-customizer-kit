@@ -72,8 +72,12 @@ export function isFeatureDisabled(
 // ===== 替换后台 UI 模板注册表 =====
 //
 // 「替换后台 UI」用预置的现代化前端工程（如 vben-web-ele）替换若依原 ruoyi-ui。
-// 每个模板对应 templates/ruoyi-vue/ui/{key} 目录，由后端 replace_ui.rs 复制到
-// output_dir/{new_module_prefix}-ui/。UI 侧据此渲染选择列表与预览。
+//
+// 目录约定：
+// - 工具运行时模板：src-tauri/templates/ruoyi-vue/ui/{key}/（打包进锻造台，replace_ui 从此复制）
+// - 适配开发区：dev/vben-ui/（仅本地联调适配，不直接给最终产物用；用 scripts/snapshot-vben-ui.ps1 快照进 templates）
+//
+// UI 侧用本注册表渲染卡片预览与选择。
 
 /** 单个后台 UI 模板的展示信息 */
 export interface UiTemplateMeta {
@@ -87,32 +91,45 @@ export interface UiTemplateMeta {
   desc: string
   /** 官方在线 Demo 链接（供「查看在线 Demo」按钮使用） */
   demoUrl: string
-  /** 预览截图（相对 docs/img/ 的路径），用于 ParamConfig 轮播预览 */
+  /** 卡片封面图（相对 public/），卡片列表用 */
+  cover: string
+  /** 预览截图（相对 public/），选中后轮播放大预览 */
   screenshots: string[]
 }
 
-/** 内置后台 UI 模板清单 */
+/** 内置后台 UI 模板清单（后续可继续追加，如 antd / naive 等变体） */
 export const UI_TEMPLATES: UiTemplateMeta[] = [
   {
     key: 'vben-web-ele',
     label: 'Vben Admin（Element Plus）',
     stack: 'Vue3 + Element Plus + Vite + Monorepo',
-    desc: '基于 vue-vben-admin 的 web-ele 版适配若依后端，组件库与若依 Vue3 版同源，现代化界面与交互体验',
-    demoUrl: 'https://vben.pro',
+    desc: '基于 vue-vben-admin 的 web-ele 版适配若依后端，组件库与若依 Vue3 版同源，含系统管理 / 监控 / 工具完整页面。',
+    demoUrl: 'https://www.vben.pro',
+    cover: 'img/ui-vben-01.png',
     screenshots: ['img/ui-vben-01.png', 'img/ui-vben-02.png', 'img/ui-vben-03.png']
   }
 ]
 
-const DEFAULT_UI_TEMPLATE: UiTemplateMeta = {
+/** 默认模板 key（开启替换 UI 且未选时回退） */
+export const DEFAULT_UI_TEMPLATE_KEY = 'vben-web-ele'
+
+const UNKNOWN_UI_TEMPLATE: UiTemplateMeta = {
   key: '',
   label: '未知',
   stack: '',
   desc: '',
   demoUrl: '',
+  cover: '',
   screenshots: []
 }
 
 /** 取后台 UI 模板元信息（未知 key 回退） */
 export function getUiTemplateMeta(key: string): UiTemplateMeta {
-  return UI_TEMPLATES.find((t) => t.key === key) ?? DEFAULT_UI_TEMPLATE
+  return UI_TEMPLATES.find((t) => t.key === key) ?? UNKNOWN_UI_TEMPLATE
+}
+
+/** 校验 key 是否为已注册模板；无效则返回默认 key */
+export function normalizeUiTemplateKey(key: string | undefined | null): string {
+  if (key && UI_TEMPLATES.some((t) => t.key === key)) return key
+  return DEFAULT_UI_TEMPLATE_KEY
 }

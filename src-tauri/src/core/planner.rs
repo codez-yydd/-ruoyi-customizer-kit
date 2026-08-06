@@ -119,36 +119,40 @@ pub fn plan(
     });
 
     // 5. 修改前端标题（含版权信息替换、顶部栏外链移除、首页清空）
-    let frontend_files = existing_frontend_files(root, &info.frontend_dirs);
-    let mut frontend_task_name = format!("修改前端标题 → {}", params.frontend_title);
-    let want_copyright = !params.copyright_year.is_empty() || !params.copyright_holder.is_empty();
-    if want_copyright {
-        frontend_task_name.push_str(&format!("，替换版权（{} {}）", params.copyright_year, params.copyright_holder));
+    // 开启「替换后台 UI」时，原 ruoyi-ui 会被删除并由模板占位符写入标题/端口/版权，
+    // 无需再对即将被替换的旧前端做字符串改造。
+    if !params.enable_replace_ui {
+        let frontend_files = existing_frontend_files(root, &info.frontend_dirs);
+        let mut frontend_task_name = format!("修改前端标题 → {}", params.frontend_title);
+        let want_copyright = !params.copyright_year.is_empty() || !params.copyright_holder.is_empty();
+        if want_copyright {
+            frontend_task_name.push_str(&format!("，替换版权（{} {}）", params.copyright_year, params.copyright_holder));
+        }
+        if params.enable_clear_home {
+            frontend_task_name.push_str("，清空首页");
+        }
+        let mut link_removed = vec![];
+        if params.enable_remove_github {
+            link_removed.push("github");
+        }
+        if params.enable_remove_docs {
+            link_removed.push("文档");
+        }
+        if !link_removed.is_empty() {
+            frontend_task_name.push_str(&format!("，移除顶部栏{}外链", link_removed.join("/")));
+        }
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: frontend_task_name,
+            task_type: TaskType::UpdateFrontendTitle,
+            risk_level: RiskLevel::Low,
+            affected_files: frontend_files,
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
     }
-    if params.enable_clear_home {
-        frontend_task_name.push_str("，清空首页");
-    }
-    let mut link_removed = vec![];
-    if params.enable_remove_github {
-        link_removed.push("github");
-    }
-    if params.enable_remove_docs {
-        link_removed.push("文档");
-    }
-    if !link_removed.is_empty() {
-        frontend_task_name.push_str(&format!("，移除顶部栏{}外链", link_removed.join("/")));
-    }
-    tasks.push(Task {
-        id: next_id(&tasks),
-        name: frontend_task_name,
-        task_type: TaskType::UpdateFrontendTitle,
-        risk_level: RiskLevel::Low,
-        affected_files: frontend_files,
-        affected_dirs: vec![],
-        created_files: vec![],
-        status: TaskStatus::Pending,
-        error_message: String::new(),
-    });
 
     // 6. 配置文件重构（可选）
     if params.enable_config_rewrite && !info.config_files.is_empty() {
@@ -368,20 +372,24 @@ pub fn plan(
         }
     }
 
-    // 13. 替换后台 UI（可选）：复制预置后台前端工程（如 vben-web-ele）到 output_dir
+    // 13. 替换后台 UI（可选）：删除原 {prefix}-ui，复制预置工程（如 vben-web-ele）
+    // 标题 / 端口 / 版权通过模板占位符写入，与参数配置页「前端品牌」「部署端口」联动。
     if params.enable_replace_ui {
         let ui_dir = format!("{}-ui", params.new_module_prefix);
         tasks.push(Task {
             id: next_id(&tasks),
             name: format!(
-                "生成替换后台 UI 工程：{}（模板 {}）",
+                "替换后台 UI：删除原 {} 并生成模板 {}（标题/端口/版权同步写入）",
                 ui_dir, params.ui_template
             ),
             task_type: TaskType::ReplaceUI,
-            risk_level: RiskLevel::Medium,
+            risk_level: RiskLevel::High,
             affected_files: vec![],
-            affected_dirs: vec![],
-            created_files: vec![format!("{}/package.json", ui_dir)],
+            affected_dirs: vec![ui_dir.clone()],
+            created_files: vec![
+                format!("{}/package.json", ui_dir),
+                format!("{}/apps/web-ele/.env", ui_dir),
+            ],
             status: TaskStatus::Pending,
             error_message: String::new(),
         });

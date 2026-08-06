@@ -52,6 +52,7 @@ export const FEATURE_PRESETS: Preset[] = [
       enable_frontend_split: false,
       enable_nginx_config: false,
       enable_startup_scripts: false,
+      enable_replace_ui: false,
       clean_demo_users: true,
       clean_quartz: false
     }
@@ -82,6 +83,7 @@ export const FEATURE_PRESETS: Preset[] = [
       enable_frontend_split: false,
       enable_nginx_config: false,
       enable_startup_scripts: false,
+      enable_replace_ui: false,
       clean_demo_users: false,
       clean_quartz: false
     }
@@ -112,6 +114,40 @@ export const FEATURE_PRESETS: Preset[] = [
       enable_frontend_split: false,
       enable_nginx_config: false,
       enable_startup_scripts: false,
+      enable_replace_ui: false,
+      clean_demo_users: true,
+      clean_quartz: false
+    }
+  },
+  {
+    key: 'modern-ui',
+    name: '现代后台 UI',
+    desc: '企业级标准 + Vben Admin（Element Plus）替换原 ruoyi-ui，标题/端口同步写入',
+    icon: '✨',
+    params: {
+      enable_mybatis_plus: true,
+      enable_config_rewrite: true,
+      enable_logback_rewrite: true,
+      enable_generator_mybatis_plus: true,
+      enable_long_id_json_string: true,
+      enable_snowflake_id: false,
+      enable_clear_home: false,
+      enable_remove_github: false,
+      enable_remove_docs: false,
+      enable_ai_rules: true,
+      enable_report: true,
+      enable_security: true,
+      enable_jwt: true,
+      enable_generator_config: true,
+      generator_vue3: true,
+      enable_sql_customize: true,
+      enable_oss: false,
+      enable_uniapp: false,
+      enable_frontend_split: false,
+      enable_nginx_config: false,
+      enable_startup_scripts: false,
+      enable_replace_ui: true,
+      ui_template: 'vben-web-ele',
       clean_demo_users: true,
       clean_quartz: false
     }
@@ -142,6 +178,7 @@ export const FEATURE_PRESETS: Preset[] = [
       enable_frontend_split: true,
       enable_nginx_config: true,
       enable_startup_scripts: true,
+      enable_replace_ui: false,
       clean_demo_users: true,
       clean_quartz: false
     }

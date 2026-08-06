@@ -9,12 +9,14 @@ REM     ├─ {{MODULE_PREFIX}}-admin.jar   后端可运行 jar
 REM     └─ dist\                         前端构建产物（交由 Nginx 托管）
 REM
 REM 用法：双击或 build.bat
+REM 前端自动识别：vben monorepo 用 pnpm build:ele，产物在 apps\web-ele\dist
 
 REM 切到脚本所在目录（项目根）
 cd /d "%~dp0"
 
 set "JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8"
 set "FRONTEND_DIR={{MODULE_PREFIX}}-ui"
+set "FRONTEND_DIST="
 
 REM ========== 1. 后端打包 ==========
 echo ========== Maven package ==========
@@ -31,20 +33,47 @@ if not exist "%FRONTEND_DIR%" (
     echo [WARN] 未找到前端目录 %FRONTEND_DIR%，跳过前端构建
 ) else (
     cd /d "%FRONTEND_DIR%"
-    if not exist "node_modules" (
-        echo ---------- npm install ----------
-        call npm install
-        if %errorlevel% neq 0 (
-            echo [ERROR] npm install failed!
+    if exist "pnpm-workspace.yaml" (
+        where pnpm.cmd >nul 2>nul
+        if errorlevel 1 (
+            echo [ERROR] 未找到 pnpm，请先安装：npm install -g pnpm
             pause
             exit /b 1
         )
-    )
-    call npm run build:prod
-    if %errorlevel% neq 0 (
-        echo [ERROR] Frontend build failed!
-        pause
-        exit /b 1
+        if not exist "node_modules" (
+            echo ---------- pnpm install ----------
+            call pnpm.cmd install
+            if errorlevel 1 (
+                echo [ERROR] pnpm install failed!
+                pause
+                exit /b 1
+            )
+        )
+        echo ---------- pnpm run build:ele ----------
+        call pnpm.cmd run build:ele
+        if errorlevel 1 (
+            echo [ERROR] Frontend build failed!
+            pause
+            exit /b 1
+        )
+        set "FRONTEND_DIST=%FRONTEND_DIR%\apps\web-ele\dist"
+    ) else (
+        if not exist "node_modules" (
+            echo ---------- npm install ----------
+            call npm install
+            if %errorlevel% neq 0 (
+                echo [ERROR] npm install failed!
+                pause
+                exit /b 1
+            )
+        )
+        call npm run build:prod
+        if %errorlevel% neq 0 (
+            echo [ERROR] Frontend build failed!
+            pause
+            exit /b 1
+        )
+        set "FRONTEND_DIST=%FRONTEND_DIR%\dist"
     )
     cd /d "%~dp0"
 )
@@ -70,13 +99,20 @@ if not defined JAR_PATH (
 copy /Y "!JAR_PATH!" "build\" >nul
 echo [OK] 已复制后端 jar：build\!JAR_NAME!
 
-REM 前端 dist
-if exist "%FRONTEND_DIR%\dist" (
+REM 前端 dist（兼容传统 ruoyi-ui 与 vben monorepo）
+if not defined FRONTEND_DIST (
+    if exist "%FRONTEND_DIR%\apps\web-ele\dist" (
+        set "FRONTEND_DIST=%FRONTEND_DIR%\apps\web-ele\dist"
+    ) else if exist "%FRONTEND_DIR%\dist" (
+        set "FRONTEND_DIST=%FRONTEND_DIR%\dist"
+    )
+)
+if defined FRONTEND_DIST if exist "!FRONTEND_DIST!" (
     if exist "build\dist" rmdir /S /Q "build\dist"
-    xcopy /E /I /Y "%FRONTEND_DIR%\dist" "build\dist" >nul
+    xcopy /E /I /Y "!FRONTEND_DIST!" "build\dist" >nul
     echo [OK] 已复制前端产物：build\dist
 ) else (
-    echo [WARN] 未找到 %FRONTEND_DIR%\dist，跳过前端产物汇总
+    echo [WARN] 未找到前端 dist，跳过前端产物汇总
 )
 
 echo.

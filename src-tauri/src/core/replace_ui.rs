@@ -4,7 +4,7 @@
 // - 模板目录：templates/ruoyi-vue/ui/{ui_template}
 // - 输出目录：{output_dir}/{new_module_prefix}-ui
 // - 占位符格式：{{PLACEHOLDER}}
-// - 幂等：目标目录已存在则报错，不覆盖
+// - 开启替换时：若目标目录已存在（通常是重命名后的原 ruoyi-ui），先删除再写入新模板
 // - 二进制文件原样复制，文本文件做占位符替换
 //
 // 仅 ruoyi-vue（前后端分离版）支持，调用方（planner）已据 template-capabilities 约束。
@@ -19,6 +19,8 @@ const TEXT_EXTENSIONS: &[&str] = &[
     ".js",
     ".mjs",
     ".cjs",
+    ".mts",
+    ".cts",
     ".ts",
     ".tsx",
     ".json",
@@ -32,6 +34,7 @@ const TEXT_EXTENSIONS: &[&str] = &[
     ".conf",
     ".sh",
     ".bat",
+    ".toml",
 ];
 
 /// 二进制文件扩展名（原样复制）
@@ -47,6 +50,21 @@ const BINARY_EXTENSIONS: &[&str] = &[
     ".ttf",
     ".eot",
     ".lock",
+];
+
+/// 复制时跳过的目录（避免把依赖/缓存打进产物）
+const SKIP_DIRS: &[&str] = &[
+    "node_modules",
+    ".turbo",
+    "dist",
+    ".git",
+    ".cache",
+    ".nitro",
+    ".output",
+    "coverage",
+    ".pnpm-store",
+    "playwright-report",
+    "test-results",
 ];
 
 /// UI 工程生成结果
@@ -71,19 +89,29 @@ pub fn generate_ui_project(
 ) -> Result<ReplaceUiResult, String> {
     if !template_dir.is_dir() {
         return Err(format!(
-            "后台 UI 模板目录不存在：{}",
+            "后台 UI 模板目录不存在：{}。请先运行 scripts/snapshot-vben-ui.ps1 快照模板",
             template_dir.display()
         ));
     }
 
     let ui_dir = output_dir.join(format!("{}-ui", params.new_module_prefix));
 
-    // 目标目录已存在则报错，不覆盖
+    // 替换模式：目标目录通常是「原 ruoyi-ui 重命名」后的同名目录，必须先删除再写入新模板
     if ui_dir.exists() {
-        return Err(format!(
-            "后台 UI 目标目录已存在：{}，为避免覆盖，请删除后重试或选择新的输出目录",
-            ui_dir.display()
+        log(&format!(
+            "检测到原前端目录 {}，将删除后替换为模板 {}",
+            ui_dir.display(),
+            template_dir
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
         ));
+        std::fs::remove_dir_all(&ui_dir).map_err(|e| {
+            format!(
+                "删除原前端目录 {} 失败：{e}（请确认无进程占用后重试）",
+                ui_dir.display()
+            )
+        })?;
     }
 
     // 构建占位符映射
@@ -120,15 +148,30 @@ pub fn generate_ui_project(
 /// 构建占位符映射。
 ///
 /// 这些占位符会写进 vben 工程的环境配置与文案中，让生成的后台直接对接用户的后端：
-/// - {{PROJECT_NAME}}：前端标题 / 品牌名
-/// - {{MODULE_PREFIX}}：新模块前缀（用于输出目录名、文档）
+/// - {{PROJECT_NAME}}：项目名
+/// - {{FRONTEND_TITLE}}：前端标题 / 品牌名（VITE_APP_TITLE）
+/// - {{MODULE_PREFIX}}：新模块前缀
 /// - {{API_BASE_URL_DEV}}：开发环境后端地址（vite proxy 目标）
-/// - {{API_BASE_URL_PROD}}：生产环境后端地址（nginx / 直连）
-/// - {{COPYRIGHT}}：版权署名
+/// - {{API_BASE_URL_PROD}}：生产环境后端绝对地址（小程序等场景）
+/// - {{COPYRIGHT}} / {{COPYRIGHT_YEAR}} / {{COPYRIGHT_HOLDER}}：版权
 /// - {{SERVER_PORT}}：后端端口
 fn build_placeholders(params: &CustomizeParams) -> HashMap<String, String> {
     let mut map = HashMap::new();
-    let year = chrono::Local::now().format("%Y").to_string();
+    let year = if params.copyright_year.is_empty() {
+        chrono::Local::now().format("%Y").to_string()
+    } else {
+        params.copyright_year.clone()
+    };
+    let holder = if params.copyright_holder.is_empty() {
+        if params.frontend_title.is_empty() {
+            params.new_project_name.clone()
+        } else {
+            params.frontend_title.clone()
+        }
+    } else {
+        params.copyright_holder.clone()
+    };
+
     map.insert("{{PROJECT_NAME}}".into(), params.new_project_name.clone());
     map.insert("{{FRONTEND_TITLE}}".into(), params.frontend_title.clone());
     map.insert("{{MODULE_PREFIX}}".into(), params.new_module_prefix.clone());
@@ -137,14 +180,9 @@ fn build_placeholders(params: &CustomizeParams) -> HashMap<String, String> {
         format!("http://localhost:{}", params.server_port),
     );
     map.insert("{{API_BASE_URL_PROD}}".into(), build_prod_base_url(params));
-    map.insert(
-        "{{COPYRIGHT}}".into(),
-        if params.copyright_holder.is_empty() {
-            format!("{} {}", year, params.new_project_name)
-        } else {
-            format!("{} {}", year, params.copyright_holder)
-        },
-    );
+    map.insert("{{COPYRIGHT_YEAR}}".into(), year.clone());
+    map.insert("{{COPYRIGHT_HOLDER}}".into(), holder.clone());
+    map.insert("{{COPYRIGHT}}".into(), format!("{} {}", year, holder));
     map.insert("{{SERVER_PORT}}".into(), params.server_port.to_string());
     map
 }
@@ -176,9 +214,14 @@ fn copy_template_dir(
         let entry = entry.map_err(|e| e.to_string())?;
         let src_path = entry.path();
         let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
         let dest_path = dest.join(&file_name);
 
         if src_path.is_dir() {
+            // 跳过依赖与构建缓存目录，避免污染产物
+            if SKIP_DIRS.contains(&file_name_str.as_ref()) {
+                continue;
+            }
             copy_template_dir(
                 &src_path,
                 &dest_path,
@@ -193,7 +236,6 @@ fn copy_template_dir(
                 .map(|e| format!(".{}", e.to_string_lossy().to_lowercase()))
                 .unwrap_or_default();
             // 无扩展名但常见配置文件（如 .env / .env.production）也按文本处理
-            let file_name_str = file_name.to_string_lossy();
             let is_dotenv = file_name_str.starts_with(".env");
 
             if BINARY_EXTENSIONS.contains(&ext.as_str()) {
@@ -231,4 +273,70 @@ fn replace_placeholders(content: &str, placeholders: &HashMap<String, String>) -
         result = result.replace(key, value);
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::CustomizeParams;
+    use std::fs;
+
+    fn base_params() -> CustomizeParams {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        p.new_project_name = "Demo".into();
+        p.frontend_title = "演示系统".into();
+        p.server_port = 9000;
+        p.copyright_year = "2026".into();
+        p.copyright_holder = "演示公司".into();
+        p
+    }
+
+    #[test]
+    fn placeholders_include_title_port_copyright() {
+        let map = build_placeholders(&base_params());
+        assert_eq!(map.get("{{FRONTEND_TITLE}}").map(String::as_str), Some("演示系统"));
+        assert_eq!(
+            map.get("{{API_BASE_URL_DEV}}").map(String::as_str),
+            Some("http://localhost:9000")
+        );
+        assert_eq!(map.get("{{COPYRIGHT_YEAR}}").map(String::as_str), Some("2026"));
+        assert_eq!(
+            map.get("{{COPYRIGHT_HOLDER}}").map(String::as_str),
+            Some("演示公司")
+        );
+        assert_eq!(map.get("{{SERVER_PORT}}").map(String::as_str), Some("9000"));
+    }
+
+    #[test]
+    fn generate_replaces_existing_ui_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let template = tmp.path().join("tpl");
+        fs::create_dir_all(template.join("apps/web-ele")).unwrap();
+        fs::write(
+            template.join("apps/web-ele/.env"),
+            "VITE_APP_TITLE={{FRONTEND_TITLE}}\n",
+        )
+        .unwrap();
+        fs::write(
+            template.join("apps/web-ele/vite.config.mts"),
+            "target: '{{API_BASE_URL_DEV}}'\n",
+        )
+        .unwrap();
+
+        // 模拟「原前端已重命名为 demo-ui」
+        let old_ui = tmp.path().join("demo-ui");
+        fs::create_dir_all(&old_ui).unwrap();
+        fs::write(old_ui.join("old.txt"), "legacy").unwrap();
+
+        let params = base_params();
+        let log = |_m: &str| {};
+        let result = generate_ui_project(&template, tmp.path(), &params, &log).unwrap();
+        assert!(result.output_dir.exists());
+        assert!(!result.output_dir.join("old.txt").exists());
+        let env = fs::read_to_string(result.output_dir.join("apps/web-ele/.env")).unwrap();
+        assert!(env.contains("VITE_APP_TITLE=演示系统"));
+        let vite = fs::read_to_string(result.output_dir.join("apps/web-ele/vite.config.mts")).unwrap();
+        assert!(vite.contains("http://localhost:9000"));
+    }
 }
