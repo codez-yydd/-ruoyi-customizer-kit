@@ -79,6 +79,12 @@ const rules = {
 };
 
 function reset() {
+  // 用全新对象整体替换 form，确保清掉上一次（修改）操作残留的字段（如
+  // createTime/createBy 等）。仅用 Object.assign 合并会保留 form 上未列出的旧字段，
+  // 导致新增弹框回显上一个岗位的数据。
+  Object.keys(form).forEach((k) => {
+    delete (form as any)[k];
+  });
   Object.assign(form, {
     postId: undefined,
     postCode: '',
@@ -87,7 +93,8 @@ function reset() {
     status: '0',
     remark: '',
   });
-  formRef.value?.resetFields();
+  // 仅清除校验状态（resetFields 会按 ElForm 缓存的初始值重置，反复开关弹框时不可靠）
+  formRef.value?.clearValidate();
 }
 
 async function handleAdd() {
@@ -102,8 +109,9 @@ async function handleAdd() {
 async function handleUpdate(row?: SysPost) {
   reset();
   const postId = row?.postId ?? ids.value[0]!;
+  // 响应拦截器已自动解包 data 字段，res 即岗位对象本身
   const res = await getPost(postId);
-  Object.assign(form, res.data);
+  Object.assign(form, res);
   open.value = true;
   title.value = '修改岗位';
 }

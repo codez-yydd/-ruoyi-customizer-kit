@@ -19,7 +19,8 @@ export function listPost(query: Record<string, any>) {
 }
 
 export function getPost(postId: number) {
-  return requestClient.get<{ data: SysPost }>(`/system/post/${postId}`);
+  // 响应拦截器自动解包 data，返回值即岗位对象本身（参考 getRole）
+  return requestClient.get<SysPost>(`/system/post/${postId}`);
 }
 
 export function addPost(data: Partial<SysPost>) {
