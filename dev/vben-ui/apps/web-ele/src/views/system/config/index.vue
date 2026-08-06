@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { nextTick, onMounted, reactive, ref } from 'vue';
 
 import {
   ElButton,
@@ -73,14 +73,19 @@ const rules = {
 };
 
 function reset() {
+  // 仅清空表单数据。校验态的清除放在弹框打开后的 nextTick（见 handleAdd/handleUpdate），
+  // 否则"打开修改 → 取消 → 打开新增"时 resetFields 会以上一次详情数据为基准回滚，
+  // 导致新增弹框残留上一个参数的数据（与 role/menu 页面同源问题）。
   Object.assign(form, { configId: undefined, configName: '', configKey: '', configValue: '', configType: 'Y', remark: '' });
-  formRef.value?.resetFields();
 }
 
 async function handleAdd() {
+  // 先清数据，再开弹框；开框后 nextTick 清校验态（此时 formRef 已就绪且基准干净）。
   reset();
   open.value = true;
   title.value = '添加参数';
+  await nextTick();
+  formRef.value?.clearValidate();
 }
 
 async function handleUpdate(row?: SysConfig) {
@@ -90,6 +95,8 @@ async function handleUpdate(row?: SysConfig) {
   Object.assign(form, res.data);
   open.value = true;
   title.value = '修改参数';
+  await nextTick();
+  formRef.value?.clearValidate();
 }
 
 async function submitForm() {
