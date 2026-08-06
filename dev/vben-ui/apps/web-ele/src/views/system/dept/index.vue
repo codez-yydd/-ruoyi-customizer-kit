@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue';
+import { nextTick, onMounted, reactive, ref } from 'vue';
 
 import {
   ElButton,
@@ -59,6 +59,10 @@ const rules = {
 };
 
 function reset() {
+  // 注意：ElDialog 默认 lazy，表单在首次打开时才挂载，ElForm 会把那一刻的 form 值
+  // 缓存成字段初始值快照。若用户首次操作是「修改某部门」，deptName 等就会被缓存为
+  // 该部门值，后续 resetFields() 会把新增表单也重置回该污染值（例如"深圳总公司"）。
+  // 因此这里不依赖 resetFields() 清值，改用确定空值整体赋值，仅用 clearValidate 清校验提示。
   Object.assign(form, {
     deptId: undefined,
     parentId: 0,
@@ -69,7 +73,7 @@ function reset() {
     email: '',
     status: '0',
   });
-  formRef.value?.resetFields();
+  nextTick(() => formRef.value?.clearValidate());
 }
 
 async function handleAdd(row?: SysDept) {
@@ -77,23 +81,20 @@ async function handleAdd(row?: SysDept) {
   if (row?.deptId) {
     form.parentId = row.deptId;
   }
+  // 新增时加载完整部门树
+  deptOptions.value = await listDept({});
   open.value = true;
   title.value = '添加部门';
 }
 
 async function handleUpdate(row: SysDept) {
   reset();
+  // 编辑时排除自身及子节点，避免循环选择；getDept 经响应拦截器已解包，直接取 res
   const res = await getDept(row.deptId);
-  Object.assign(form, res.data);
-  // 编辑时排除自身及子节点，避免循环选择
+  Object.assign(form, res);
   deptOptions.value = await listDeptExcludeChild(row.deptId);
   open.value = true;
   title.value = '修改部门';
-}
-
-// 新增对话框打开时加载完整树
-async function loadDeptOptions() {
-  deptOptions.value = await listDept({});
 }
 
 async function submitForm() {
@@ -179,7 +180,7 @@ onMounted(getList);
       </ElTableColumn>
     </ElTable>
 
-    <el-dialog v-model="open" :title="title" width="600px" append-to-body @open="loadDeptOptions">
+    <el-dialog v-model="open" :title="title" width="600px" append-to-body>
       <ElForm ref="formRef" :model="form" :rules="rules" label-width="80px">
         <ElFormItem label="上级部门" prop="parentId">
           <ElTreeSelect

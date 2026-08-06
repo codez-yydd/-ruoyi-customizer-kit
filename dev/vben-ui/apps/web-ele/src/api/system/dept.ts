@@ -26,7 +26,7 @@ export function listDeptExcludeChild(deptId: number) {
 }
 
 export function getDept(deptId: number) {
-  return requestClient.get<{ data: SysDept }>(`/system/dept/${deptId}`);
+  return requestClient.get<SysDept>(`/system/dept/${deptId}`);
 }
 
 export function addDept(data: Partial<SysDept>) {
