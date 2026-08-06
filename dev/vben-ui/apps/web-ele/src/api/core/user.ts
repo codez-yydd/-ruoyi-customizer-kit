@@ -65,9 +65,9 @@ export async function getUserInfoApi() {
     avatar,
     roles: raw.roles ?? [],
     desc: raw.user.dept?.deptName ?? '',
-    // 若依后端菜单无 dashboard/工作台页，登录后直接进系统管理-用户管理
-    // （后端模式下静态 dashboard 路由不会注册，必须指向真实存在的菜单路径）
-    homePath: '/system/user',
+    // 登录后默认进入首页（分析页 /analytics）。
+    // 工作台在 /workspace，可在侧边栏切换。
+    homePath: '/analytics',
     token: '',
   };
 

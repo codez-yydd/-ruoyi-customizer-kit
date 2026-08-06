@@ -76,11 +76,20 @@ function createRequestClient(baseURL: string) {
   //   ③ 扁平聚合：{code:200, msg, data, roles, posts, ...} → 需保留全部顶层字段，调用方
   //      在请求 config 中设置 rawResponse: true 即可跳过自动解包，拿到完整响应体
   //   ④ 登录特例：{code:200, msg, token}        → 登录用 baseRequestClient 单独处理，不走此处
+  //
+  // 错误响应关键点：若依认证失败等错误统一以 HTTP 200 + 业务码返回（如
+  //   {code:401, msg:"请求访问：/getInfo，认证失败..."}），HTTP 层是成功的，
+  //   axios 不会 reject。若直接 throw 原始 response，后续认证拦截器只会看到
+  //   status=200，既不会跳登录页、也不会提示 msg，最终页面无限加载。
+  //   因此这里把若依业务码映射为标准错误对象（response.status = 业务码），
+  //   让后续 authenticateResponseInterceptor / errorMessageResponseInterceptor
+  //   能按 HTTP 状态码语义统一处理：code 401 → 触发重新认证并跳登录页，其它 → 提示 msg。
   client.addResponseInterceptor<HttpResponse>({
     fulfilled: (response) => {
       const { data: responseData, status, config } = response;
 
-      const { code } = responseData;
+      const { code } = responseData ?? {};
+
       if (status >= 200 && status < 400 && code === 200) {
         // 请求时设置 rawResponse: true 的接口（如用户详情，需保留 roles/posts 等顶层字段），
         // 直接原样返回完整响应体，不做 data 解包
@@ -93,7 +102,20 @@ function createRequestClient(baseURL: string) {
         }
         return responseData;
       }
-      throw Object.assign({}, response, { response });
+
+      // 若依风格：HTTP 成功但业务失败（code !== 200）。
+      // 构造标准化错误：把若依业务码放进 response.status，原始响应体放进 response.data，
+      // 这样认证拦截器（识别 401）与错误提示（读取 msg）都能正确工作。
+      const bizError = Object.assign(new Error(responseData?.msg), {
+        config,
+        response: {
+          ...response,
+          status: code ?? status,
+          data: responseData,
+        },
+        isAxiosError: false,
+      });
+      throw bizError;
     },
   });
 
@@ -112,9 +134,10 @@ function createRequestClient(baseURL: string) {
   client.addResponseInterceptor(
     errorMessageResponseInterceptor((msg: string, error) => {
       // 这里可以根据业务进行定制,你可以拿到 error 内的信息进行定制化处理，根据不同的 code 做不同的提示，而不是直接使用 message.error 提示 msg
-      // 当前mock接口返回的错误字段是 error 或者 message
+      // 适配若依：错误体统一为 {code, msg}，优先用后端返回的 msg 提示
       const responseData = error?.response?.data ?? {};
-      const errorMessage = responseData?.error ?? responseData?.message ?? '';
+      const errorMessage =
+        responseData?.msg ?? responseData?.message ?? responseData?.error ?? '';
       // 如果没有错误信息，则会根据状态码进行提示
       ElMessage.error(errorMessage || msg);
     }),

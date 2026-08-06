@@ -133,12 +133,70 @@ function transformRuoYiMenu(menus: RuoYiRouter[]): RouteRecordStringComponent[] 
 }
 
 /**
+ * vben 原生静态菜单（首页 / 工作台）
+ *
+ * 背景：preferences 中 accessMode 为 'backend'，后端模式下只会用后端 /getRouters
+ * 返回的菜单生成路由，vben 自带的 dashboard 静态路由不会出现。这里把首页/工作台
+ * 以若依菜单结构注入到后端菜单最前面，使其在侧边栏重新可见。
+ *
+ * 组件路径说明：generateRoutesByBackend 会用 import.meta.glob 扫描 views 下所有 .vue
+ * 生成 pageMap 做匹配，key 经 normalizeViewPath 处理后形如
+ * '/dashboard/analytics/index.vue'，故此处 component 写成 'dashboard/analytics/index'
+ * （不带 /views 前缀、不带 .vue 后缀）。
+ */
+const builtinMenus: RuoYiRouter[] = [
+  {
+    name: 'Dashboard',
+    path: '/dashboard',
+    hidden: false,
+    component: 'Layout',
+    meta: {
+      title: 'Dashboard',
+      icon: 'lucide:layout-dashboard',
+      noCache: false,
+    },
+    children: [
+      {
+        name: 'Analytics',
+        path: '/analytics',
+        hidden: false,
+        component: 'dashboard/analytics/index',
+        meta: {
+          title: '分析页',
+          icon: 'lucide:area-chart',
+          noCache: false,
+        },
+      },
+      {
+        name: 'Workspace',
+        path: '/workspace',
+        hidden: false,
+        component: 'dashboard/workspace/index',
+        meta: {
+          title: '工作台',
+          icon: 'carbon:workspace',
+          noCache: false,
+        },
+      },
+    ],
+  },
+];
+
+/**
  * 获取用户所有菜单（适配若依 GET /getRouters）
  *
  * 若依 /getRouters 返回 {code:200, data:[菜单树]}，requestClient 拦截器解包 data，
  * 再经 transformRuoYiMenu 转成 vben 期望的结构。
+ *
+ * 这里在转换后的若依菜单前，注入 vben 原生首页/工作台菜单，使二者并存于侧边栏。
  */
 export async function getAllMenusApi() {
   const raw = await requestClient.get<RuoYiRouter[]>('/getRouters');
-  return transformRuoYiMenu(raw ?? []);
+  // builtinMenus 同样走 transformRuoYiMenu，使其 Layout→BasicLayout 等映射与后端菜单一致
+  const builtin = transformRuoYiMenu(builtinMenus);
+  // 将首页菜单 order 置为 -1，确保它排在所有若依业务菜单（默认 order 0）之前
+  if (builtin[0]?.meta) {
+    (builtin[0].meta as any).order = -1;
+  }
+  return [...builtin, ...transformRuoYiMenu(raw ?? [])];
 }
