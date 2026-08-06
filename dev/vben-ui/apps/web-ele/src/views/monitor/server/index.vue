@@ -29,17 +29,28 @@ defineOptions({ name: 'MonitorServer' });
 const server = ref<ServerInfo | null>(null);
 const loading = ref(false);
 
+/**
+ * 拉取服务监控数据。
+ * requestClient 已解包 AjaxResult.data，不可再取 .data，否则页面会空白。
+ */
 async function getList() {
   loading.value = true;
   try {
-    const res = await getServer();
-    server.value = res.data;
+    server.value = await getServer();
   } finally {
     loading.value = false;
   }
 }
 
-// 进度条颜色根据使用率变化
+/** ElProgress 要求 0–100，对后端浮点结果做安全截断 */
+function toPercentage(value: number | undefined | null) {
+  const num = Number(value || 0);
+  if (Number.isNaN(num) || num < 0) return 0;
+  if (num > 100) return 100;
+  return num;
+}
+
+/** 进度条颜色按使用率分档：绿 / 橙 / 红 */
 function progressColor(usage: number) {
   if (usage > 80) return '#f56c6c';
   if (usage > 60) return '#e6a23c';
@@ -68,13 +79,13 @@ onMounted(getList);
           <div v-if="server?.cpu" class="progress-section">
             <div class="progress-item">
               <div class="progress-label">
-                <span>使用率</span>
+                <span>用户使用率</span>
                 <span :class="{ 'text-danger': server.cpu.used > 80 }">
                   {{ server.cpu.used }}%
                 </span>
               </div>
               <ElProgress
-                :percentage="Number(server.cpu.used || 0)"
+                :percentage="toPercentage(server.cpu.used)"
                 :color="progressColor(server.cpu.used)"
                 :stroke-width="14"
               />
@@ -115,7 +126,7 @@ onMounted(getList);
                 </span>
               </div>
               <ElProgress
-                :percentage="Number(server.mem.usage || 0)"
+                :percentage="toPercentage(server.mem.usage)"
                 :color="progressColor(server.mem.usage)"
                 :stroke-width="14"
               />
@@ -156,7 +167,7 @@ onMounted(getList);
                 </span>
               </div>
               <ElProgress
-                :percentage="Number(server.jvm.usage || 0)"
+                :percentage="toPercentage(server.jvm.usage)"
                 :color="progressColor(server.jvm.usage)"
                 :stroke-width="14"
               />
@@ -165,13 +176,16 @@ onMounted(getList);
               <ElDescriptionsItem label="总内存">
                 {{ server.jvm.total }} M
               </ElDescriptionsItem>
+              <ElDescriptionsItem label="最大可用">
+                {{ server.jvm.max }} M
+              </ElDescriptionsItem>
               <ElDescriptionsItem label="已用内存">
                 {{ server.jvm.used }} M
               </ElDescriptionsItem>
               <ElDescriptionsItem label="剩余内存">
                 {{ server.jvm.free }} M
               </ElDescriptionsItem>
-              <ElDescriptionsItem label="使用率">
+              <ElDescriptionsItem label="使用率" :span="2">
                 {{ server.jvm.usage }}%
               </ElDescriptionsItem>
             </ElDescriptions>
@@ -201,7 +215,7 @@ onMounted(getList);
                 </span>
               </div>
               <ElProgress
-                :percentage="Number(sysFile.usage || 0)"
+                :percentage="toPercentage(sysFile.usage)"
                 :color="progressColor(sysFile.usage)"
                 :stroke-width="12"
               />
