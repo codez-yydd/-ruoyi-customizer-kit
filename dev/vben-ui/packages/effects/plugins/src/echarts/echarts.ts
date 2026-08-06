@@ -12,7 +12,14 @@ import type {
 } from 'echarts/components';
 import type { ComposeOption } from 'echarts/core';
 
-import { BarChart, LineChart, PieChart, RadarChart } from 'echarts/charts';
+// GaugeChart：缓存监控页内存仪表盘依赖，未注册时 series.type=gauge 无法渲染
+import {
+  BarChart,
+  GaugeChart,
+  LineChart,
+  PieChart,
+  RadarChart,
+} from 'echarts/charts';
 import {
   // 数据集组件
   DatasetComponent,
@@ -43,6 +50,7 @@ echarts.use([
   TitleComponent,
   PieChart,
   RadarChart,
+  GaugeChart,
   TooltipComponent,
   GridComponent,
   DatasetComponent,

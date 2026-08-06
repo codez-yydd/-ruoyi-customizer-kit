@@ -1,198 +1,231 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { nextTick, onMounted, onUnmounted, ref } from 'vue';
 
 import {
   ElButton,
   ElCard,
-  ElDescriptions,
-  ElDescriptionsItem,
+  ElCol,
   ElEmpty,
-  ElMessage,
-  ElMessageBox,
-  ElTable,
-  ElTableColumn,
+  ElRow,
 } from 'element-plus';
-import { Delete, Refresh } from '@element-plus/icons-vue';
-
+import { Refresh } from '@element-plus/icons-vue';
 import {
-  clearCacheAll,
-  clearCacheKey,
-  clearCacheName,
-  getCache,
-  getCacheValue,
-  listCacheKey,
-  listCacheName,
-  type CacheInfo,
-} from '#/api/monitor/cache';
+  EchartsUI,
+  type EchartsUIType,
+  useEcharts,
+} from '@vben/plugins/echarts';
+
+import { getCache, type CacheInfo } from '#/api/monitor/cache';
 
 defineOptions({ name: 'MonitorCache' });
 
 const info = ref<CacheInfo | null>(null);
 const loading = ref(false);
 
-const cacheNames = ref<{ name: string; keySize: number }[]>([]);
-const cacheKeys = ref<string[]>([]);
-const cacheValue = ref<any>(null);
-const currentName = ref('');
-const currentKey = ref('');
+const commandStatsRef = ref<EchartsUIType>();
+const usedMemoryRef = ref<EchartsUIType>();
+const { renderEcharts: renderCommandStats } = useEcharts(commandStatsRef);
+const { renderEcharts: renderUsedMemory } = useEcharts(usedMemoryRef);
 
-async function getInfo() {
+/**
+ * 拉取 Redis 监控数据并绘制图表。
+ * 须先关闭 loading 再渲染：v-loading 遮罩期间容器尺寸可能为 0，仪表盘会画不出。
+ */
+async function getList() {
   loading.value = true;
   try {
     info.value = await getCache();
   } finally {
     loading.value = false;
   }
+  await nextTick();
+  renderCharts();
 }
 
-async function loadNames() {
-  cacheNames.value = (await listCacheName()) ?? [];
-}
-
-async function loadKeys(name: string) {
-  currentName.value = name;
-  cacheKeys.value = (await listCacheKey(name)) ?? [];
-  currentKey.value = '';
-  cacheValue.value = null;
-}
-
-async function loadValue(key: string) {
-  currentKey.value = key;
-  cacheValue.value = await getCacheValue(currentName.value, key);
-}
-
-async function handleClearName(name: string) {
-  try {
-    await ElMessageBox.confirm(`确认要清空"${name}"的缓存吗？`, '提示', { type: 'warning' });
-    await clearCacheName(name);
-    ElMessage.success('清理成功');
-    loadNames();
-  } catch {
-    /* 取消 */
+/** 渲染命令统计饼图与内存仪表盘 */
+function renderCharts() {
+  const cache = info.value;
+  if (!cache?.info) {
+    return;
   }
+
+  // 后端 commandStats.value 为字符串（calls 次数），饼图需数值才能正确计算占比
+  const commandStatsData = (cache.commandStats ?? []).map((item) => ({
+    name: item.name,
+    value: Number(item.value) || 0,
+  }));
+
+  renderCommandStats({
+    tooltip: {
+      trigger: 'item',
+      formatter: '{a} <br/>{b} : {c} ({d}%)',
+    },
+    series: [
+      {
+        name: '命令',
+        type: 'pie',
+        roseType: 'radius',
+        radius: [15, 95],
+        center: ['50%', '38%'],
+        data: commandStatsData,
+        animationEasing: 'cubicInOut',
+        animationDuration: 1000,
+      },
+    ],
+  });
+
+  const usedMemoryHuman = cache.info.used_memory_human ?? '0';
+  renderUsedMemory({
+    tooltip: {
+      formatter: `{b} <br/>{a} : ${usedMemoryHuman}`,
+    },
+    series: [
+      {
+        name: '峰值',
+        type: 'gauge',
+        min: 0,
+        max: 1000,
+        detail: {
+          formatter: usedMemoryHuman,
+        },
+        data: [
+          {
+            value: Number.parseFloat(usedMemoryHuman) || 0,
+            name: '内存消耗',
+          },
+        ],
+      },
+    ],
+  });
 }
 
-async function handleClearKey(key: string) {
-  try {
-    await ElMessageBox.confirm(`确认要清理键"${key}"吗？`, '提示', { type: 'warning' });
-    await clearCacheKey(key);
-    ElMessage.success('清理成功');
-    loadKeys(currentName.value);
-  } catch {
-    /* 取消 */
-  }
-}
-
-async function handleClearAll() {
-  try {
-    await ElMessageBox.confirm('确认要清空所有缓存吗？此操作不可逆', '提示', { type: 'warning' });
-    await clearCacheAll();
-    ElMessage.success('清理成功');
-    getInfo();
-    loadNames();
-  } catch {
-    /* 取消 */
-  }
-}
-
-function refreshAll() {
-  getInfo();
-  loadNames();
-}
-
-/** Redis 信息分组展示的关键字段（预留，按需使用） */
-// const redisInfoKeys = ['redis_version', 'redis_mode', 'used_memory_human'];
-
-onMounted(() => {
-  getInfo();
-  loadNames();
+onMounted(getList);
+onUnmounted(() => {
+  info.value = null;
 });
 </script>
 
 <template>
-  <div class="cache-page">
-    <div class="cache-toolbar">
-      <ElButton :icon="Refresh" @click="refreshAll">刷新</ElButton>
-      <ElButton type="danger" :icon="Delete" @click="handleClearAll">清空全部缓存</ElButton>
+  <div v-loading="loading" class="cache-monitor-page">
+    <div class="page-header">
+      <ElButton :icon="Refresh" size="small" @click="getList">刷新</ElButton>
     </div>
 
-    <!-- Redis 概览 -->
-    <ElCard class="info-card" shadow="never">
-      <template #header><span>Redis 基本信息</span></template>
-      <ElDescriptions v-if="info" :column="3" border size="small">
-        <ElDescriptionsItem label="Redis 版本">{{ info.info?.redis_version }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="运行模式">{{ info.info?.redis_mode }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="端口">{{ info.info?.tcp_port }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="已运行天数">{{ info.info?.uptime_in_days }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="连接客户端数">{{ info.info?.connected_clients }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="已用内存">{{ info.info?.used_memory_human }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="总系统内存">{{ info.info?.total_system_memory_human }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="最大内存配置">{{ info.info?.maxmemory_human }}</ElDescriptionsItem>
-        <ElDescriptionsItem label="key 总数">{{ info.dbSize }}</ElDescriptionsItem>
-      </ElDescriptions>
-      <ElEmpty v-else description="加载中..." />
-    </ElCard>
-
-    <!-- 缓存名称列表 -->
-    <ElCard class="info-card" shadow="never">
-      <template #header><span>缓存分类</span></template>
-      <ElTable :data="cacheNames" border size="small">
-        <ElTableColumn label="序号" type="index" width="60" align="center" />
-        <ElTableColumn label="缓存名称" prop="name" />
-        <ElTableColumn label="键数量" prop="keySize" width="100" align="center" />
-        <ElTableColumn label="操作" width="200" align="center">
-          <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="loadKeys(row.name)">查看键</ElButton>
-            <ElButton link type="danger" size="small" @click="handleClearName(row.name)">清空</ElButton>
+    <ElRow :gutter="10">
+      <ElCol :span="24">
+        <ElCard shadow="never" class="info-card">
+          <template #header>
+            <span class="card-title">基本信息</span>
           </template>
-        </ElTableColumn>
-      </ElTable>
-    </ElCard>
+          <div v-if="info?.info" class="info-table-wrap">
+            <table class="info-table">
+              <tbody>
+                <tr>
+                  <td class="label">Redis版本</td>
+                  <td>{{ info.info.redis_version }}</td>
+                  <td class="label">运行模式</td>
+                  <td>
+                    {{ info.info.redis_mode === 'standalone' ? '单机' : '集群' }}
+                  </td>
+                  <td class="label">端口</td>
+                  <td>{{ info.info.tcp_port }}</td>
+                  <td class="label">客户端数</td>
+                  <td>{{ info.info.connected_clients }}</td>
+                </tr>
+                <tr>
+                  <td class="label">运行时间(天)</td>
+                  <td>{{ info.info.uptime_in_days }}</td>
+                  <td class="label">使用内存</td>
+                  <td>{{ info.info.used_memory_human }}</td>
+                  <td class="label">使用CPU</td>
+                  <td>
+                    {{
+                      Number.parseFloat(info.info.used_cpu_user_children || 0).toFixed(2)
+                    }}
+                  </td>
+                  <td class="label">内存配置</td>
+                  <td>{{ info.info.maxmemory_human }}</td>
+                </tr>
+                <tr>
+                  <td class="label">AOF是否开启</td>
+                  <td>{{ info.info.aof_enabled === '0' ? '否' : '是' }}</td>
+                  <td class="label">RDB是否成功</td>
+                  <td>{{ info.info.rdb_last_bgsave_status }}</td>
+                  <td class="label">Key数量</td>
+                  <td>{{ info.dbSize }}</td>
+                  <td class="label">网络入口/出口</td>
+                  <td>
+                    {{ info.info.instantaneous_input_kbps }}kps /
+                    {{ info.info.instantaneous_output_kbps }}kps
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <ElEmpty v-else description="暂无数据" />
+        </ElCard>
+      </ElCol>
 
-    <!-- 缓存键列表 -->
-    <ElCard v-if="currentName" class="info-card" shadow="never">
-      <template #header><span>「{{ currentName }}」的缓存键</span></template>
-      <ElTable :data="cacheKeys.map((k) => ({ key: k }))" border size="small" style="width: 50%">
-        <ElTableColumn label="缓存键" prop="key" show-overflow-tooltip />
-        <ElTableColumn label="操作" width="180" align="center">
-          <template #default="{ row }">
-            <ElButton link type="primary" size="small" @click="loadValue(row.key)">查看值</ElButton>
-            <ElButton link type="danger" size="small" @click="handleClearKey(row.key)">删除</ElButton>
+      <ElCol :xs="24" :md="12">
+        <ElCard shadow="never" class="chart-card">
+          <template #header>
+            <span class="card-title">命令统计</span>
           </template>
-        </ElTableColumn>
-      </ElTable>
-    </ElCard>
+          <EchartsUI ref="commandStatsRef" height="420px" />
+        </ElCard>
+      </ElCol>
 
-    <!-- 缓存值详情 -->
-    <ElCard v-if="cacheValue !== null" class="info-card" shadow="never">
-      <template #header><span>「{{ currentKey }}」的缓存值</span></template>
-      <pre class="cache-value">{{ typeof cacheValue === 'string' ? cacheValue : JSON.stringify(cacheValue, null, 2) }}</pre>
-    </ElCard>
+      <ElCol :xs="24" :md="12">
+        <ElCard shadow="never" class="chart-card">
+          <template #header>
+            <span class="card-title">内存信息</span>
+          </template>
+          <EchartsUI ref="usedMemoryRef" height="420px" />
+        </ElCard>
+      </ElCol>
+    </ElRow>
   </div>
 </template>
 
 <style scoped>
-.cache-page {
+.cache-monitor-page {
   padding: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
 }
-.cache-toolbar {
+
+.page-header {
   display: flex;
-  gap: 8px;
+  justify-content: flex-end;
+  margin-bottom: 10px;
 }
-.info-card :deep(.el-card__header) {
+
+.info-card,
+.chart-card {
+  margin-bottom: 10px;
+}
+
+.card-title {
   font-weight: 600;
 }
-.cache-value {
+
+.info-table-wrap {
+  overflow-x: auto;
+}
+
+.info-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.info-table td {
+  padding: 10px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+}
+
+.info-table .label {
+  width: 110px;
   background: var(--el-fill-color-light);
-  padding: 12px;
-  border-radius: 4px;
-  font-size: 12px;
-  max-height: 300px;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-all;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
 }
 </style>
