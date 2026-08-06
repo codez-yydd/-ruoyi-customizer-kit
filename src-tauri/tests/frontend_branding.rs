@@ -2,7 +2,10 @@
 // 直接测试 executor 暴露的 replace_copyright / remove_navbar_external_links，
 // 覆盖若依不同版本的文案变体与边界情况。
 
-use ruoyi_forge_lib::core::executor::{clear_frontend_home, remove_navbar_external_links, replace_copyright};
+use ruoyi_forge_lib::core::executor::{
+    clear_frontend_home, remove_navbar_external_links, replace_copyright,
+    replace_frontend_site_names,
+};
 use ruoyi_forge_lib::core::CustomizeParams;
 use std::fs;
 use std::path::PathBuf;
@@ -159,4 +162,36 @@ fn clear_home_already_empty_is_noop() {
     let empty = "<template>\n  <div class=\"app-container-home\" />\n</template>\n\n<script>\nexport default {\n  name: 'Index'\n}\n</script>\n";
     fs::write(&home, empty).unwrap();
     assert!(!clear_frontend_home(&home), "已是空白模板应返回 false");
+}
+
+#[test]
+fn site_names_replace_chinese_and_title_contexts() {
+    let mut content = String::from(
+        "title: 'RuoYi'\nVUE_APP_TITLE = RuoYi\n<title>RuoYi</title>\n站点：若依管理系统\n",
+    );
+    assert!(replace_frontend_site_names(&mut content, "测试若依系统"));
+    assert!(content.contains("title: '测试若依系统'"));
+    assert!(content.contains("VUE_APP_TITLE = 测试若依系统"));
+    assert!(content.contains("<title>测试若依系统</title>"));
+    assert!(content.contains("站点：测试若依系统"));
+}
+
+#[test]
+fn site_names_must_not_break_ruoyi_component_path() {
+    // 回归：曾把裸 RuoYi 全局替换成标题，导致 Navbar 里
+    // @/components/RuoYi/Doc 变成 @/components/测试若依系统/Doc 编译失败
+    let mut content = String::from(
+        r#"import RuoYiDoc from '@/components/RuoYi/Doc'
+import RuoYiGit from '@/components/RuoYi/Git'
+title: 'RuoYi'
+"#,
+    );
+    assert!(replace_frontend_site_names(&mut content, "测试若依系统"));
+    assert!(
+        content.contains("@/components/RuoYi/Doc"),
+        "组件路径不得被改写，实际：{content}"
+    );
+    assert!(content.contains("@/components/RuoYi/Git"));
+    assert!(content.contains("title: '测试若依系统'"));
+    assert!(!content.contains("@/components/测试若依系统/"));
 }

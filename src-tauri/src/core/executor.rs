@@ -287,7 +287,6 @@ fn do_update_frontend<F>(root: &Path, params: &CustomizeParams, template: &Templ
 where
     F: Fn(&str),
 {
-    let default_site_names = ["若依管理系统", "若依后台管理系统", "RuoYi"];
     let old_prefix = &params.original_module_prefix;
     let new_prefix = &params.new_module_prefix;
     // 是否启用版权替换（年份或版权方至少填一个）
@@ -321,12 +320,9 @@ where
             };
             let mut new_content = content.clone();
             let mut changed = false;
-            // 替换若依默认站点名
-            for sn in default_site_names {
-                if new_content.contains(sn) {
-                    new_content = new_content.replace(sn, &params.frontend_title);
-                    changed = true;
-                }
+            // 替换若依默认站点展示名（禁止全局替换裸 "RuoYi"，会误伤组件路径）
+            if replace_frontend_site_names(&mut new_content, &params.frontend_title) {
+                changed = true;
             }
             // 替换版权信息（Copyright © 年份 版权方 All Rights Reserved）
             if want_copyright {
@@ -360,6 +356,54 @@ where
     }
     log(&format!("前端标题修改：{} 个文件", r.modified_files));
     Ok(())
+}
+
+/// 替换前端站点展示名。
+///
+/// - 中文默认名（若依管理系统 / 若依后台管理系统）可安全全局替换
+/// - 英文 `RuoYi` **禁止**全局替换：会把 `@/components/RuoYi/Doc` 等路径改坏
+/// - `RuoYi` 仅在标题赋值语境替换：settings.js 的 title、.env 的 APP_TITLE、html `<title>`
+pub fn replace_frontend_site_names(content: &mut String, title: &str) -> bool {
+    if title.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    for sn in ["若依管理系统", "若依后台管理系统"] {
+        if content.contains(sn) {
+            *content = content.replace(sn, title);
+            changed = true;
+        }
+    }
+
+    // .env / .env.*：VUE_APP_TITLE = RuoYi 或 VITE_APP_TITLE=RuoYi
+    if let Ok(re) = regex::Regex::new(r"(?m)^(\s*(?:VUE|VITE)_APP_TITLE\s*=\s*)RuoYi(\s*)$") {
+        if re.is_match(content) {
+            *content = re
+                .replace_all(content, format!("${{1}}{title}${{2}}").as_str())
+                .to_string();
+            changed = true;
+        }
+    }
+    // settings.js 等：title: 'RuoYi' / title: "RuoYi"
+    if let Ok(re) = regex::Regex::new(r#"(title\s*:\s*['"])RuoYi(['"])"#) {
+        if re.is_match(content) {
+            *content = re
+                .replace_all(content, format!("${{1}}{title}${{2}}").as_str())
+                .to_string();
+            changed = true;
+        }
+    }
+    // index.html：<title>RuoYi</title>
+    if let Ok(re) = regex::Regex::new(r"(?i)(<title>)RuoYi(</title>)") {
+        if re.is_match(content) {
+            *content = re
+                .replace_all(content, format!("${{1}}{title}${{2}}").as_str())
+                .to_string();
+            changed = true;
+        }
+    }
+
+    changed
 }
 
 /// 替换版权信息。匹配若依常见格式：`Copyright © 2018-2026 ruoyi All Rights Reserved`，
