@@ -78,19 +78,30 @@ const { authPanelCenter, authPanelLeft, authPanelRight, isDark } =
         class="bg-background-deep absolute inset-0 h-full w-full dark:bg-[#070709]"
       >
         <div class="login-background absolute left-0 top-0 size-full"></div>
-        <div class="flex-col-center -enter-x mr-20 h-full">
-          <template v-if="sloganImage">
-            <img
+        <div class="flex-col-center -enter-x mx-auto max-w-2xl px-10 h-full">
+          <!-- 业务侧可通过 #slogan 替换默认插画，便于模板交付时换客户视觉 -->
+          <slot name="slogan">
+            <template v-if="sloganImage">
+              <img
+                :alt="appName"
+                :src="sloganImage"
+                class="animate-float h-64 w-2/5"
+              />
+            </template>
+            <SloganIcon
+              v-else
               :alt="appName"
-              :src="sloganImage"
               class="animate-float h-64 w-2/5"
             />
-          </template>
-          <SloganIcon v-else :alt="appName" class="animate-float h-64 w-2/5" />
-          <div class="text-1xl text-foreground mt-6 font-sans lg:text-2xl">
+          </slot>
+          <div
+            class="text-foreground mt-8 text-center font-sans text-2xl font-medium tracking-tight lg:text-[1.75rem]"
+          >
             {{ pageTitle }}
           </div>
-          <div class="dark:text-muted-foreground mt-2">
+          <div
+            class="text-muted-foreground mt-3 max-w-md text-center text-sm leading-6 lg:text-base"
+          >
             {{ pageDescription }}
           </div>
         </div>
