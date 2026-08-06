@@ -15,11 +15,12 @@ import {
   ElTable,
   ElTableColumn,
 } from 'element-plus';
-import { Delete, Refresh, Search, Unlock } from '@element-plus/icons-vue';
+import { Delete, Download, Refresh, Search, Unlock } from '@element-plus/icons-vue';
 
 import {
   cleanLogininfor,
   delLogininfor,
+  exportLogininfor,
   listLogininfor,
   unlockLogininfor,
   type SysLogininfor,
@@ -27,7 +28,7 @@ import {
 import { useDict } from '#/composables/useDict';
 import { usePagination } from '#/composables/usePagination';
 import DictTag from '#/components/DictTag/index.vue';
-import { addDateRange, parseTime } from '#/utils/ruoyi';
+import { addDateRange, parseTime, saveBlobFile } from '#/utils/ruoyi';
 
 defineOptions({ name: 'MonitorLogininfor' });
 
@@ -56,15 +57,23 @@ const defaultSort = { prop: 'loginTime', order: 'descending' } as const;
 const orderByColumn = ref('loginTime');
 const isAsc = ref('desc');
 
+/** 组装列表/导出共用的查询参数（含排序与时间范围） */
+function buildQueryParams() {
+  // 不传 propName：Mapper 读取 params.beginTime / params.endTime
+  return addDateRange(
+    {
+      ...queryParams,
+      orderByColumn: orderByColumn.value,
+      isAsc: isAsc.value,
+    },
+    dateRange.value,
+  );
+}
+
 async function getList() {
   loading.value = true;
   try {
-    const params = addDateRange(
-      { ...queryParams, orderByColumn: orderByColumn.value, isAsc: isAsc.value },
-      dateRange.value,
-      'Time',
-    );
-    const res = await listLogininfor(params);
+    const res = await listLogininfor(buildQueryParams());
     list.value = res.rows ?? [];
     total.value = res.total ?? 0;
   } finally {
@@ -91,10 +100,21 @@ function handleSelectionChange(selection: SysLogininfor[]) {
   selectName.value = selection.map((item) => item.userName);
 }
 
-// 排序
-function handleSortChange({ prop, order }: { prop: string; order: string }) {
-  orderByColumn.value = prop;
-  isAsc.value = order === 'ascending' ? 'asc' : 'desc';
+// 排序：取消排序时回退到默认按登录时间倒序
+function handleSortChange({
+  prop,
+  order,
+}: {
+  prop: string;
+  order: string | null;
+}) {
+  if (!order) {
+    orderByColumn.value = defaultSort.prop;
+    isAsc.value = 'desc';
+  } else {
+    orderByColumn.value = prop;
+    isAsc.value = order === 'ascending' ? 'asc' : 'desc';
+  }
   getList();
 }
 
@@ -129,19 +149,41 @@ async function handleClean() {
   }
 }
 
-// 解锁
+// 解锁：仅允许单选；后端按用户名清除登录失败缓存
 async function handleUnlock() {
-  const username = selectName.value;
+  const username = selectName.value[0];
+  if (!username) {
+    ElMessage.warning('请选择需要解锁的用户');
+    return;
+  }
   try {
     await ElMessageBox.confirm(
       `是否确认解锁用户"${username}"数据项？`,
       '提示',
       { type: 'warning' },
     );
-    await unlockLogininfor(username as any);
+    await unlockLogininfor(username);
     ElMessage.success(`用户${username}解锁成功`);
   } catch {
     /* 取消 */
+  }
+}
+
+// 导出：按当前查询条件导出 Excel
+async function handleExport() {
+  try {
+    await ElMessageBox.confirm('是否确认导出所有登录日志数据项？', '警告', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+  } catch {
+    return;
+  }
+  const response: any = await exportLogininfor(buildQueryParams());
+  const ok = await saveBlobFile(response, `logininfor_${Date.now()}.xlsx`);
+  if (ok) {
+    ElMessage.success('导出成功');
   }
 }
 
@@ -238,6 +280,15 @@ onMounted(getList);
         @click="handleUnlock"
       >
         解锁
+      </ElButton>
+      <ElButton
+        type="warning"
+        plain
+        :icon="Download"
+        v-hasPermi="['monitor:logininfor:export']"
+        @click="handleExport"
+      >
+        导出
       </ElButton>
     </div>
 

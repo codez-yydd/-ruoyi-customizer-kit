@@ -46,10 +46,14 @@ export function parseTime(
 
 /**
  * 合并日期范围到查询参数（移植自若依 addDateRange）
- * 若依列表接口接收 beginXxx / endXxx 时间范围参数
+ *
+ * 若依 Mapper 通过 BaseEntity.params 读取时间范围（如 params.beginTime），
+ * 因此必须写入嵌套对象 params，GET 序列化为 params[beginTime]=xxx，
+ * Spring 才能正确绑定到 Map，不能写到查询参数顶层。
+ *
  * @param params 原始查询参数
  * @param dateRange [开始, 结束] 日期数组
- * @param propName 字段名前缀（如 createTime → beginCreateTime / endCreateTime）
+ * @param propName 字段名后缀；不传则使用 beginTime/endTime
  */
 export function addDateRange<T extends Record<string, any>>(
   params: T,
@@ -57,13 +61,21 @@ export function addDateRange<T extends Record<string, any>>(
   propName?: string,
 ): T {
   const result = { ...params } as any;
-  if (dateRange && dateRange.length === 2) {
+  // 保留已有 params，避免覆盖其它动态查询条件
+  result.params =
+    typeof result.params === 'object' &&
+    result.params !== null &&
+    !Array.isArray(result.params)
+      ? { ...result.params }
+      : {};
+  const range = Array.isArray(dateRange) ? dateRange : [];
+  if (range.length === 2) {
     if (propName) {
-      result[`begin${propName}`] = dateRange[0];
-      result[`end${propName}`] = dateRange[1];
+      result.params[`begin${propName}`] = range[0];
+      result.params[`end${propName}`] = range[1];
     } else {
-      result.beginTime = dateRange[0];
-      result.endTime = dateRange[1];
+      result.params.beginTime = range[0];
+      result.params.endTime = range[1];
     }
   }
   return result;

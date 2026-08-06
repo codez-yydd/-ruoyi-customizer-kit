@@ -42,3 +42,14 @@ export function unlockLogininfor(userName: string) {
 export function cleanLogininfor() {
   return requestClient.delete('/monitor/logininfor/clean');
 }
+
+/**
+ * POST /monitor/logininfor/export —— 导出登录日志 Excel。
+ * 后端无 @RequestBody，条件放在 query 上才能绑定到实体字段与 params Map。
+ */
+export function exportLogininfor(query?: Record<string, any>) {
+  return requestClient.post('/monitor/logininfor/export', null, {
+    params: query,
+    responseType: 'blob',
+  });
+}

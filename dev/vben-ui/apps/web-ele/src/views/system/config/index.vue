@@ -39,7 +39,8 @@ const multiple = ref(true);
 async function getList() {
   loading.value = true;
   try {
-    const params = addDateRange({ ...queryParams }, dateRange.value, 'CreateTime');
+    // Mapper 读取 params.beginTime/endTime，勿传 CreateTime 后缀
+    const params = addDateRange({ ...queryParams }, dateRange.value);
     const res = await listConfig(params);
     list.value = res.rows ?? [];
     total.value = res.total ?? 0;

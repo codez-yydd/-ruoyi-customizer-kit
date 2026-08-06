@@ -98,7 +98,8 @@ function handleNodeClick(data: any) {
 async function getList() {
   loading.value = true;
   try {
-    const params = addDateRange({ ...queryParams }, dateRange.value, 'CreateTime');
+    // Mapper 读取 params.beginTime/endTime，勿传 CreateTime 后缀
+    const params = addDateRange({ ...queryParams }, dateRange.value);
     const res = await listUser(params);
     userList.value = res.rows ?? [];
     total.value = res.total ?? 0;
@@ -273,7 +274,7 @@ async function handleExport() {
   const params =
     ids.value.length > 0
       ? undefined
-      : addDateRange({ ...queryParams }, dateRange.value, 'CreateTime');
+      : addDateRange({ ...queryParams }, dateRange.value);
   const response: any = await exportUser(params);
   await saveBlobFile(response, 'user.xlsx');
   ElMessage.success('导出成功');

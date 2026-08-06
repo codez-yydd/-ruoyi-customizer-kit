@@ -46,3 +46,14 @@ export function delOperlog(operId: number | number[]) {
 export function cleanOperlog() {
   return requestClient.delete('/monitor/operlog/clean');
 }
+
+/**
+ * POST /monitor/operlog/export —— 导出操作日志 Excel。
+ * 后端无 @RequestBody，条件放在 query 上才能绑定到实体字段与 params Map。
+ */
+export function exportOperlog(query?: Record<string, any>) {
+  return requestClient.post('/monitor/operlog/export', null, {
+    params: query,
+    responseType: 'blob',
+  });
+}

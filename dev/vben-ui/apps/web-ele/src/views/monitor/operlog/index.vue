@@ -8,6 +8,7 @@ import {
   ElDialog,
   ElForm,
   ElFormItem,
+  ElIcon,
   ElInput,
   ElMessage,
   ElMessageBox,
@@ -21,6 +22,7 @@ import {
 } from 'element-plus';
 import {
   Delete,
+  Download,
   Refresh,
   Search,
   View,
@@ -30,13 +32,14 @@ import {
 import {
   cleanOperlog,
   delOperlog,
+  exportOperlog,
   listOperlog,
   type SysOperLog,
 } from '#/api/monitor/operlog';
 import { useDict } from '#/composables/useDict';
 import { usePagination } from '#/composables/usePagination';
 import DictTag from '#/components/DictTag/index.vue';
-import { addDateRange, parseTime } from '#/utils/ruoyi';
+import { addDateRange, parseTime, saveBlobFile } from '#/utils/ruoyi';
 
 defineOptions({ name: 'MonitorOperlog' });
 
@@ -52,6 +55,8 @@ const {
   handleQuery,
   resetQuery: resetQueryBase,
 } = usePagination({
+  // 与若依原版一致：支持按操作地址筛选
+  operIp: '',
   title: '',
   operName: '',
   businessType: '',
@@ -67,15 +72,23 @@ const defaultSort = { prop: 'operTime', order: 'descending' } as const;
 const orderByColumn = ref('operTime');
 const isAsc = ref('desc');
 
+/** 组装列表/导出共用的查询参数（含排序与时间范围） */
+function buildQueryParams() {
+  // 不传 propName：Mapper 读取 params.beginTime / params.endTime
+  return addDateRange(
+    {
+      ...queryParams,
+      orderByColumn: orderByColumn.value,
+      isAsc: isAsc.value,
+    },
+    dateRange.value,
+  );
+}
+
 async function getList() {
   loading.value = true;
   try {
-    const params = addDateRange(
-      { ...queryParams, orderByColumn: orderByColumn.value, isAsc: isAsc.value },
-      dateRange.value,
-      'Time',
-    );
-    const res = await listOperlog(params);
+    const res = await listOperlog(buildQueryParams());
     list.value = res.rows ?? [];
     total.value = res.total ?? 0;
   } finally {
@@ -100,10 +113,21 @@ function handleSelectionChange(selection: SysOperLog[]) {
   multiple.value = !selection.length;
 }
 
-// 排序
-function handleSortChange({ prop, order }: { prop: string; order: string }) {
-  orderByColumn.value = prop;
-  isAsc.value = order === 'ascending' ? 'asc' : 'desc';
+// 排序：取消排序时回退到默认按操作时间倒序
+function handleSortChange({
+  prop,
+  order,
+}: {
+  prop: string;
+  order: string | null;
+}) {
+  if (!order) {
+    orderByColumn.value = defaultSort.prop;
+    isAsc.value = 'desc';
+  } else {
+    orderByColumn.value = prop;
+    isAsc.value = order === 'ascending' ? 'asc' : 'desc';
+  }
   getList();
 }
 
@@ -135,6 +159,24 @@ async function handleClean() {
     ElMessage.success('清空成功');
   } catch {
     /* 取消 */
+  }
+}
+
+// 导出：按当前查询条件导出 Excel
+async function handleExport() {
+  try {
+    await ElMessageBox.confirm('是否确认导出所有操作日志数据项？', '警告', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+  } catch {
+    return;
+  }
+  const response: any = await exportOperlog(buildQueryParams());
+  const ok = await saveBlobFile(response, `operlog_${Date.now()}.xlsx`);
+  if (ok) {
+    ElMessage.success('导出成功');
   }
 }
 
@@ -183,6 +225,15 @@ onMounted(getList);
       size="small"
       class="search-form"
     >
+      <ElFormItem label="操作地址">
+        <ElInput
+          v-model="queryParams.operIp"
+          placeholder="请输入操作地址"
+          clearable
+          style="width: 200px"
+          @keyup.enter="handleSearch"
+        />
+      </ElFormItem>
       <ElFormItem label="系统模块">
         <ElInput
           v-model="queryParams.title"
@@ -271,6 +322,15 @@ onMounted(getList);
       >
         清空
       </ElButton>
+      <ElButton
+        type="warning"
+        plain
+        :icon="Download"
+        v-hasPermi="['monitor:operlog:export']"
+        @click="handleExport"
+      >
+        导出
+      </ElButton>
     </div>
 
     <ElTable
@@ -351,7 +411,7 @@ onMounted(getList);
             type="primary"
             size="small"
             :icon="View"
-            v-hasPermi="['monitor:operlog:list']"
+            v-hasPermi="['monitor:operlog:query']"
             @click="handleDetail(row)"
           >
             详细
