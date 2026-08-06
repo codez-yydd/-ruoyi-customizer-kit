@@ -598,6 +598,14 @@ mod tests {
         assert!(!build_bat.contains("{{"), "不应残留任何占位符");
         assert!(build_bat.contains("call mvn clean package"));
         assert!(build_bat.contains("call npm run build:prod"));
+        assert!(
+            build_bat.contains("pnpm") && build_bat.contains("build:ele"),
+            "应兼容 vben monorepo 的 pnpm build:ele"
+        );
+        assert!(
+            build_bat.is_ascii(),
+            "build.bat 必须纯 ASCII：UTF-8 中文在中文 Windows 的 cmd 下会按 GBK 误解析导致无法执行"
+        );
     }
 
     #[test]
