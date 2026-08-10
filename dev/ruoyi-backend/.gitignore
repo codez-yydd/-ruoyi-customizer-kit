@@ -42,6 +42,12 @@ nbdist/
 *.xml.versionsBackup
 *.swp
 
+# macOS
+.DS_Store
+
+# 若依文件上传目录（由 ruoyi.profile 指定，运行时生成）
+uploadPath/
+
 !*/build/*.java
 !*/build/*.html
 !*/build/*.xml
