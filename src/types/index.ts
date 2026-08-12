@@ -130,6 +130,10 @@ export interface CustomizeParams {
   // ---- AI 规范文件 ----
   /** 是否生成 AI 规范文件（AGENTS.md + CLAUDE.md） */
   enable_ai_rules: boolean
+  /** 是否向 AGENTS.md 注入子智能体协作说明 */
+  enable_sub_agents: boolean
+  /** 注入 AGENTS.md 的子智能体说明（由扫描 agents/ 生成，可编辑） */
+  sub_agents_description: string
   // ---- OSS 对象存储 ----
   /** 是否引入 OSS 对象存储 */
   enable_oss: boolean
@@ -205,6 +209,7 @@ export type TaskType =
   | 'CustomizeSqlScripts'
   | 'CustomizeGeneratorConfig'
   | 'GenerateAiRules'
+  | 'GenerateSubAgents'
   | 'SplitFrontend'
   | 'GenerateNginxConfig'
   | 'GenerateStartupScripts'
@@ -291,4 +296,11 @@ export interface ConfigIoResponse {
   message: string
   /** 导入时返回的参数（导出时为 null） */
   params: CustomizeParams | null
+}
+
+/** build_sub_agents_description 命令响应：按 agents/ 扫描生成的默认说明 */
+export interface SubAgentsDescriptionResponse {
+  success: boolean
+  message: string
+  description: string
 }

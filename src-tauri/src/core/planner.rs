@@ -520,6 +520,21 @@ pub fn plan(
         });
     }
 
+    // 子智能体协作说明注入（可选）：向 AGENTS.md 注入 agents/ 扫描生成的说明
+    if params.enable_sub_agents {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "向 AGENTS.md 注入子智能体协作说明".into(),
+            task_type: TaskType::GenerateSubAgents,
+            risk_level: RiskLevel::Low,
+            affected_files: vec!["AGENTS.md".into()],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 前后端分离（可选，必须最后执行：移动目录）
     if params.enable_frontend_split {
         tasks.push(Task {

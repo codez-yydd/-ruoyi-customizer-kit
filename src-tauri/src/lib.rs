@@ -12,8 +12,8 @@ pub mod rules;
 pub mod utils;
 
 use commands::{
-    cleanup_extract_dir, detect_project, extract_zip_project, list_templates, load_config_json,
-    ping, save_config_json,
+    build_sub_agents_description, cleanup_extract_dir, detect_project, extract_zip_project,
+    list_templates, load_config_json, ping, save_config_json,
 };
 use commands::execute::execute_transform;
 use commands::preview::preview_tasks;
@@ -32,7 +32,8 @@ pub fn run() {
             preview_tasks,
             execute_transform,
             save_config_json,
-            load_config_json
+            load_config_json,
+            build_sub_agents_description
         ])
         .run(tauri::generate_context!())
         .expect("启动若依锻造台时发生错误");

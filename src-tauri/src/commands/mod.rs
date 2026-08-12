@@ -8,3 +8,6 @@ pub use project::{cleanup_extract_dir, detect_project, extract_zip_project, load
 pub use template::list_templates;
 pub mod preview;
 pub mod execute;
+pub mod sub_agents;
+
+pub use sub_agents::build_sub_agents_description;

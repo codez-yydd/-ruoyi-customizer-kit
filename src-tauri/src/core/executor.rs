@@ -119,6 +119,7 @@ where
         TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
         TaskType::CustomizeGeneratorConfig => do_customize_generator(root, params, &mut r, log),
         TaskType::GenerateAiRules => do_generate_ai_rules(root, params, &mut r, log),
+        TaskType::GenerateSubAgents => do_generate_sub_agents(root, params, &mut r, log),
         TaskType::SplitFrontend => do_split_frontend(root, params, &mut r, log),
         TaskType::GenerateNginxConfig => do_generate_nginx_config(root, params, &mut r, log),
         TaskType::GenerateStartupScripts => do_generate_startup_scripts(root, params, &mut r, log),
@@ -1059,6 +1060,20 @@ where
         r.created_files = created;
     } else {
         r.message = "AI 规范文件已存在，跳过".into();
+    }
+    Ok(())
+}
+
+/// 12f-2. 向 AGENTS.md 注入子智能体协作说明（优先用用户编辑后的文本，否则按 agents/ 扫描生成）
+fn do_generate_sub_agents<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let wrote = crate::core::sub_agents::inject_sub_agents(root, params, &|msg| log(msg))?;
+    if wrote > 0 {
+        r.modified_files = wrote;
+    } else {
+        r.message = "说明为空或无变化，跳过".into();
     }
     Ok(())
 }

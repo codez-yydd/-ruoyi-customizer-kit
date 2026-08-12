@@ -18,6 +18,7 @@ pub mod nginx;
 pub mod scripts;
 pub mod snowflake;
 pub mod logback;
+pub mod sub_agents;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -185,6 +186,12 @@ pub struct CustomizeParams {
     /// 是否生成 AI 规范文件（AGENTS.md + CLAUDE.md）
     #[serde(default = "default_true")]
     pub enable_ai_rules: bool,
+    /// 是否向 AGENTS.md 注入子智能体协作说明
+    #[serde(default)]
+    pub enable_sub_agents: bool,
+    /// 注入 AGENTS.md 的子智能体说明（由扫描 agents/ 生成，可编辑）
+    #[serde(default)]
+    pub sub_agents_description: String,
     // ---- OSS 对象存储 ----
     /// 是否引入 OSS 对象存储
     #[serde(default)]
@@ -303,6 +310,8 @@ impl Default for CustomizeParams {
             clean_quartz: false,
             enable_frontend_split: false,
             enable_ai_rules: true,
+            enable_sub_agents: false,
+            sub_agents_description: String::new(),
             enable_oss: false,
             oss_provider: "aliyun".into(),
             oss_endpoint: String::new(),

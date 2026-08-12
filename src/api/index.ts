@@ -11,7 +11,8 @@ import type {
   PreviewResponse,
   TemplateInfo,
   ProjectInfo,
-  ConfigIoResponse
+  ConfigIoResponse,
+  SubAgentsDescriptionResponse
 } from '@/types'
 
 /** 健康检查 */
@@ -104,4 +105,12 @@ export function saveConfigJson(path: string, params: CustomizeParams): Promise<C
  */
 export function loadConfigJson(path: string): Promise<ConfigIoResponse> {
   return invoke<ConfigIoResponse>('load_config_json', { path })
+}
+
+/**
+ * 扫描 agents/ 目录，生成子智能体协作说明的默认文本。
+ * 用于「子智能体注入」开关的预览区初始内容，用户可在此基础上编辑。
+ */
+export function buildSubAgentsDescription(): Promise<SubAgentsDescriptionResponse> {
+  return invoke<SubAgentsDescriptionResponse>('build_sub_agents_description')
 }

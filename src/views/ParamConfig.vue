@@ -19,7 +19,7 @@ import { useProfilesStore } from '@/stores/profiles'
 import type { ProfileEntry } from '@/stores/profiles'
 import { Setting, MagicStick, ArrowDown, Link } from '@element-plus/icons-vue'
 import { pickSaveDirectory, pickSaveJsonFile, pickOpenJsonFile } from '@/api/dialog'
-import { saveConfigJson, loadConfigJson } from '@/api'
+import { saveConfigJson, loadConfigJson, buildSubAgentsDescription } from '@/api'
 import type { CustomizeParams } from '@/types'
 import { FEATURE_PRESETS, type Preset } from '@/constants/presets'
 import { isFeatureDisabled, DISABLED_FEATURES, UI_TEMPLATES, getUiTemplateMeta, normalizeUiTemplateKey, DEFAULT_UI_TEMPLATE_KEY } from '@/constants/template-capabilities'
@@ -126,6 +126,9 @@ const defaults = (): CustomizeParams => ({
   enable_frontend_split: false,
   // AI 规范
   enable_ai_rules: true,
+  // 子智能体注入
+  enable_sub_agents: false,
+  sub_agents_description: '',
   // OSS 对象存储
   enable_oss: false,
   oss_provider: 'aliyun',
@@ -232,7 +235,7 @@ const sectionCounts = computed(() => ({
     form.enable_uniapp
   ]),
   security: countTrue([form.enable_security, form.enable_sql_customize]),
-  structure: countTrue([form.enable_frontend_split, form.enable_ai_rules]),
+  structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]),
   oss: countTrue([form.enable_oss]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
   deploy: countTrue([form.enable_nginx_config, form.enable_startup_scripts]),
@@ -248,6 +251,34 @@ watch(
   () => form.enable_replace_ui,
   (on) => {
     if (on) form.ui_template = normalizeUiTemplateKey(form.ui_template)
+  }
+)
+
+// ===== 子智能体注入：按 agents/ 扫描生成可预览、可编辑的说明 =====
+const subAgentsLoading = ref(false)
+/** 重新扫描 agents/ 生成默认说明，覆盖当前预览内容 */
+async function regenerateSubAgents() {
+  subAgentsLoading.value = true
+  try {
+    const res = await buildSubAgentsDescription()
+    if (res.success) {
+      form.sub_agents_description = res.description
+    } else {
+      ElMessage.warning(res.message || '生成子智能体说明失败')
+    }
+  } catch (err) {
+    ElMessage.warning('生成子智能体说明失败：' + String(err))
+  } finally {
+    subAgentsLoading.value = false
+  }
+}
+/** 打开开关时若预览为空，自动扫描一次填入默认说明 */
+watch(
+  () => form.enable_sub_agents,
+  (on) => {
+    if (on && !form.sub_agents_description.trim()) {
+      regenerateSubAgents()
+    }
   }
 )
 /** 点击卡片选中模板 */
@@ -772,6 +803,32 @@ function generateRandomSecret(): string {
                 </div>
                 <div class="switch-item__hint muted">生成 AGENTS.md + CLAUDE.md 编码规范</div>
               </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">子智能体注入</span>
+                  <el-switch v-model="form.enable_sub_agents" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">
+                  按 <code>agents/</code> 扫描结果生成协作说明并写入 AGENTS.md（可预览修改）
+                </div>
+              </div>
+            </div>
+            <div v-if="form.enable_sub_agents" class="detail-panel">
+              <div class="detail-panel__bar">
+                <span class="muted">说明预览（由 <code>agents/*.md</code> 的 name/description 生成，可直接修改，注入到 AGENTS.md）</span>
+                <el-button size="small" :loading="subAgentsLoading" @click="regenerateSubAgents">
+                  <el-icon><MagicStick /></el-icon>
+                  重新扫描生成
+                </el-button>
+              </div>
+              <el-input
+                v-model="form.sub_agents_description"
+                type="textarea"
+                :rows="14"
+                resize="vertical"
+                class="mono-input"
+                placeholder="打开开关后会自动扫描 agents/ 填入；也可点上方按钮重新生成。"
+              />
             </div>
           </el-collapse-item>
 
@@ -1187,6 +1244,34 @@ function generateRandomSecret(): string {
   background: #f7f8fa;
   border: 1px solid #eef1f5;
   border-radius: 6px;
+}
+.detail-panel__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.detail-panel__bar code {
+  padding: 1px 5px;
+  background: #fff;
+  border: 1px solid #e6e8eb;
+  border-radius: 3px;
+  font-size: 12px;
+}
+.mono-input :deep(.el-textarea__inner) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.switch-item__hint code {
+  padding: 1px 5px;
+  background: #fff;
+  border: 1px solid #e6e8eb;
+  border-radius: 3px;
+  font-size: 12px;
 }
 .detail-grid {
   display: grid;

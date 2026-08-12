@@ -31,6 +31,7 @@ pub enum TaskType {
     CustomizeSqlScripts,
     CustomizeGeneratorConfig,
     GenerateAiRules,
+    GenerateSubAgents,
     SplitFrontend,
     GenerateNginxConfig,
     GenerateStartupScripts,
