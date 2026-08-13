@@ -2,7 +2,6 @@
 name: "ui-reviewer"
 description: "当前端、后台、小程序或桌面端新增或明显修改页面后调用，负责独立检查 UI、UX、布局、信息层级和真实用户操作体验。重点发现页面太乱、太丑、信息堆积、操作反人类、模板感和 AI 生成感，只审查不修改代码。"
 color: red
-model: "custom:builtin%3Abigmodel-coding-plan:GLM-4.7"
 tools:
   - Read
   - Grep
