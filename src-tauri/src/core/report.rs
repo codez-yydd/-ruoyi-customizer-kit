@@ -51,7 +51,7 @@ pub fn generate_report(
         .filter(|r| {
             matches!(
                 r.task_name.split('：').next().unwrap_or(""),
-                "安全加固" | "定制 SQL 初始化脚本"
+                "安全加固" | "定制 SQL 初始化脚本" | "管理员账号定制"
             )
         })
         .map(|r| &r.message)

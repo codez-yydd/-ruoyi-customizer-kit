@@ -122,6 +122,10 @@ export interface CustomizeParams {
   enable_sql_customize: boolean
   /** 新数据库名（留空则用 new_module_prefix 推导） */
   db_name: string
+  /** 管理员登录账号（留空保持 admin；仅改 user_id=1 种子行，不动 role_key='admin' 权限体系） */
+  admin_username: string
+  /** 管理员昵称（留空保持 若依；仅改 user_id=1 种子行） */
+  admin_nickname: string
   /** 是否清除 quartz 定时任务相关表和数据 */
   clean_quartz: boolean
   // ---- 项目结构 ----
@@ -207,6 +211,7 @@ export type TaskType =
   | 'SetupOss'
   | 'ApplySecurityHardening'
   | 'CustomizeSqlScripts'
+  | 'RenameAdminAccount'
   | 'CustomizeGeneratorConfig'
   | 'GenerateAiRules'
   | 'GenerateSubAgents'

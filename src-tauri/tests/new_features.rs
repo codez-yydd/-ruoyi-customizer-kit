@@ -10,7 +10,7 @@
 // 7. AI 规范文件生成 + 占位符替换 + 无 SQL 表结构段
 // 8. 配置导出脱敏（admin_password / 各类密钥清空）
 
-use ruoyi_forge_lib::core::{ai_rules, frontend_split, security, sql_customize, CustomizeParams};
+use ruoyi_forge_lib::core::{admin_rename, ai_rules, frontend_split, security, sql_customize, CustomizeParams};
 use std::fs;
 
 /// 构造一份测试参数
@@ -286,4 +286,146 @@ fn config_json_roundtrip() {
     assert_eq!(back.db_name, "roundtrip_db");
     assert_eq!(back.admin_password, "roundtrip");
     assert_eq!(back.enable_ai_rules, params.enable_ai_rules);
+}
+
+// ---------- 管理员账号/昵称定制 ----------
+
+/// 若依标准种子 SQL 片段（admin 行 + ry 演示行 + role_key='admin' + 审计列）
+const ADMIN_SEED_SQL: &str = "insert into sys_dept values(100, '100', '若依科技', '0', '若依', '15888888888', 'ry@163.com', '0', '0', 'admin', sysdate(), '', null, '若依');\n\
+insert into sys_user values(1,  103, 'admin', '若依', '00', 'ry@163.com', '15888888888', '1', '', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2', '0', '0', '127.0.0.1', sysdate(), sysdate(), 'admin', sysdate(), '', null, '管理员');\n\
+insert into sys_user values(2,  105, 'ry', '若依', '00', 'ry@qq.com', '15666666666', '1', '', '$2a$10$7JB720yubVSZvUI0rEqK/.VqGOZTH.ulu33dHOiBE8ByOhJIrdAu2', '0', '0', '127.0.0.1', sysdate(), sysdate(), 'admin', sysdate(), '', null, '测试用户');\n\
+insert into sys_role values('1', '超级管理员', 'admin', 1, '1', 1, 1, '0', '0', 'admin', sysdate(), '', null, '超级管理员');\n\
+insert into sys_menu values('1', '系统管理', '0', '1', 'system', null, '', 1, 'Y', 'M', '0', 'Y', '', 'admin', sysdate(), '', null, '系统管理目录');";
+
+fn write_seed_sql(dir: &std::path::Path) {
+    fs::write(dir.join("ry_20260417.sql"), ADMIN_SEED_SQL).unwrap();
+}
+
+#[test]
+fn admin_rename_replaces_seed_row_and_audits_only() {
+    let mut params = build_params();
+    params.admin_username = "boss".into();
+    params.admin_nickname = "张管理".into();
+    let tmp = tempfile::tempdir().unwrap();
+    write_seed_sql(tmp.path());
+
+    let outcome = admin_rename::rename_admin_account(tmp.path(), &params, &|_| {}).unwrap();
+    let content = fs::read_to_string(tmp.path().join("ry_20260417.sql")).unwrap();
+
+    // 种子行：账号 + 昵称已替换（dept_id 前缀原样保留）
+    assert!(
+        content.contains("values(1,  103, 'boss', '张管理', '00'"),
+        "admin 种子行应被精准替换"
+    );
+    // 演示账号 ry 行不受影响（昵称同为 若依 也不能被误改）
+    assert!(content.contains("'ry', '若依'"), "演示账号行不应被修改");
+    // role_key='admin' 绝不能动（Java SUPER_ADMIN 权限体系依赖）
+    assert!(
+        content.contains("'超级管理员', 'admin', 1"),
+        "role_key='admin' 不应被替换"
+    );
+    // 审计列 create_by 全部替换
+    assert!(!content.contains("'admin', sysdate("), "审计列应全部替换");
+    assert!(content.contains("'boss', sysdate("));
+    // 密码哈希不受影响
+    assert!(content.contains("$2a$10$7JB720yubVSZvUI0rEqK"));
+
+    assert!(outcome.modified_files >= 1);
+    assert!(outcome.summary.iter().any(|s| s.contains("admin → boss")));
+    assert!(outcome.summary.iter().any(|s| s.contains("若依 → 张管理")));
+}
+
+#[test]
+fn admin_rename_nickname_only_keeps_username_and_audits() {
+    let mut params = build_params();
+    params.admin_nickname = "李老板".into();
+    let tmp = tempfile::tempdir().unwrap();
+    write_seed_sql(tmp.path());
+
+    admin_rename::rename_admin_account(tmp.path(), &params, &|_| {}).unwrap();
+    let content = fs::read_to_string(tmp.path().join("ry_20260417.sql")).unwrap();
+
+    assert!(content.contains("'admin', '李老板'"), "仅昵称应被替换");
+    assert!(content.contains("'admin', '若依'") == false, "演示行昵称不应动");
+    assert!(content.contains("'admin', sysdate("), "未改账号时审计列不应动");
+}
+
+#[test]
+fn admin_rename_noop_when_blank_or_default() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_seed_sql(tmp.path());
+
+    // 全空 / 与默认值相同 → 不执行任何修改
+    let params = build_params();
+    assert!(!admin_rename::needs_rename(&params));
+    let outcome = admin_rename::rename_admin_account(tmp.path(), &params, &|_| {}).unwrap();
+    assert_eq!(outcome.modified_files, 0);
+
+    let mut same = build_params();
+    same.admin_username = "admin".into();
+    same.admin_nickname = "若依".into();
+    assert!(!admin_rename::needs_rename(&same));
+    let content = fs::read_to_string(tmp.path().join("ry_20260417.sql")).unwrap();
+    assert_eq!(content, ADMIN_SEED_SQL, "不应有任何改动");
+}
+
+#[test]
+fn admin_rename_updates_login_prefill_and_generator_vm() {
+    let mut params = build_params();
+    params.admin_username = "boss".into();
+    let tmp = tempfile::tempdir().unwrap();
+    write_seed_sql(tmp.path());
+    // 登录页（前端目录已按新前缀改名的场景）
+    let login = tmp.path().join("demo-ui/src/views/login.vue");
+    fs::create_dir_all(login.parent().unwrap()).unwrap();
+    fs::write(&login, "loginForm: { username: \"admin\", password: \"admin123\" }").unwrap();
+    // 生成器模板
+    let vm = tmp.path().join("demo-generator/src/main/resources/vm/sql/sql.vm");
+    fs::create_dir_all(vm.parent().unwrap()).unwrap();
+    fs::write(&vm, "insert into sys_menu(...) values(..., 'admin', sysdate(), ...);").unwrap();
+
+    admin_rename::rename_admin_account(tmp.path(), &params, &|_| {}).unwrap();
+
+    let login_new = fs::read_to_string(&login).unwrap();
+    assert!(
+        login_new.contains("username: \"boss\""),
+        "登录页默认账号应替换，实际：{login_new}"
+    );
+    assert!(
+        login_new.contains("password: \"admin123\""),
+        "密码预填不属于账号改名范畴，不应动"
+    );
+    let vm_new = fs::read_to_string(&vm).unwrap();
+    assert!(vm_new.contains("'boss', sysdate("), "生成器模板 create_by 应替换");
+}
+
+#[test]
+fn admin_rename_params_validation() {
+    let mut p = build_params();
+    p.admin_username = "boss".into();
+    p.admin_nickname = "张管理".into();
+    assert!(p.validate().is_none(), "合法输入应通过");
+
+    let mut bad_user = build_params();
+    bad_user.admin_username = "bad name!".into();
+    assert!(bad_user.validate().is_some(), "账号含非法字符应被拒绝");
+
+    let mut bad_nick = build_params();
+    bad_nick.admin_nickname = "张三' OR '1'='1".into();
+    assert!(bad_nick.validate().is_some(), "昵称含单引号应被拒绝（防 SQL 注入）");
+
+    let mut bad_len = build_params();
+    bad_len.admin_nickname = "一".into();
+    assert!(bad_len.validate().is_some(), "昵称过短应被拒绝");
+}
+
+#[test]
+fn admin_password_replace_supports_insert_seed_format() {
+    // 修复验证：新版 ry_*.sql 的 INSERT 种子格式也应被密码替换命中
+    let mut content = ADMIN_SEED_SQL.to_string();
+    let hash = security::bcrypt_hash("NewPass@123").unwrap();
+    assert!(security::replace_admin_password(&mut content, &hash));
+    // user_id=1 行的哈希已替换，演示账号 ry 行哈希保留
+    assert!(content.contains(&format!("'', '{hash}', '0'")));
+    assert!(content.matches("$2a$10$7JB720yubVSZvUI0rEqK").count() == 1, "仅 admin 行哈希被替换");
 }

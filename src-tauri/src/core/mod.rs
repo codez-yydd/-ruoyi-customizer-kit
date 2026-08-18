@@ -11,6 +11,7 @@ pub mod wechat;
 pub mod ai_rules;
 pub mod security;
 pub mod sql_customize;
+pub mod admin_rename;
 pub mod frontend_split;
 pub mod oss;
 pub mod generator_config;
@@ -175,6 +176,12 @@ pub struct CustomizeParams {
     /// 新数据库名（留空则用 new_module_prefix 推导）
     #[serde(default)]
     pub db_name: String,
+    /// 管理员登录账号（留空保持 admin；仅改 user_id=1 种子行，不动 role_key='admin' 权限体系）
+    #[serde(default)]
+    pub admin_username: String,
+    /// 管理员昵称（留空保持 若依；仅改 user_id=1 种子行）
+    #[serde(default)]
+    pub admin_nickname: String,
     /// 是否清除 quartz 定时任务相关表和数据
     #[serde(default)]
     pub clean_quartz: bool,
@@ -307,6 +314,8 @@ impl Default for CustomizeParams {
             clean_demo_users: false,
             enable_sql_customize: false,
             db_name: String::new(),
+            admin_username: String::new(),
+            admin_nickname: String::new(),
             clean_quartz: false,
             enable_frontend_split: false,
             enable_ai_rules: true,
@@ -373,8 +382,30 @@ impl CustomizeParams {
                 ));
             }
         }
+        // 管理员账号/昵称校验（非空时才校验；值会写入 SQL 字符串字面量，须防注入）
+        if !self.admin_username.is_empty() && !is_valid_admin_username(&self.admin_username) {
+            return Some(format!(
+                "管理员账号「{}」不合法：须为 2-30 位字母/数字/下划线/点号/横线",
+                self.admin_username
+            ));
+        }
+        if !self.admin_nickname.is_empty() {
+            let n = self.admin_nickname.chars().count();
+            if !(2..=30).contains(&n) {
+                return Some("管理员昵称须为 2-30 个字符".into());
+            }
+            if self.admin_nickname.contains('\'') || self.admin_nickname.contains('\\') {
+                return Some("管理员昵称不能包含单引号或反斜杠".into());
+            }
+        }
         None
     }
+}
+
+/// 管理员账号合法性：2-30 位字母/数字/下划线/点号/横线（登录账号语义 + SQL 注入防护）
+fn is_valid_admin_username(name: &str) -> bool {
+    let re = regex::Regex::new(r"^[a-zA-Z0-9_.\-]{2,30}$").unwrap();
+    re.is_match(name)
 }
 
 /// Java 包名合法性：每段以字母开头，仅含字母/数字/下划线/$，至少两段（如 com.xxx）

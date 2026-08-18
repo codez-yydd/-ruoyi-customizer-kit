@@ -484,6 +484,29 @@ pub fn plan(
         });
     }
 
+    // 管理员账号/昵称定制（可选，挂在 SQL 定制开关下）：
+    // 修改 user_id=1 管理员种子行（账号/昵称），同步审计列、登录页预填、生成器模板。
+    if params.enable_sql_customize && crate::core::admin_rename::needs_rename(params) {
+        let mut parts: Vec<String> = Vec::new();
+        if params.admin_username != "admin" && !params.admin_username.is_empty() {
+            parts.push(format!("账号 admin → {}", params.admin_username));
+        }
+        if params.admin_nickname != "若依" && !params.admin_nickname.is_empty() {
+            parts.push(format!("昵称 若依 → {}", params.admin_nickname));
+        }
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!("管理员账号定制：{}", parts.join("，")),
+            task_type: TaskType::RenameAdminAccount,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 代码生成器配置定制（可选）：generator.yml 字段 + Vue3 模板升级
     if params.enable_generator_config {
         tasks.push(Task {

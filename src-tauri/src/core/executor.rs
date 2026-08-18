@@ -117,6 +117,7 @@ where
         TaskType::SetupOss => do_setup_oss(root, params, info, &mut r, log),
         TaskType::ApplySecurityHardening => do_apply_security(root, params, &mut r, log),
         TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
+        TaskType::RenameAdminAccount => do_rename_admin_account(root, params, &mut r, log),
         TaskType::CustomizeGeneratorConfig => do_customize_generator(root, params, &mut r, log),
         TaskType::GenerateAiRules => do_generate_ai_rules(root, params, &mut r, log),
         TaskType::GenerateSubAgents => do_generate_sub_agents(root, params, &mut r, log),
@@ -1219,6 +1220,20 @@ where
 {
     let outcome = crate::core::scripts::generate_export_source_scripts(root, params, &|msg| log(msg))?;
     r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12o-3. 管理员账号/昵称定制：修改 user_id=1 种子行 + 审计列 + 登录页预填 + 生成器模板。
+/// 详细统计写入 message（报告凭据节会集中展示，操作者需知道改后用什么账号登录）。
+fn do_rename_admin_account<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::admin_rename::rename_admin_account(root, params, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
     }

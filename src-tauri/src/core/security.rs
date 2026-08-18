@@ -134,10 +134,28 @@ pub fn apply_security_hardening(
 }
 
 /// 替换 SQL 里 admin 账号的 BCrypt 密码哈希。
-/// 匹配若依标准格式：update sys_user ... set ... password = 'xxx' ... where login_name = 'admin' 语句中的 password = '...'
+/// 兼容两种若依格式：
+/// - 新版种子格式：`insert into sys_user values(1, ..., '$2a$10$...', ...)`（user_id=1 行内的哈希）
+/// - 旧版格式：`update sys_user ... set ... password = 'xxx' ... where login_name = 'admin'`
 /// 返回是否发生替换。
 pub fn replace_admin_password(content: &mut String, new_hash: &str) -> bool {
-    // 匹配 update sys_user ... set ... password = 'xxx' ... where login_name = 'admin'
+    let mut changed = false;
+
+    // 新版：锚定 user_id=1 的 INSERT 行，替换行内首个 BCrypt 哈希（password 列）
+    // （[0-9]{2} 为 cost；哈希主体 53 字符，字符集 [A-Za-z0-9./]）
+    let insert_re = regex::Regex::new(
+        r#"(?i)(insert\s+into\s+sys_user\s+values\s*\(\s*1\s*,[^;]*?)\$2[aby]\$[0-9]{2}\$[A-Za-z0-9./]{53}"#,
+    )
+    .unwrap();
+    let replaced = insert_re.replace_all(content, |caps: &regex::Captures| {
+        changed = true;
+        format!("{}{}", &caps[1], new_hash)
+    });
+    if changed {
+        *content = replaced.to_string();
+    }
+
+    // 旧版：匹配 update sys_user ... set ... password = 'xxx' ... where login_name = 'admin'
     // 用正则定位含 admin 的 update 语句块，替换其中的 password = '...'
     let re = regex::Regex::new(
         r#"(?i)(update\s+sys_user\b[^;]*?\bpassword\s*=\s*')[^']*('[^;]*?where\s+login_name\s*=\s*'admin')"#,
@@ -145,17 +163,16 @@ pub fn replace_admin_password(content: &mut String, new_hash: &str) -> bool {
     .unwrap();
     // BCrypt 哈希含 $ 字符（$2a$10$...），regex replace 会把 $ 当替换变量。
     // 用 closures 形式替换，避免 $ 转义问题。
-    let mut changed = false;
+    let mut changed_old = false;
     let new = re.replace_all(content, |caps: &regex::Captures| {
-        changed = true;
+        changed_old = true;
         format!("{}{}{}", &caps[1], new_hash, &caps[2])
     });
-    if changed {
+    if changed_old {
         *content = new.to_string();
-        true
-    } else {
-        false
     }
+
+    changed || changed_old
 }
 
 /// 关闭注册：sys_config 表中 sys.account.registerUser 的 config_value 改为 false。

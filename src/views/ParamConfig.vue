@@ -121,6 +121,8 @@ const defaults = (): CustomizeParams => ({
   // SQL 定制
   enable_sql_customize: false,
   db_name: '',
+  admin_username: '',
+  admin_nickname: '',
   clean_quartz: false,
   // 项目结构
   enable_frontend_split: false,
@@ -209,6 +211,22 @@ const errors = computed(() => {
     const sn = form.server_name.trim()
     if (sn && /^https?:\/\//i.test(sn)) {
       e.server_name = '域名不带 http(s):// 前缀，如 demo.example.com'
+    }
+  }
+  // 管理员账号/昵称（镜像 Rust 端规则；值会写入 SQL 字符串字面量，须防注入）。
+  // 仅在 SQL 定制启用时校验：关闭开关后残留的非法值不应阻断「下一步」
+  if (form.enable_sql_customize) {
+    if (form.admin_username && !/^[a-zA-Z0-9_.-]{2,30}$/.test(form.admin_username)) {
+      e.admin_username = '账号须为 2-30 位字母/数字/下划线/点号/横线'
+    }
+    if (form.admin_nickname) {
+      // 与 Rust chars().count() 对齐（JS .length 按 UTF-16 码元计数，emoji 会算 2）
+      const len = Array.from(form.admin_nickname).length
+      if (len < 2 || len > 30) {
+        e.admin_nickname = '昵称须为 2-30 个字符'
+      } else if (/['\\]/.test(form.admin_nickname)) {
+        e.admin_nickname = '昵称不能包含单引号或反斜杠'
+      }
     }
   }
   return e
@@ -755,6 +773,22 @@ function generateRandomSecret(): string {
                     v-model="form.db_name"
                     :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`"
                   />
+                </el-form-item>
+                <el-form-item
+                  v-if="form.enable_sql_customize"
+                  label="管理员账号"
+                  :error="errors.admin_username"
+                >
+                  <el-input v-model="form.admin_username" placeholder="留空保持 admin" />
+                  <span class="inline-hint muted">登录账号，同步登录页预填与审计字段</span>
+                </el-form-item>
+                <el-form-item
+                  v-if="form.enable_sql_customize"
+                  label="管理员昵称"
+                  :error="errors.admin_nickname"
+                >
+                  <el-input v-model="form.admin_nickname" placeholder="留空保持 若依" />
+                  <span class="inline-hint muted">系统内显示名，可填中文</span>
                 </el-form-item>
                 <el-form-item v-if="form.enable_security" label="清除演示账号">
                   <el-switch v-model="form.clean_demo_users" @change="onSwitchChange" />
