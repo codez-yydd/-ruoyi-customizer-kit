@@ -215,6 +215,8 @@ export type TaskType =
   | 'GenerateStartupScripts'
   | 'GenerateDevScripts'
   | 'GenerateDevUiScripts'
+  | 'GenerateBuildScripts'
+  | 'GenerateExportSourceScripts'
   | 'UpdateAdminPomFinalName'
   | 'ValidateProject'
   | 'GenerateReport'

@@ -126,6 +126,9 @@ where
         TaskType::GenerateDevScripts => do_generate_dev_scripts(root, params, &mut r, log),
         TaskType::GenerateDevUiScripts => do_generate_dev_ui_scripts(root, params, &mut r, log),
         TaskType::GenerateBuildScripts => do_generate_build_scripts(root, params, &mut r, log),
+        TaskType::GenerateExportSourceScripts => {
+            do_generate_export_source_scripts(root, params, &mut r, log)
+        }
         TaskType::UpdateAdminPomFinalName => do_update_admin_pom_final_name(root, params, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
             r.status = TaskStatus::Skipped;
@@ -1200,6 +1203,21 @@ where
     F: Fn(&str),
 {
     let outcome = crate::core::scripts::generate_build_scripts(root, params, &|msg| log(msg))?;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12o-2. 生成源码导出脚本（export-source.sh / export-source.bat）到项目根目录
+/// 打包干净源码 zip 交付客户（剔除 node_modules/target/dist/.git 等）。
+/// 与开发脚本同源输出到 root（即改造后的项目根）。
+fn do_generate_export_source_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::scripts::generate_export_source_scripts(root, params, &|msg| log(msg))?;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");

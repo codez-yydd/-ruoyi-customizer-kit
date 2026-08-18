@@ -18,6 +18,9 @@
 // 生成清单（一键打包脚本，输出到根目录）：
 //   - build.sh / build.bat（后端 mvn package + 前端 npm run build:prod，产物汇总到 build/）
 //
+// 生成清单（源码导出脚本，输出到根目录）：
+//   - export-source.sh / export-source.bat（打包干净源码 zip 交付客户，剔除 node_modules/target/dist 等）
+//
 // 另：admin 模块 pom finalName 改造，使打包产物固定为 {prefix}-admin.jar。
 
 use crate::core::CustomizeParams;
@@ -309,6 +312,76 @@ pub fn generate_build_scripts(
         created += 1;
         summary.push(out_name.to_string());
         log(&format!("已生成打包脚本：{}", out_path.display()));
+    }
+
+    Ok(ScriptsOutcome { created_files: created, summary })
+}
+
+/// 生成源码导出脚本（export-source.sh / export-source.bat）到 output_dir 根目录。
+///
+/// 与一键打包脚本（build）互补：build 面向"产出可部署产物"，export-source 面向
+/// "交付干净源码给客户"——打包时剔除前端 node_modules/dist、后端各模块 target/、
+/// .git 及其他 .gitignore 语义的杂项（有 git 时按 git 清单精确导出，否则按内置排除清单）。
+///
+/// 输出目录结构：
+/// ```text
+/// {output_dir}/
+///   export-source.sh
+///   export-source.bat
+/// ```
+pub fn generate_export_source_scripts(
+    output_dir: &Path,
+    params: &CustomizeParams,
+    log: &dyn Fn(&str),
+) -> Result<ScriptsOutcome, String> {
+    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/scripts");
+    if !template_dir.is_dir() {
+        return Err(format!(
+            "脚本模板目录不存在：{}",
+            template_dir.display()
+        ));
+    }
+
+    let placeholders = build_placeholders(params);
+
+    // (模板名, 输出名, 是否为 shell 脚本需赋可执行位)
+    let targets: &[(&str, &str, bool)] = &[
+        ("export-source.sh.tmpl", "export-source.sh", true),
+        ("export-source.bat.tmpl", "export-source.bat", false),
+    ];
+
+    let mut created = 0usize;
+    let mut summary: Vec<String> = Vec::new();
+
+    for (tmpl_name, out_name, is_shell) in targets {
+        let tmpl_path = template_dir.join(tmpl_name);
+        let out_path = output_dir.join(out_name);
+        if !tmpl_path.is_file() {
+            log(&format!("模板不存在，跳过：{}", tmpl_path.display()));
+            continue;
+        }
+        if out_path.exists() {
+            log(&format!("{} 已存在，跳过", out_path.display()));
+            continue;
+        }
+        let content = std::fs::read_to_string(&tmpl_path)
+            .map_err(|e| format!("读取 {} 失败：{e}", tmpl_path.display()))?;
+        let new_content = replace_placeholders(&content, &placeholders);
+        std::fs::write(&out_path, &new_content)
+            .map_err(|e| format!("写入 {} 失败：{e}", out_path.display()))?;
+
+        // shell 脚本赋予可执行位（Windows 上无意义，跳过也无妨）
+        if *is_shell {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+
+        created += 1;
+        summary.push(out_name.to_string());
+        log(&format!("已生成源码导出脚本：{}", out_path.display()));
     }
 
     Ok(ScriptsOutcome { created_files: created, summary })
@@ -615,6 +688,47 @@ mod tests {
         let first = generate_build_scripts(tmp.path(), &p, &|_| {}).unwrap();
         assert_eq!(first.created_files, 2);
         let second = generate_build_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        assert_eq!(second.created_files, 0, "已存在应跳过");
+    }
+
+    // ---------- 源码导出脚本 ----------
+
+    #[test]
+    fn generate_export_source_scripts_writes_to_root_and_replaces_placeholders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = sample_params();
+        let outcome = generate_export_source_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        assert_eq!(outcome.created_files, 2, "应生成 export-source.sh + export-source.bat");
+
+        let sh = std::fs::read_to_string(tmp.path().join("export-source.sh")).unwrap();
+        assert!(!sh.contains("{{"), "不应残留任何占位符");
+        assert!(sh.contains("ARCHIVE_NAME=\"myapp\""), "产物名应使用已校验 ASCII 的模块前缀");
+        assert!(sh.contains("ls-files"), "应支持 git 清单通道");
+        assert!(sh.contains(".ry-forge-report"), "git 通道应强制排除锻造台改造报告");
+        assert!(
+            sh.contains("node_modules") && sh.contains("--exclude="),
+            "回退通道应内置 node_modules 等排除清单"
+        );
+
+        let bat = std::fs::read_to_string(tmp.path().join("export-source.bat")).unwrap();
+        assert!(!bat.contains("{{"), "不应残留任何占位符");
+        assert!(bat.contains("set \"ARCHIVE_NAME=myapp\""), "产物名应使用已校验 ASCII 的模块前缀");
+        assert!(bat.contains("robocopy"), "回退通道应使用 robocopy");
+        assert!(bat.contains(".ry-forge-report"), "回退通道应排除锻造台改造报告");
+        assert!(bat.contains("tar -a -cf"), "应使用 tar.exe 生成 zip");
+        assert!(
+            bat.is_ascii(),
+            "export-source.bat 必须纯 ASCII：UTF-8 中文在中文 Windows 的 cmd 下会按 GBK 误解析导致无法执行"
+        );
+    }
+
+    #[test]
+    fn generate_export_source_scripts_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = sample_params();
+        let first = generate_export_source_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        assert_eq!(first.created_files, 2);
+        let second = generate_export_source_scripts(tmp.path(), &p, &|_| {}).unwrap();
         assert_eq!(second.created_files, 0, "已存在应跳过");
     }
 }

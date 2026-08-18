@@ -1,0 +1,105 @@
+#!/bin/bash
+# {{PROJECT_NAME}} 源码导出脚本（Linux/macOS），由若依锻造台自动生成
+#
+# 用途：把项目干净源码打包为 zip，用于交付给客户。自动剔除：
+#   - 前端依赖与构建产物：node_modules / dist / dist-ssr
+#   - 后端各 Maven 模块的 target/
+#   - 锻造台运行产物：.ry-forge-report/（改造报告，含敏感信息）、.ry-customizer-backup/
+#   - 其他等价 .gitignore 语义的杂项：.git / .idea / .vscode / 日志 / 上传目录等
+#
+# 用法：./export-source.sh
+# 产物：{{MODULE_PREFIX}}-source-<日期>.zip（项目根目录，zip 内含顶层 {{MODULE_PREFIX}}/ 目录，解压不散落；
+#       产物名用模块前缀而非项目名，保证 ASCII 命名跨平台安全）
+# 双通道：有 .git 且装有 git 时按 git 清单精确导出（严格遵循 .gitignore，
+#         并包含尚未提交的新源码文件）；否则按内置排除清单导出。
+
+set -e
+
+# 项目根目录（脚本所在目录）
+APP_HOME="$(cd "$(dirname "$0")" && pwd)"
+cd "$APP_HOME"
+
+# 强制 UTF-8，避免控制台 / 文件名中文乱码
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+
+ARCHIVE_NAME="{{MODULE_PREFIX}}"
+DATE="$(date +%Y%m%d)"
+OUT="${ARCHIVE_NAME}-source-${DATE}.zip"
+
+# 临时导出目录（zip 内的顶层目录名 = 产物名）
+STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/forge-export.XXXXXX")"
+STAGE="${STAGE_ROOT}/${ARCHIVE_NAME}"
+trap 'rm -rf "${STAGE_ROOT}"' EXIT
+mkdir -p "${STAGE}"
+
+# 先清理旧导出包，避免把上一次的 zip 再打进包里
+rm -f "${ARCHIVE_NAME}"-source-*.zip
+
+# 内置排除清单通道（无 git / git 清单为空时回退）：
+# 覆盖若依系 .gitignore 常规项 + 锻造台运行产物；三种形态（裸名 / 任意层级 / 其子内容）兼容 GNU tar 与 bsdtar
+collect_by_exclude_list() {
+  echo "========== Collect source by builtin exclude list =========="
+  local EXCLUDES=()
+  local name
+  for name in node_modules target dist dist-ssr .git .idea .vscode logs uploadPath \
+              .turbo .cache .nitro .output .ry-forge-report .ry-customizer-backup; do
+    EXCLUDES+=("--exclude=${name}" "--exclude=*/${name}" "--exclude=*/${name}/*")
+  done
+  local pat
+  for pat in '*.log' '*.class' '*.local' '.DS_Store' "${ARCHIVE_NAME}-source-*.zip"; do
+    EXCLUDES+=("--exclude=${pat}")
+  done
+  tar -cf "${STAGE_ROOT}/stage.tar" -C "${APP_HOME}" "${EXCLUDES[@]}" .
+}
+
+# ========== 1. 采集干净源码到临时目录 ==========
+if [ -d .git ] && command -v git >/dev/null 2>&1; then
+  echo "========== Collect source by git manifest =========="
+  # 严格遵循 .gitignore（含嵌套规则），同时纳入未跟踪但未忽略的新文件；
+  # core.quotepath=false 保证中文文件名不被八进制转义；只保留磁盘上存在的文件。
+  # 即使项目缺了/漏了 .gitignore 规则，也强制剔除构建产物与锻造台运行产物
+  # （改造报告含 admin 密码等敏感信息，绝不能进交付包）
+  git -c core.quotepath=false ls-files --cached --others --exclude-standard -z \
+    | while IFS= read -r -d '' f; do
+        case "$f" in
+          .ry-forge-report/*|.ry-customizer-backup/*) continue ;;
+          node_modules/*|*/node_modules/*) continue ;;
+          target/*|*/target/*) continue ;;
+          dist/*|*/dist/*|dist-ssr/*|*/dist-ssr/*) continue ;;
+          logs/*|*/logs/*) continue ;;
+          .idea/*|*/.idea/*|.vscode/*|*/.vscode/*) continue ;;
+          uploadPath/*|*/uploadPath/*) continue ;;
+          *.log|*.class|*.local|*.DS_Store) continue ;;
+        esac
+        if [ -f "$f" ]; then printf '%s\0' "$f"; fi
+      done \
+    > "${STAGE_ROOT}/files.z"
+  if [ -s "${STAGE_ROOT}/files.z" ]; then
+    # 经由 tar 落盘中转（--null -T 兼容 GNU tar 与 bsdtar，空格/中文文件名安全）
+    tar --null -cf "${STAGE_ROOT}/stage.tar" -C "${APP_HOME}" -T "${STAGE_ROOT}/files.z"
+  else
+    echo "⚠️  git 文件清单为空，回退到内置排除清单"
+    collect_by_exclude_list
+  fi
+else
+  collect_by_exclude_list
+fi
+tar -xf "${STAGE_ROOT}/stage.tar" -C "${STAGE}"
+
+# ========== 2. 压缩为交付包 ==========
+if command -v zip >/dev/null 2>&1; then
+  (cd "${STAGE_ROOT}" && zip -qr "${APP_HOME}/${OUT}" "${ARCHIVE_NAME}")
+else
+  echo "⚠️  未找到 zip 命令，回退输出 tar.gz"
+  OUT="${OUT%.zip}.tar.gz"
+  tar -czf "${OUT}" -C "${STAGE_ROOT}" "${ARCHIVE_NAME}"
+fi
+
+# ========== 3. 统计 ==========
+COUNT="$(find "${STAGE}" -type f | wc -l | tr -d ' ')"
+SIZE="$(du -h "${OUT}" | cut -f1)"
+
+echo ""
+echo "🎉 导出完成：${OUT}（${COUNT} 个文件，${SIZE}）"
+echo "   已剔除 node_modules / target / dist / .git 等构建产物与依赖"

@@ -38,6 +38,7 @@ pub enum TaskType {
     GenerateDevScripts,
     GenerateDevUiScripts,
     GenerateBuildScripts,
+    GenerateExportSourceScripts,
     UpdateAdminPomFinalName,
     ValidateProject,
     GenerateReport,

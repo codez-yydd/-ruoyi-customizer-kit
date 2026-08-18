@@ -641,6 +641,20 @@ pub fn plan(
         });
     }
 
+    // 源码导出脚本生成（始终，输出到 output_dir 根目录）：
+    // 打包干净源码 zip（剔除 node_modules/target/dist/.git 等），用于交付源码给客户。
+    tasks.push(Task {
+        id: next_id(&tasks),
+        name: "生成源码导出脚本（export-source.sh / export-source.bat，交付干净源码包）".into(),
+        task_type: TaskType::GenerateExportSourceScripts,
+        risk_level: RiskLevel::Low,
+        affected_files: vec![],
+        affected_dirs: vec![],
+        created_files: vec!["export-source.sh".into(), "export-source.bat".into()],
+        status: TaskStatus::Pending,
+        error_message: String::new(),
+    });
+
     // admin pom 打包名改造（始终）：finalName → {prefix}-admin（产出 {prefix}-admin.jar）
     tasks.push(Task {
         id: next_id(&tasks),
