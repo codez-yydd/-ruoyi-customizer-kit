@@ -118,6 +118,7 @@ where
         TaskType::ApplySecurityHardening => do_apply_security(root, params, &mut r, log),
         TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
         TaskType::RenameAdminAccount => do_rename_admin_account(root, params, &mut r, log),
+        TaskType::CustomizeWebFooter => do_customize_web_footer(root, params, &mut r, log),
         TaskType::CustomizeGeneratorConfig => do_customize_generator(root, params, &mut r, log),
         TaskType::GenerateAiRules => do_generate_ai_rules(root, params, &mut r, log),
         TaskType::GenerateSubAgents => do_generate_sub_agents(root, params, &mut r, log),
@@ -421,7 +422,8 @@ pub fn replace_copyright(content: &mut String, params: &CustomizeParams) -> bool
     if !re.is_match(content) {
         return false;
     }
-    let year = if params.copyright_year.is_empty() { "2024" } else { &params.copyright_year };
+    let current_year = chrono::Local::now().format("%Y").to_string();
+    let year = if params.copyright_year.is_empty() { current_year.as_str() } else { &params.copyright_year };
     let holder = if params.copyright_holder.is_empty() { &params.frontend_title } else { &params.copyright_holder };
     let replacement = format!("Copyright © {year} {holder} All Rights Reserved");
     let new = re.replace_all(content, replacement.as_str()).to_string();
@@ -1226,7 +1228,7 @@ where
     Ok(())
 }
 
-/// 12o-3. 管理员账号/昵称定制：修改 user_id=1 种子行 + 审计列 + 登录页预填 + 生成器模板。
+/// 12o-4. 管理员账号/昵称定制：修改 user_id=1 种子行 + 审计列 + 登录页预填 + 生成器模板。
 /// 详细统计写入 message（报告凭据节会集中展示，操作者需知道改后用什么账号登录）。
 fn do_rename_admin_account<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
 where
@@ -1234,6 +1236,21 @@ where
 {
     let outcome = crate::core::admin_rename::rename_admin_account(root, params, &|msg| log(msg))?;
     r.modified_files = outcome.modified_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12o-5. 页脚版权与 ICP 备案定制：恒显底部版权栏 + 动态年份 + /webInfo 免登录接口。
+/// 说明与警告（锚点未命中项）写入 message，报告会展示备案号的生效方式。
+fn do_customize_web_footer<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::web_footer::customize_web_footer(root, params, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
     }

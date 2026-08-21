@@ -30,6 +30,7 @@ pub enum TaskType {
     ApplySecurityHardening,
     CustomizeSqlScripts,
     RenameAdminAccount,
+    CustomizeWebFooter,
     CustomizeGeneratorConfig,
     GenerateAiRules,
     GenerateSubAgents,

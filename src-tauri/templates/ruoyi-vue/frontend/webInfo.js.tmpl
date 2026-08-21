@@ -1,0 +1,25 @@
+import request from '@/utils/request'
+
+// 网站公开信息（版权起始年份 / ICP 备案号）：免登录接口，页脚展示用
+export function getWebInfo() {
+  return request({
+    url: '/webInfo',
+    method: 'get',
+    isToken: false
+  })
+}
+
+// 拼接页脚版权文案，起始年与当前年不同则显示区间：
+//   Copyright © 2026 某某管理系统. All Rights Reserved. 浙ICP备xxxx号-1
+// info 为空（接口未返回/失败）时退化为当前年份且不显示备案号
+export function resolveFooterContent(info) {
+  const now = new Date().getFullYear()
+  const start = parseInt(info && info.copyrightYear, 10) || now
+  const years = now > start ? start + '-' + now : String(now)
+  let content = 'Copyright © ' + years + ' ' + (process.env.VUE_APP_TITLE || '') + '. All Rights Reserved.'
+  const icp = (info && info.icp) || ''
+  if (icp) {
+    content += ' ' + icp
+  }
+  return content
+}

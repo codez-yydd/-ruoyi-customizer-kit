@@ -88,6 +88,7 @@ const defaults = (): CustomizeParams => ({
   frontend_title: '',
   copyright_year: '',
   copyright_holder: '',
+  enable_footer_icp: true,
   enable_mybatis_plus: true,
   enable_config_rewrite: true,
   enable_logback_rewrite: true,
@@ -246,6 +247,7 @@ const sectionCounts = computed(() => ({
     form.enable_generator_mybatis_plus,
     form.enable_long_id_json_string,
     form.enable_snowflake_id,
+    form.enable_footer_icp,
     form.enable_clear_home,
     form.enable_remove_github,
     form.enable_remove_docs,
@@ -644,6 +646,13 @@ function generateRandomSecret(): string {
                   <el-switch v-model="form.enable_snowflake_id" @change="onSwitchChange" />
                 </div>
                 <div class="switch-item__hint muted">insert 手动 setId（Hutool 雪花算法），全局禁用自增</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">页脚版权与 ICP 备案</span>
+                  <el-switch v-model="form.enable_footer_icp" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">底部版权栏恒显示，年份自动延续（2026 → 2026-2027）；ICP 备案号读后端 yaml（/webInfo 接口），备案通过后改配置重启即生效</div>
               </div>
               <div v-if="!isDisabled('enable_clear_home')" class="switch-item">
                 <div class="switch-item__head">

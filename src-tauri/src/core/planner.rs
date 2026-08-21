@@ -507,6 +507,34 @@ pub fn plan(
         });
     }
 
+    // 页脚版权与 ICP 备案定制（默认开启）：
+    // 底部版权栏恒显示 + 动态年份区间（起始年 → 当前年）+ ICP 备案号读后端 yaml（/webInfo 免登录接口）。
+    if params.enable_footer_icp {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "页脚版权与 ICP 备案定制（起始年 {}，备案号配置于 application.yaml）",
+                crate::core::web_footer::footer_start_year(params)
+            ),
+            task_type: TaskType::CustomizeWebFooter,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![
+                "application.yaml（ruoyi 块）".into(),
+                "RuoYiConfig.java".into(),
+                "SecurityConfig.java".into(),
+                "settings.js / AppMain.vue / login.vue / register.vue".into(),
+            ],
+            affected_dirs: vec![],
+            created_files: vec![
+                "WebInfoController.java（GET /webInfo）".into(),
+                "src/api/webInfo.js".into(),
+                "src/layout/components/Copyright/index.vue".into(),
+            ],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 代码生成器配置定制（可选）：generator.yml 字段 + Vue3 模板升级
     if params.enable_generator_config {
         tasks.push(Task {

@@ -115,6 +115,9 @@ pub fn generate_report(
     md.push_str("- FAIL 项需人工修复后方可编译运行。\n");
     md.push_str("- 建议执行 `mvn -DskipTests package` 验证后端可编译。\n");
     md.push_str("- 建议在 IDE 中刷新 Maven 并检查依赖树。\n");
+    if params.enable_footer_icp {
+        md.push_str("- 页脚 ICP 备案：备案通过后修改 `application.yaml` 的 `ruoyi.icp` 并重启后端即可生效（无需重新打包前端）；版权年份按「起始年-当前年」自动延续。\n");
+    }
 
     std::fs::write(&report_path, md).map_err(|e| format!("写入报告失败：{e}"))?;
     Ok(report_path)

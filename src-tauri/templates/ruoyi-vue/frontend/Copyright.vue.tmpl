@@ -1,0 +1,42 @@
+<template>
+  <footer class="copyright">
+    <span>{{ content }}</span>
+  </footer>
+</template>
+
+<script>
+import { getWebInfo, resolveFooterContent } from "@/api/webInfo"
+
+export default {
+  name: "Copyright",
+  data() {
+    return {
+      content: resolveFooterContent()
+    }
+  },
+  created() {
+    // 起始年份与备案号来自后端配置（application.yaml 的 ruoyi.copyrightYear / ruoyi.icp），
+    // 备案通过后改 yaml 重启后端即可生效，无需重新打包前端
+    getWebInfo().then(res => {
+      this.content = resolveFooterContent(res.data)
+    }).catch(() => {})
+  }
+}
+</script>
+
+<style scoped>
+.copyright {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  padding: 10px 20px;
+  text-align: right;
+  background-color: #f8f8f8;
+  color: #666;
+  font-size: 14px;
+  border-top: 1px solid #e7e7e7;
+  z-index: 999;
+}
+</style>

@@ -4,7 +4,7 @@
 # 部署说明：
 #   1. 将前端打包产物（dist/）放到 /var/www/{{FRONTEND_DIR}} 下
 #   2. 后端 jar 监听 {{SERVER_PORT}}（见 scripts/start.sh）
-#   3. 暴露的 web 端口为 80（HTTP）或 443（HTTPS）
+#   3. 暴露的 web 端口为 80（HTTP）或 443（HTTPS，80 自动 301 跳转 HTTPS）
 #
 # ---------------- 端口配置（集中定义，三处必须一致）----------------
 # 后端服务端口：{{SERVER_PORT}}
@@ -28,9 +28,30 @@ gzip_types text/plain text/css application/json application/javascript text/xml 
 gzip_vary on;
 gzip_disable "msie6";
 
+# Web 入口（启用 HTTPS 时，80 仅做强制跳转）
 server {
     listen       80;
     server_name  {{SERVER_NAME}};
+{{#HTTPS}}
+
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS 入口
+server {
+    listen       443 ssl;
+    server_name  {{SERVER_NAME}};
+
+    # 证书路径（宝塔风格）：将证书放到 /www/wwwroot/nginx/crt/ 下
+    #   证书链 {{SERVER_NAME}}_bundle.crt，私钥 {{SERVER_NAME}}.key
+    # 证书放在其他位置时，修改下面两行路径即可
+    ssl_certificate     /www/wwwroot/nginx/crt/{{SERVER_NAME}}_bundle.crt;
+    ssl_certificate_key /www/wwwroot/nginx/crt/{{SERVER_NAME}}.key;
+    ssl_session_timeout 5m;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL:!MD5:!RC4:!DHE;
+    ssl_prefer_server_ciphers on;
+{{/HTTPS}}
 
     # 前端静态资源
     root   /var/www/{{FRONTEND_DIR}};
@@ -48,15 +69,20 @@ server {
     }
 
     # 后端接口反代（与 ruoyi-ui VUE_APP_BASE_API、Vben VITE_GLOB_API_URL 统一为 /prod-api）
-    location /prod-api/ {
+    # ^~ 使本条优先于上方正则 location：/prod-api/profile/xxx.png 等上传文件必须走后端而不是静态目录
+    location ^~ /prod-api/ {
+        proxy_connect_timeout 120s;
+        proxy_send_timeout    120s;
+        proxy_read_timeout    120s;
+        send_timeout          120s;
         proxy_set_header Host $http_host;
         proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header REMOTE-HOST $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_send_timeout 300s;
-        # 若依接口路径前缀需与后端 server.servlet.context-path 对齐
-        proxy_pass http://backend/;
+        # 去掉 /prod-api 前缀再转发（若依后端为根路径部署）
+        rewrite ^/prod-api(/.*)$ $1 break;
+        proxy_pass http://backend;
     }
 
     # 上传文件大小限制（按需调整）
@@ -66,44 +92,10 @@ server {
     location = /index.html {
         add_header Cache-Control "no-cache, no-store, must-revalidate";
     }
+
+    # 后端错误页兜底
+    error_page 500 502 503 504 /50x.html;
+    location = /50x.html {
+        root   html;
+    }
 }
-{{#HTTPS}}
-# ---------------- HTTPS 配置（占位，需替换为正式证书）----------------
-# 1. 将证书放到 /etc/nginx/cert/ 下：
-#    - {{MODULE_PREFIX}}.pem（或 fullchain.pem）
-#    - {{MODULE_PREFIX}}.key（私钥）
-# 2. 取消下面 server 块的注释，HTTP server 块改为 301 强制跳转
-#
-# server {
-#     listen       443 ssl http2;
-#     server_name  {{SERVER_NAME}};
-#
-#     ssl_certificate     /etc/nginx/cert/{{MODULE_PREFIX}}.pem;
-#     ssl_certificate_key /etc/nginx/cert/{{MODULE_PREFIX}}.key;
-#     ssl_protocols       TLSv1.2 TLSv1.3;
-#     ssl_ciphers         HIGH:!aNULL:!MD5;
-#     ssl_session_cache   shared:SSL:10m;
-#     ssl_session_timeout 10m;
-#
-#     root   /var/www/{{FRONTEND_DIR}};
-#     index  index.html;
-#
-#     location / {
-#         try_files $uri $uri/ /index.html;
-#     }
-#     location /prod-api/ {
-#         proxy_set_header Host $http_host;
-#         proxy_set_header X-Real-IP $remote_addr;
-#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-#         proxy_set_header X-Forwarded-Proto $scheme;
-#         proxy_pass http://backend/;
-#     }
-# }
-#
-# # HTTP 强制跳转 HTTPS
-# server {
-#     listen 80;
-#     server_name {{SERVER_NAME}};
-#     return 301 https://$host$request_uri;
-# }
-{{/HTTPS}}

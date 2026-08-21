@@ -20,6 +20,7 @@ pub mod scripts;
 pub mod snowflake;
 pub mod logback;
 pub mod sub_agents;
+pub mod web_footer;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -91,6 +92,10 @@ pub struct CustomizeParams {
     /// 版权方名称（如 某某科技），留空则跳过版权替换
     #[serde(default)]
     pub copyright_holder: String,
+    /// 页脚版权与 ICP 备案：底部版权栏恒显示、年份动态延续（如 2026 → 2026-2027），
+    /// ICP 备案号读后端 application.yaml 的 ruoyi.icp（/webInfo 免登录接口）
+    #[serde(default = "default_true")]
+    pub enable_footer_icp: bool,
     pub enable_mybatis_plus: bool,
     pub enable_config_rewrite: bool,
     pub enable_logback_rewrite: bool,
@@ -283,6 +288,7 @@ impl Default for CustomizeParams {
             frontend_title: String::new(),
             copyright_year: String::new(),
             copyright_holder: String::new(),
+            enable_footer_icp: true,
             enable_mybatis_plus: true,
             enable_config_rewrite: true,
             enable_logback_rewrite: true,

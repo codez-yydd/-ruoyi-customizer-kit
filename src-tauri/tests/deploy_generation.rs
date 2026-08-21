@@ -55,14 +55,20 @@ fn generate_nginx_config_http_mode_omits_https_block() {
     let conf = fs::read_to_string(tmp.path().join("nginx/nginx.conf")).unwrap();
     assert!(!conf.contains("{{#HTTPS}}"), "不应残留条件块标记");
     assert!(!conf.contains("{{/HTTPS}}"), "不应残留条件块标记");
-    // HTTP 模式：HTTPS 配置段被删除
-    assert!(!conf.contains("listen 443"), "HTTP 模式不应含 443 监听");
+    // HTTP 模式：HTTPS 配置段被删除（头部注释可提及 443，但不应有监听/证书指令）
+    assert!(!conf.contains("443 ssl"), "HTTP 模式不应含 443 ssl 监听");
+    assert!(!conf.contains("ssl_certificate"), "HTTP 模式不应含证书指令");
+    assert!(!conf.contains("return 301"), "HTTP 模式不应含 301 跳转");
     // 基础反代配置应在
     assert!(conf.contains("upstream backend"), "应有 upstream");
     assert!(conf.contains("proxy_pass http://backend"), "应有 proxy_pass");
     assert!(conf.contains("demo.example.com"), "应含域名");
     assert!(conf.contains("8080"), "应含端口");
     assert!(conf.contains("myapp-ui"), "应含前端目录名");
+    // 反代关键形态：^~ 优先级 + 前缀剥离 + 错误页兜底
+    assert!(conf.contains("location ^~ /prod-api/"), "prod-api 应使用 ^~ 前缀");
+    assert!(conf.contains("rewrite ^/prod-api(/.*)$ $1 break;"), "应剥离 /prod-api 前缀");
+    assert!(conf.contains("error_page 500 502 503 504 /50x.html;"), "应有 50x 错误页");
 }
 
 #[test]
@@ -76,8 +82,22 @@ fn generate_nginx_config_https_mode_keeps_https_block() {
 
     let conf = fs::read_to_string(tmp.path().join("nginx/nginx.conf")).unwrap();
     assert!(!conf.contains("{{#HTTPS}}"), "不应残留条件块标记");
-    // HTTPS 模式：443 段保留（虽然是注释形式，但内容在）
-    assert!(conf.contains("443"), "HTTPS 模式应含 443 端口配置段");
+    // HTTPS 模式：80 强制 301 跳转 + 443 SSL 真实配置（不再是注释占位）
+    assert!(conf.contains("return 301 https://$host$request_uri;"), "应有 301 跳转");
+    assert!(conf.contains("listen       443 ssl;"), "应有 443 ssl 监听");
+    // 宝塔风格证书路径
+    assert!(
+        conf.contains("/www/wwwroot/nginx/crt/demo.example.com_bundle.crt"),
+        "证书路径应为宝塔风格 {{域名}}_bundle.crt"
+    );
+    assert!(conf.contains("/www/wwwroot/nginx/crt/demo.example.com.key"), "私钥路径应为宝塔风格 {{域名}}.key");
+    assert!(
+        conf.contains("ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL:!MD5:!RC4:!DHE"),
+        "应含线上同款 ssl_ciphers"
+    );
+    // 公共段修复项在 HTTPS 模式同样生效
+    assert!(conf.contains("location ^~ /prod-api/"), "prod-api 应使用 ^~ 前缀");
+    assert!(conf.contains("rewrite ^/prod-api(/.*)$ $1 break;"), "应剥离 /prod-api 前缀");
 }
 
 #[test]

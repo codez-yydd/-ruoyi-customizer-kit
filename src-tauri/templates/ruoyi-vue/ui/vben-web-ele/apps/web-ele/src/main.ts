@@ -28,13 +28,48 @@ async function initApplication() {
     copyright: overridesPreferences.copyright,
   });
 
+  // 动态版权：从后端获取起始年份与 ICP 备案号（免登录公开接口）。
+  // 不 await——后端未就绪时保留上面的构建期静态版权，也不阻塞启动。
+  void syncCopyrightFromServer();
+
   // 启动应用并挂载
-  // vue应用主要逻辑及视图
   const { bootstrap } = await import('./bootstrap');
   await bootstrap(namespace);
 
   // 移除并销毁loading
   unmountGlobalLoading();
+}
+
+/**
+ * 请求 /webInfo 同步动态版权。
+ * 后端返回 { code: 200, data: { copyrightYear, icp } }：
+ * - copyrightYear：起始年，与当前年不同则显示区间（如 2026-2027）
+ * - icp：ICP 备案号（application.yaml 的 ruoyi.icp，备案通过后改配置重启即生效）
+ */
+async function syncCopyrightFromServer() {
+  try {
+    const baseUrl = import.meta.env.VITE_GLOB_API_URL || '/prod-api';
+    const res = await fetch(`${baseUrl}/webInfo`);
+    const body: { code?: number; data?: { copyrightYear?: string; icp?: string } } =
+      await res.json();
+    if (body?.code !== 200 || !body.data) {
+      return;
+    }
+    const now = new Date().getFullYear();
+    const start = Number.parseInt(body.data.copyrightYear ?? '', 10) || now;
+    const date = now > start ? `${start}-${now}` : `${now}`;
+    const title = import.meta.env.VITE_APP_TITLE || '';
+    updatePreferences({
+      copyright: {
+        date,
+        companyName: `${title}. All Rights Reserved.`,
+        icp: body.data.icp || '',
+        icpLink: 'https://beian.miit.gov.cn/',
+      },
+    });
+  } catch {
+    // 后端未就绪/接口异常：静默保留静态版权
+  }
 }
 
 initApplication();

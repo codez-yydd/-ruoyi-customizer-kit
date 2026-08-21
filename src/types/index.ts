@@ -62,6 +62,8 @@ export interface CustomizeParams {
   copyright_year: string
   /** 版权方名称（如 某某科技），留空跳过版权替换 */
   copyright_holder: string
+  /** 页脚版权与 ICP 备案：底部版权栏恒显示、年份动态延续、备案号读后端 yaml（/webInfo 接口） */
+  enable_footer_icp: boolean
   enable_mybatis_plus: boolean
   enable_config_rewrite: boolean
   enable_logback_rewrite: boolean
