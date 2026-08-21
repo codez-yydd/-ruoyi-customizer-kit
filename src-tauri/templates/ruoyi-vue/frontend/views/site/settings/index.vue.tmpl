@@ -1,0 +1,85 @@
+<template>
+  <div class="app-container">
+    <el-card shadow="never">
+      <div slot="header">站点设置</div>
+      <el-form ref="form" :model="form" :rules="rules" label-width="120px" style="max-width: 640px">
+        <el-form-item label="站点标题" prop="title">
+          <el-input v-model="form.title" placeholder="留空使用打包时的默认标题" maxlength="50" show-word-limit />
+          <div class="site-tip">侧边栏、登录页、浏览器标签页与页脚版权中的系统名称</div>
+        </el-form-item>
+        <el-form-item label="后台Logo" prop="logo">
+          <image-upload v-model="form.logo" :limit="1" />
+          <div class="site-tip">建议 PNG 格式；留空使用默认 Logo，保存后立即生效</div>
+        </el-form-item>
+        <el-form-item label="ICP备案号" prop="icp">
+          <el-input v-model="form.icp" placeholder="如 浙ICP备2026000000号-1，留空则不显示" maxlength="100" />
+          <div class="site-tip">备案通过后在此填写即可，页脚同步显示（优先级高于 application.yaml 的 ruoyi.icp）</div>
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="loading" @click="handleSave">保 存</el-button>
+          <el-button @click="reset">重 置</el-button>
+        </el-form-item>
+      </el-form>
+    </el-card>
+  </div>
+</template>
+
+<script>
+import { getSiteSettings, updateSiteSettings } from "@/api/site/settings"
+
+export default {
+  name: "SiteSettings",
+  data() {
+    return {
+      loading: false,
+      form: { title: "", logo: "", icp: "" },
+      rules: {
+        title: [{ max: 50, message: "标题不能超过 50 个字符", trigger: "blur" }],
+        icp: [{ max: 100, message: "备案号不能超过 100 个字符", trigger: "blur" }]
+      }
+    }
+  },
+  created() {
+    this.load()
+  },
+  methods: {
+    load() {
+      getSiteSettings().then(res => {
+        this.applyForm(res.data)
+      })
+    },
+    applyForm(data) {
+      this.form = {
+        title: (data && data.title) || "",
+        logo: (data && data.logo) || "",
+        icp: (data && data.icp) || ""
+      }
+    },
+    handleSave() {
+      this.$refs.form.validate(valid => {
+        if (!valid) return
+        this.loading = true
+        updateSiteSettings(this.form).then(res => {
+          this.$modal.msgSuccess("保存成功")
+          // 标题/Logo 即时生效：侧边栏、登录页、标签页、页脚同步更新
+          this.$store.dispatch("settings/setSite", res.data)
+          this.applyForm(res.data)
+        }).finally(() => {
+          this.loading = false
+        })
+      })
+    },
+    reset() {
+      this.load()
+    }
+  }
+}
+</script>
+
+<style scoped>
+.site-tip {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.8;
+}
+</style>

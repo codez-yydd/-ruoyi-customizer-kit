@@ -535,6 +535,32 @@ pub fn plan(
         });
     }
 
+    // 后台设置页面（默认开启）：一级目录「后台设置 → 站点设置」，
+    // 运行时维护站点标题 / 后台 Logo / ICP 备案号（存 sys_config，保存即时生效）。
+    if params.enable_site_settings {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "后台设置页面定制（站点标题/Logo/ICP 运行时可改，即时生效）".into(),
+            task_type: TaskType::CustomizeSiteSettings,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec![
+                "SQL 种子（sys_menu + sys_config 追加）".into(),
+                "store/modules/settings.js".into(),
+                "permission.js".into(),
+                "Sidebar/Logo.vue / login.vue / register.vue".into(),
+                "utils/dynamicTitle.js".into(),
+            ],
+            affected_dirs: vec![],
+            created_files: vec![
+                "SiteSettingsController.java（GET/PUT /site/settings）".into(),
+                "src/api/site/settings.js".into(),
+                "src/views/site/settings/index.vue".into(),
+            ],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 代码生成器配置定制（可选）：generator.yml 字段 + Vue3 模板升级
     if params.enable_generator_config {
         tasks.push(Task {

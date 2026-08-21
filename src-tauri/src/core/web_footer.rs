@@ -140,7 +140,7 @@ pub fn customize_web_footer(
 // ---------- 模块/文件定位 ----------
 
 /// 定位后端模块目录：优先新前缀名（{new}-{suffix}），回退原前缀名，最后扫描 *-{suffix}。
-fn find_module_dir(root: &Path, params: &CustomizeParams, suffix: &str) -> Option<PathBuf> {
+pub fn find_module_dir(root: &Path, params: &CustomizeParams, suffix: &str) -> Option<PathBuf> {
     let new_name = format!("{}-{}", params.new_module_prefix, suffix);
     let old_name = format!("{}-{}", params.original_module_prefix, suffix);
     if root.join(&new_name).is_dir() {
@@ -161,7 +161,7 @@ fn find_module_dir(root: &Path, params: &CustomizeParams, suffix: &str) -> Optio
 }
 
 /// 根目录下的前端目录（*-ui，兼容已改名 {prefix}-ui 与未改名 ruoyi-ui）。
-fn find_ui_dirs(root: &Path) -> Vec<PathBuf> {
+pub fn find_ui_dirs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for e in entries.flatten() {
@@ -432,7 +432,7 @@ fn patch_classic_frontend(ui: &Path, log: &dyn Fn(&str)) -> Option<(usize, usize
 }
 
 /// 写入本模块托管的模板文件（已存在且内容一致则跳过）。返回是否实际写入。
-fn write_managed_file(target: &Path, tmpl_rel: &str, log: &dyn Fn(&str)) -> bool {
+pub fn write_managed_file(target: &Path, tmpl_rel: &str, log: &dyn Fn(&str)) -> bool {
     let tmpl_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(tmpl_rel);
     let content = match std::fs::read_to_string(&tmpl_path) {
         Ok(c) => c,

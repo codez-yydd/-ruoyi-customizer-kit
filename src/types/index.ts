@@ -64,6 +64,8 @@ export interface CustomizeParams {
   copyright_holder: string
   /** 页脚版权与 ICP 备案：底部版权栏恒显示、年份动态延续、备案号读后端 yaml（/webInfo 接口） */
   enable_footer_icp: boolean
+  /** 后台设置页面：一级目录「后台设置 → 站点设置」，运行时维护标题/Logo/ICP（存 sys_config，即时生效） */
+  enable_site_settings: boolean
   enable_mybatis_plus: boolean
   enable_config_rewrite: boolean
   enable_logback_rewrite: boolean

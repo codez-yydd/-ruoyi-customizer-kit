@@ -1,0 +1,18 @@
+import request from '@/utils/request'
+
+// 获取站点设置（标题 / 后台 Logo / ICP 备案号）
+export function getSiteSettings() {
+  return request({
+    url: '/site/settings',
+    method: 'get'
+  })
+}
+
+// 保存站点设置，返回最新值（前端据此即时更新标题/Logo/页脚）
+export function updateSiteSettings(data) {
+  return request({
+    url: '/site/settings',
+    method: 'put',
+    data: data
+  })
+}

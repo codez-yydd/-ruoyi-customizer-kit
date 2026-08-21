@@ -21,6 +21,7 @@ pub mod snowflake;
 pub mod logback;
 pub mod sub_agents;
 pub mod web_footer;
+pub mod site_settings;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -96,6 +97,10 @@ pub struct CustomizeParams {
     /// ICP 备案号读后端 application.yaml 的 ruoyi.icp（/webInfo 免登录接口）
     #[serde(default = "default_true")]
     pub enable_footer_icp: bool,
+    /// 后台设置页面：一级目录「后台设置 → 站点设置」，运行时维护站点标题/后台 Logo/ICP 备案号
+    ///（存 sys_config，保存即时生效；标题/Logo 空值回退打包默认，ICP 回退 yaml）
+    #[serde(default = "default_true")]
+    pub enable_site_settings: bool,
     pub enable_mybatis_plus: bool,
     pub enable_config_rewrite: bool,
     pub enable_logback_rewrite: bool,
@@ -289,6 +294,7 @@ impl Default for CustomizeParams {
             copyright_year: String::new(),
             copyright_holder: String::new(),
             enable_footer_icp: true,
+            enable_site_settings: true,
             enable_mybatis_plus: true,
             enable_config_rewrite: true,
             enable_logback_rewrite: true,

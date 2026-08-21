@@ -21,6 +21,12 @@ export const overridesPreferences = defineOverridesPreferences({
     date: '{{COPYRIGHT_YEAR}}',
     enable: true,
   },
+  // 后台 Logo：默认不显示图片（仅文字标题），由「后台设置 → 站点设置」上传后动态启用，
+  // 也避免依赖 vben 默认的 unpkg 远程 Logo 外链
+  logo: {
+    enable: true,
+    source: '',
+  },
   widget: {
     // 关闭顶栏/登录页的国际化语言切换按钮
     languageToggle: false,

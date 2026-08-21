@@ -16,10 +16,16 @@ export const overridesPreferences = defineOverridesPreferences({
   },
   // 页脚版权：本地联调用中性默认值；锻造台快照模板时会替换为 {{COPYRIGHT_*}} 占位符
   copyright: {
-    companyName: '管理系统',
+    companyName: '{{COPYRIGHT_HOLDER}}',
     companySiteLink: '',
-    date: '2026',
+    date: '{{COPYRIGHT_YEAR}}',
     enable: true,
+  },
+  // 后台 Logo：默认不显示图片（仅文字标题），由「后台设置 → 站点设置」上传后动态启用，
+  // 也避免依赖 vben 默认的 unpkg 远程 Logo 外链
+  logo: {
+    enable: true,
+    source: '',
   },
   widget: {
     // 关闭顶栏/登录页的国际化语言切换按钮

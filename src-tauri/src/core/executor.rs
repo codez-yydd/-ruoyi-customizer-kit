@@ -119,6 +119,7 @@ where
         TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
         TaskType::RenameAdminAccount => do_rename_admin_account(root, params, &mut r, log),
         TaskType::CustomizeWebFooter => do_customize_web_footer(root, params, &mut r, log),
+        TaskType::CustomizeSiteSettings => do_customize_site_settings(root, params, &mut r, log),
         TaskType::CustomizeGeneratorConfig => do_customize_generator(root, params, &mut r, log),
         TaskType::GenerateAiRules => do_generate_ai_rules(root, params, &mut r, log),
         TaskType::GenerateSubAgents => do_generate_sub_agents(root, params, &mut r, log),
@@ -1249,6 +1250,21 @@ where
     F: Fn(&str),
 {
     let outcome = crate::core::web_footer::customize_web_footer(root, params, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12o-6. 后台设置页面定制：一级目录「后台设置 → 站点设置」，标题/Logo/ICP 运行时可改。
+/// SQL 未注入（无种子文件）等告警写入 message，报告会提示手工处理。
+fn do_customize_site_settings<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::site_settings::customize_site_settings(root, params, &|msg| log(msg))?;
     r.modified_files = outcome.modified_files;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
