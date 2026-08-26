@@ -12,11 +12,16 @@ use std::path::{Path, PathBuf};
 const BEGIN_MARKER: &str = "<!-- SUB_AGENTS_RULES_BEGIN -->";
 const END_MARKER: &str = "<!-- SUB_AGENTS_RULES_END -->";
 
-/// 解析 kit 根目录 agents/（开发态 CARGO_MANIFEST_DIR/../agents，打包态回退 current_dir/agents）。
+/// 解析 kit 根目录 agents/（开发态 CARGO_MANIFEST_DIR/../agents，
+/// 打包态依次回退安装目录 agents/（bundle 资源）与 current_dir/agents）。
 fn agents_source_dir() -> PathBuf {
     let primary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("agents");
     if primary.is_dir() {
         return primary;
+    }
+    // 打包态回退：agents/ 随 bundle 资源安装在可执行文件同目录
+    if let Some(alt) = exe_side_dir("agents") {
+        return alt;
     }
     // 回退：当前工作目录下的 agents（与 do_replace_ui 的回退策略一致）
     if let Ok(cwd) = std::env::current_dir() {
@@ -24,6 +29,29 @@ fn agents_source_dir() -> PathBuf {
         if alt.is_dir() {
             return alt;
         }
+    }
+    primary
+}
+
+/// 查找可执行文件同目录下的相对路径文件/目录（打包态资源解析），不存在则返回 None。
+fn exe_side_dir(relative: &str) -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.join(relative);
+    if dir.exists() {
+        Some(dir)
+    } else {
+        None
+    }
+}
+
+/// 解析子智能体框架模板：开发态优先源码目录，打包态回退安装目录 templates/ 资源。
+fn framework_template_path() -> PathBuf {
+    let primary =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/ai-rules/sub-agents-framework.md");
+    if primary.is_file() {
+        return primary;
+    }
+    if let Some(alt) = exe_side_dir("templates/ruoyi-vue/ai-rules/sub-agents-framework.md") {
+        return alt;
     }
     primary
 }
@@ -100,8 +128,7 @@ fn unquote(s: &str) -> &str {
 
 /// 组装各智能体小节，填入框架占位符，返回默认说明文本。
 pub fn build_default_description() -> Result<String, String> {
-    let framework_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/ai-rules/sub-agents-framework.md");
+    let framework_path = framework_template_path();
     let framework = std::fs::read_to_string(&framework_path)
         .map_err(|e| format!("读取子智能体框架模板失败：{e}"))?;
 
@@ -198,4 +225,36 @@ fn replace_marker_block(content: &str, marked: &str) -> String {
     result.push_str(marked);
     result.push_str(&content[end_idx..]);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 默认说明文本应包含已入库的全部智能体小节（含视觉智能体 vision）。
+    #[test]
+    fn default_description_contains_all_agents() {
+        let desc = build_default_description().expect("生成默认子智能体说明失败");
+        for name in [
+            "architect",
+            "code-reviewer",
+            "database-reviewer",
+            "fullstack-developer",
+            "project-auditor",
+            "project-explorer",
+            "ui-reviewer",
+            "vision",
+        ] {
+            assert!(desc.contains(&format!("## {name}")), "缺少智能体小节：{name}");
+        }
+    }
+
+    /// frontmatter 解析：正确提取 name 与 description，忽略其他字段。
+    #[test]
+    fn parse_frontmatter_extracts_name_and_description() {
+        let content = "---\nname: \"demo\"\ndescription: '测试用说明'\ncolor: green\ntools:\n  - Read\n---\n正文";
+        let (name, desc) = parse_frontmatter(content);
+        assert_eq!(name, "demo");
+        assert_eq!(desc, "测试用说明");
+    }
 }

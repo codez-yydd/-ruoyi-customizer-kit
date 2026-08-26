@@ -4,7 +4,7 @@
 
 主 Agent 负责理解用户目标、维护整体任务上下文、协调子任务和最终汇总。
 
-对于能够独立完成的代码探索、架构分析、开发、代码审查、数据库审查、UI/UX 审查和全项目审计任务，应优先考虑委派给对应子智能体，避免所有工作都由主 Agent 在同一上下文中完成。
+对于能够独立完成的代码探索、架构分析、开发、代码审查、数据库审查、UI/UX 审查、视觉内容识别（截图 / 报错截图 / 设计稿 / 录屏）和全项目审计任务，应优先考虑委派给对应子智能体，避免所有工作都由主 Agent 在同一上下文中完成。
 
 子智能体完成任务后，由主 Agent 结合其结果继续推进当前任务。
 
@@ -51,6 +51,20 @@ Explore
 → architect（复杂页面时）
 → fullstack-developer
 → ui-reviewer
+→ code-reviewer
+
+提供报错截图、界面异常截图或设计稿等视觉材料时：
+
+vision（先提取结构化信息：文字、界面结构、状态与关键点）
+→ Explore / project-explorer（按视觉线索定位相关实现）
+→ fullstack-developer
+→ code-reviewer
+
+涉及重要页面交付前的视觉走查：
+
+fullstack-developer
+→ ui-reviewer
+→ vision（对截图做还原度与视觉细节复核）
 → code-reviewer
 
 对于交付前或上线前的整体检查：
