@@ -3,6 +3,7 @@
 
 pub mod scanner;
 pub mod detector;
+pub mod paths;
 pub mod config_rewrite;
 pub mod mybatis_plus;
 pub mod uniapp;

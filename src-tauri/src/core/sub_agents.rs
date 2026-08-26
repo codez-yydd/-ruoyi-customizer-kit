@@ -6,54 +6,28 @@
 // - 注入：写入项目根 AGENTS.md，用首尾 HTML 注释标记包裹，幂等可重复执行
 // - 用户可在前端预览并修改 sub_agents_description，修改后的文本优先使用
 
+use crate::core::paths;
 use crate::core::CustomizeParams;
 use std::path::{Path, PathBuf};
 
 const BEGIN_MARKER: &str = "<!-- SUB_AGENTS_RULES_BEGIN -->";
 const END_MARKER: &str = "<!-- SUB_AGENTS_RULES_END -->";
 
-/// 解析 kit 根目录 agents/（开发态 CARGO_MANIFEST_DIR/../agents，
-/// 打包态依次回退安装目录 agents/（bundle 资源）与 current_dir/agents）。
+/// 解析 kit 根目录 agents/。
+/// 开发态直接用仓库根 agents/（CARGO_MANIFEST_DIR/../agents）；
+/// 打包态走 core::paths 统一解析链（agents/ 打包进 resource_dir，
+/// Windows 与 exe 同目录、macOS/Linux 布局由注入基址覆盖），最终兜底 current_dir/agents。
 fn agents_source_dir() -> PathBuf {
     let primary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("agents");
     if primary.is_dir() {
         return primary;
     }
-    // 打包态回退：agents/ 随 bundle 资源安装在可执行文件同目录
-    if let Some(alt) = exe_side_dir("agents") {
-        return alt;
-    }
-    // 回退：当前工作目录下的 agents（与 do_replace_ui 的回退策略一致）
-    if let Ok(cwd) = std::env::current_dir() {
-        let alt = cwd.join("agents");
-        if alt.is_dir() {
-            return alt;
-        }
-    }
-    primary
+    paths::resolve_dir("agents").unwrap_or(primary)
 }
 
-/// 查找可执行文件同目录下的相对路径文件/目录（打包态资源解析），不存在则返回 None。
-fn exe_side_dir(relative: &str) -> Option<PathBuf> {
-    let dir = std::env::current_exe().ok()?.parent()?.join(relative);
-    if dir.exists() {
-        Some(dir)
-    } else {
-        None
-    }
-}
-
-/// 解析子智能体框架模板：开发态优先源码目录，打包态回退安装目录 templates/ 资源。
+/// 解析子智能体框架模板，走 core::paths 统一解析链。
 fn framework_template_path() -> PathBuf {
-    let primary =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/ai-rules/sub-agents-framework.md");
-    if primary.is_file() {
-        return primary;
-    }
-    if let Some(alt) = exe_side_dir("templates/ruoyi-vue/ai-rules/sub-agents-framework.md") {
-        return alt;
-    }
-    primary
+    paths::resolve("templates/ruoyi-vue/ai-rules/sub-agents-framework.md")
 }
 
 /// 扫描 agents/*.md，返回 (name, description) 列表，按 name 字母序排列。

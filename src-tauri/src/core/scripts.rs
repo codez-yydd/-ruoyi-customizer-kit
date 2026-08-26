@@ -27,6 +27,11 @@ use crate::core::CustomizeParams;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// 解析脚本模板目录（本模块五处生成任务共用，走 core::paths 统一解析链）。
+fn scripts_template_dir() -> Result<PathBuf, String> {
+    crate::core::paths::require_dir("templates/ruoyi-vue/scripts", "脚本")
+}
+
 /// 脚本生成结果
 #[derive(Debug, Clone)]
 pub struct ScriptsOutcome {
@@ -50,13 +55,7 @@ pub fn generate_scripts(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/scripts");
-    if !template_dir.is_dir() {
-        return Err(format!(
-            "脚本模板目录不存在：{}",
-            template_dir.display()
-        ));
-    }
+    let template_dir = scripts_template_dir()?;
 
     let scripts_dir = output_dir.join("scripts");
     std::fs::create_dir_all(&scripts_dir)
@@ -125,13 +124,7 @@ pub fn generate_dev_scripts(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/scripts");
-    if !template_dir.is_dir() {
-        return Err(format!(
-            "脚本模板目录不存在：{}",
-            template_dir.display()
-        ));
-    }
+    let template_dir = scripts_template_dir()?;
 
     let placeholders = build_placeholders(params);
 
@@ -194,13 +187,7 @@ pub fn generate_dev_ui_scripts(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/scripts");
-    if !template_dir.is_dir() {
-        return Err(format!(
-            "脚本模板目录不存在：{}",
-            template_dir.display()
-        ));
-    }
+    let template_dir = scripts_template_dir()?;
 
     let placeholders = build_placeholders(params);
 
@@ -264,13 +251,7 @@ pub fn generate_build_scripts(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/scripts");
-    if !template_dir.is_dir() {
-        return Err(format!(
-            "脚本模板目录不存在：{}",
-            template_dir.display()
-        ));
-    }
+    let template_dir = scripts_template_dir()?;
 
     let placeholders = build_placeholders(params);
 
@@ -334,13 +315,7 @@ pub fn generate_export_source_scripts(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/scripts");
-    if !template_dir.is_dir() {
-        return Err(format!(
-            "脚本模板目录不存在：{}",
-            template_dir.display()
-        ));
-    }
+    let template_dir = scripts_template_dir()?;
 
     let placeholders = build_placeholders(params);
 

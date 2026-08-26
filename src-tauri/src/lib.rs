@@ -23,6 +23,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // 把权威资源根交给核心层统一解析器：打包态各平台 resource_dir
+            // 布局差异（Windows exe 同目录 / macOS ../Resources / Linux ../lib/<产品名>）由 Tauri 负责
+            use tauri::Manager;
+            if let Ok(rd) = app.path().resource_dir() {
+                crate::core::paths::set_resource_base(rd);
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             ping,
             list_templates,

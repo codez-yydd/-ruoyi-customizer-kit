@@ -5,7 +5,6 @@ use crate::rules::template::{Template, TemplateSet};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::AppHandle;
 
 /// 诊断日志：输出到 stderr（终端可见，不受 webview reload 影响）。
 /// 格式 `[RF-DIAG <unix_ms>] <msg>`，便于在终端 grep 过滤。
@@ -26,12 +25,10 @@ pub struct DetectResponse {
 
 /// 项目识别命令。
 /// 参数：
-///   app         —— Tauri 应用句柄（用于定位模板目录）
 ///   root_path   —— 用户选择的项目根目录绝对路径
 ///   template    —— 模板名，如 "ruoyi-vue"。为空时默认 ruoyi-vue。
 #[tauri::command]
 pub fn detect_project(
-    app: AppHandle,
     root_path: String,
     template: Option<String>,
 ) -> DetectResponse {
@@ -54,13 +51,13 @@ pub fn detect_project(
     //   都不识别则回退到 ruoyi-vue 的结果（保持向后兼容）
     let candidate_names: Vec<String> = match &template {
         Some(name) => vec![name.clone()],
-        None => list_template_names(&app),
+        None => list_template_names(),
     };
     diag(&format!("detect_project 候选模板：{:?}", candidate_names));
 
     let mut last_resp: Option<DetectResponse> = None;
     for tpl_name in &candidate_names {
-        let tpl_dir = match resolve_template_dir(&app, tpl_name) {
+        let tpl_dir = match resolve_template_dir(tpl_name) {
             Some(d) => d,
             None => {
                 diag(&format!("detect_project 模板目录缺失，跳过：{tpl_name}"));
@@ -113,17 +110,10 @@ pub fn detect_project(
 
 /// 列出所有可用模板名（按 ruoyi-vue 优先排序）。
 /// 复用 list_templates 的扫描策略，但只返回名字，避免循环依赖。
-fn list_template_names(app: &AppHandle) -> Vec<String> {
-    use tauri::Manager;
-    let base = if let Ok(rd) = app.path().resource_dir() {
-        let candidate = rd.join("templates");
-        if candidate.is_dir() {
-            candidate
-        } else {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
-        }
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
+fn list_template_names() -> Vec<String> {
+    let base = match crate::core::paths::resolve_dir("templates") {
+        Some(b) => b,
+        None => return Vec::new(),
     };
     let mut names: Vec<String> = std::fs::read_dir(&base)
         .map(|it| {
@@ -337,25 +327,9 @@ pub fn cleanup_extract_dir(path: String) -> CleanupResponse {
     }
 }
 
-/// 解析模板目录（复用与 template 命令一致的策略）
-fn resolve_template_dir(app: &AppHandle, name: &str) -> Option<PathBuf> {
-    use tauri::Manager;
-    let base = if let Ok(rd) = app.path().resource_dir() {
-        let candidate = rd.join("templates");
-        if candidate.is_dir() {
-            candidate
-        } else {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
-        }
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
-    };
-    let dir = base.join(name);
-    if dir.is_dir() {
-        Some(dir)
-    } else {
-        None
-    }
+/// 解析模板目录（走 core::paths 统一解析链，与 template 命令一致）
+fn resolve_template_dir(name: &str) -> Option<PathBuf> {
+    crate::core::paths::resolve_dir(&format!("templates/{name}"))
 }
 
 /// 模板识别优先级表：越靠前越严格（先尝试），避免宽松模板抢先命中。

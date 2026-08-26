@@ -10,7 +10,7 @@
 
 use crate::core::CustomizeParams;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Nginx 配置生成结果
 #[derive(Debug, Clone)]
@@ -29,13 +29,7 @@ pub fn generate_nginx_config(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<NginxOutcome, String> {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/nginx");
-    if !template_dir.is_dir() {
-        return Err(format!(
-            "Nginx 模板目录不存在：{}",
-            template_dir.display()
-        ));
-    }
+    let template_dir = crate::core::paths::require_dir("templates/ruoyi-vue/nginx", "Nginx")?;
 
     let nginx_dir = output_dir.join("nginx");
     std::fs::create_dir_all(&nginx_dir)

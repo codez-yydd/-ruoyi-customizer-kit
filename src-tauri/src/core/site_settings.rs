@@ -22,7 +22,7 @@
 use crate::core::CustomizeParams;
 use crate::core::security;
 use crate::core::web_footer::{find_module_dir, find_ui_dirs, write_managed_file};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 站点设置定制结果
 pub struct SiteSettingsOutcome {
@@ -205,8 +205,10 @@ fn next_seed_id(content: &str, table: &str, floor: i64) -> i64 {
 
 /// 生成站点设置管理接口。Ok(false) = 已存在跳过。
 fn write_site_settings_controller(admin: &Path, params: &CustomizeParams) -> Result<bool, String> {
-    let tmpl_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("templates/ruoyi-vue/java/SiteSettingsController.java.tmpl");
+    let tmpl_path = crate::core::paths::require_file(
+        "templates/ruoyi-vue/java/SiteSettingsController.java.tmpl",
+        "SiteSettingsController",
+    )?;
     let tmpl = std::fs::read_to_string(&tmpl_path)
         .map_err(|e| format!("读取 SiteSettingsController 模板失败：{e}"))?;
     let content = tmpl.replace("{{PACKAGE}}", &params.new_package);

@@ -2,13 +2,12 @@
 
 use crate::rules::template::TemplateSet;
 use std::path::PathBuf;
-use tauri::Manager;
 
 /// 列出内置模板目录下所有可用模板名（子目录名）。
 /// 返回 (模板名, 是否可加载) 列表，前端用于展示与选择。
 #[tauri::command]
-pub fn list_templates(app: tauri::AppHandle) -> Vec<TemplateInfo> {
-    let dir = templates_dir(&app);
+pub fn list_templates() -> Vec<TemplateInfo> {
+    let dir = templates_dir();
     let mut out = Vec::new();
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
@@ -47,16 +46,7 @@ pub struct TemplateInfo {
     pub loadable: bool,
 }
 
-/// 解析模板资源目录：打包后位于资源目录，开发态位于源码 templates/ 目录。
-fn templates_dir(app: &tauri::AppHandle) -> PathBuf {
-    // 打包态：tauri 资源目录（由 tauri.conf.json resources 注入，本轮未配置则回退）
-    if let Ok(rd) = app.path().resource_dir() {
-        let candidate = rd.join("templates");
-        if candidate.is_dir() {
-            return candidate;
-        }
-    }
-    // 开发态：源码 src-tauri/templates
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    PathBuf::from(manifest_dir).join("templates")
+/// 解析模板资源目录：走 core::paths 统一解析链（开发态源码目录优先，打包态回退随包资源目录）。
+fn templates_dir() -> PathBuf {
+    crate::core::paths::resolve("templates")
 }

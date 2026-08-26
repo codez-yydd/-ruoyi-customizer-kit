@@ -308,8 +308,10 @@ fn patch_ruoyi_config(common: &Path) -> Result<bool, String> {
 /// 生成免登录接口 WebInfoController（GET /webInfo）。
 /// Ok(false) = 已存在跳过；Err = 模板缺失/写失败。
 fn write_web_info_controller(admin: &Path, params: &CustomizeParams) -> Result<bool, String> {
-    let tmpl_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("templates/ruoyi-vue/java/WebInfoController.java.tmpl");
+    let tmpl_path = crate::core::paths::require_file(
+        "templates/ruoyi-vue/java/WebInfoController.java.tmpl",
+        "WebInfoController",
+    )?;
     let tmpl = std::fs::read_to_string(&tmpl_path)
         .map_err(|e| format!("读取 WebInfoController 模板失败：{e}"))?;
     let content = tmpl.replace("{{PACKAGE}}", &params.new_package);
@@ -433,11 +435,15 @@ fn patch_classic_frontend(ui: &Path, log: &dyn Fn(&str)) -> Option<(usize, usize
 
 /// 写入本模块托管的模板文件（已存在且内容一致则跳过）。返回是否实际写入。
 pub fn write_managed_file(target: &Path, tmpl_rel: &str, log: &dyn Fn(&str)) -> bool {
-    let tmpl_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(tmpl_rel);
+    // 保持原有"静默降级"语义（调用方依赖 bool 返回），但日志带上实际尝试的路径便于排障
+    let tmpl_path = crate::core::paths::resolve(tmpl_rel);
     let content = match std::fs::read_to_string(&tmpl_path) {
         Ok(c) => c,
         Err(e) => {
-            log(&format!("读取模板 {tmpl_rel} 失败：{e}"));
+            log(&format!(
+                "读取模板 {tmpl_rel} 失败：{e}（已尝试 {}）",
+                tmpl_path.display()
+            ));
             return false;
         }
     };

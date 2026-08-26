@@ -8,7 +8,7 @@
 
 use crate::core::CustomizeParams;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// 生成 AI 规范文件（AGENTS.md + CLAUDE.md）到项目根目录。
 /// 返回生成的文件数。
@@ -17,13 +17,7 @@ pub fn generate_ai_rules(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<usize, String> {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/ai-rules");
-    if !template_dir.is_dir() {
-        return Err(format!(
-            "AI 规范模板目录不存在：{}",
-            template_dir.display()
-        ));
-    }
+    let template_dir = crate::core::paths::require_dir("templates/ruoyi-vue/ai-rules", "AI 规范")?;
 
     let placeholders = build_placeholders(params);
     let targets = [("AGENTS.md", "AGENTS.md.tmpl"), ("CLAUDE.md", "CLAUDE.md.tmpl")];

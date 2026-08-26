@@ -934,7 +934,7 @@ fn do_generate_uniapp<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskRes
 where
     F: Fn(&str),
 {
-    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue/uniapp");
+    let template_dir = crate::core::paths::require_dir("templates/ruoyi-vue/uniapp", "UniApp")?;
     let output_dir = PathBuf::from(&params.output_dir);
     let result = crate::core::uniapp::generate_uniapp_project(&template_dir, &output_dir, params, &|msg| log(msg))?;
     r.created_files = result.files_created;
@@ -944,7 +944,7 @@ where
 
 /// 13. 替换后台 UI：复制预置后台前端工程（如 vben-web-ele）到 output_dir/{prefix}-ui
 ///
-/// 模板目录解析与 uniapp 一致：优先资源目录（打包态），回退 CARGO_MANIFEST_DIR（开发态）。
+/// 模板目录走 core::paths 统一解析链：开发态源码目录优先，打包态回退随包资源目录。
 /// ui_template 决定取 templates/ruoyi-vue/ui/{ui_template} 哪个预置工程。
 fn do_replace_ui<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
 where
@@ -955,18 +955,8 @@ where
     } else {
         params.ui_template.as_str()
     };
-    // 与 commands/template.rs 的 templates_dir 一致：先资源目录，回退源码目录
-    let base = std::env::current_dir().ok();
-    let template_dir = {
-        let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("templates/ruoyi-vue/ui/{ui_subdir}"));
-        if p.is_dir() {
-            p
-        } else if let Some(b) = base {
-            b.join(format!("src-tauri/templates/ruoyi-vue/ui/{ui_subdir}"))
-        } else {
-            p
-        }
-    };
+    let template_dir =
+        crate::core::paths::require_dir(&format!("templates/ruoyi-vue/ui/{ui_subdir}"), "后台 UI ")?;
     let output_dir = PathBuf::from(&params.output_dir);
     let result = crate::core::replace_ui::generate_ui_project(&template_dir, &output_dir, params, &|msg| log(msg))?;
     r.created_files = result.files_created;

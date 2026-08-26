@@ -6,7 +6,6 @@ use crate::core::{CustomizeParams, ProjectInfo};
 use crate::rules::template::TemplateSet;
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::AppHandle;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreviewResponse {
@@ -21,7 +20,6 @@ pub struct PreviewResponse {
 /// 预览改造任务。前端传入识别结果（project_info）+ 改造参数。
 #[tauri::command]
 pub fn preview_tasks(
-    app: AppHandle,
     project_info: ProjectInfo,
     params: CustomizeParams,
 ) -> PreviewResponse {
@@ -48,7 +46,7 @@ pub fn preview_tasks(
     } else {
         project_info.template_dir.as_str()
     };
-    let tpl_dir = match resolve_template_dir(&app, tpl_name) {
+    let tpl_dir = match resolve_template_dir(tpl_name) {
         Some(d) => d,
         None => {
             return PreviewResponse {
@@ -112,22 +110,7 @@ fn empty_summary() -> PreviewSummary {
 }
 
 /// 解析模板目录（与 project.rs 一致策略）
-fn resolve_template_dir(app: &AppHandle, name: &str) -> Option<PathBuf> {
-    use tauri::Manager;
-    let base = if let Ok(rd) = app.path().resource_dir() {
-        let candidate = rd.join("templates");
-        if candidate.is_dir() {
-            candidate
-        } else {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
-        }
-    } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates")
-    };
-    let dir = base.join(name);
-    if dir.is_dir() {
-        Some(dir)
-    } else {
-        None
-    }
+/// 解析模板目录：走 core::paths 统一解析链（开发态源码目录优先，打包态回退随包资源）。
+fn resolve_template_dir(name: &str) -> Option<PathBuf> {
+    crate::core::paths::resolve_dir(&format!("templates/{name}"))
 }
