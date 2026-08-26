@@ -26,20 +26,20 @@
 
 对于普通功能：
 
-Explore
+project-explorer
 → fullstack-developer
 → code-reviewer
 
 对于复杂功能：
 
-Explore
+project-explorer
 → architect
 → fullstack-developer
 → code-reviewer
 
 涉及重要数据库变更：
 
-Explore
+project-explorer
 → architect
 → database-reviewer
 → fullstack-developer
@@ -47,7 +47,7 @@ Explore
 
 涉及重要页面：
 
-Explore
+project-explorer
 → architect（复杂页面时）
 → fullstack-developer
 → ui-reviewer
@@ -56,7 +56,7 @@ Explore
 提供报错截图、界面异常截图或设计稿等视觉材料时：
 
 vision（先提取结构化信息：文字、界面结构、状态与关键点）
-→ Explore / project-explorer（按视觉线索定位相关实现）
+→ project-explorer（按视觉线索定位相关实现）
 → fullstack-developer
 → code-reviewer
 
@@ -69,7 +69,7 @@ fullstack-developer
 
 对于交付前或上线前的整体检查：
 
-project-auditor（项目背景不明时先用 Explore 补充上下文）
+project-auditor（项目背景不明时先用 project-explorer 补充上下文）
 → fullstack-developer（修复确认的问题）
 → code-reviewer
 
@@ -79,7 +79,7 @@ project-auditor（项目背景不明时先用 Explore 补充上下文）
 
 1. 子智能体适合独立完成的工作，优先委派，减少主会话无意义上下文增长。
 
-2. 不要重复调研。如果 Explore 已经获得充分证据，其他子智能体优先使用已有结论并针对必要部分补充读取。
+2. 不要重复调研。如果 project-explorer 已经获得充分证据，其他子智能体优先使用已有结论并针对必要部分补充读取。
 
 3. 不要机械调用所有子智能体。根据任务实际影响范围选择。
 

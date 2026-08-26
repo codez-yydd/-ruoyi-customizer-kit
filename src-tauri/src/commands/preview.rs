@@ -5,7 +5,6 @@ use crate::core::task::Task;
 use crate::core::{CustomizeParams, ProjectInfo};
 use crate::rules::template::TemplateSet;
 use serde::Serialize;
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PreviewResponse {
@@ -46,7 +45,7 @@ pub fn preview_tasks(
     } else {
         project_info.template_dir.as_str()
     };
-    let tpl_dir = match resolve_template_dir(tpl_name) {
+    let tpl_dir = match crate::core::paths::resolve_template_dir(tpl_name) {
         Some(d) => d,
         None => {
             return PreviewResponse {
@@ -109,8 +108,3 @@ fn empty_summary() -> PreviewSummary {
     }
 }
 
-/// 解析模板目录（与 project.rs 一致策略）
-/// 解析模板目录：走 core::paths 统一解析链（开发态源码目录优先，打包态回退随包资源）。
-fn resolve_template_dir(name: &str) -> Option<PathBuf> {
-    crate::core::paths::resolve_dir(&format!("templates/{name}"))
-}

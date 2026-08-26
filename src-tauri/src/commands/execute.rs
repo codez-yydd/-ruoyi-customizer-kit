@@ -119,7 +119,7 @@ pub async fn execute_transform(
     } else {
         project_info.template_dir.as_str()
     };
-    let tpl_dir = resolve_template_dir(tpl_name)
+    let tpl_dir = crate::core::paths::resolve_template_dir(tpl_name)
         .ok_or_else(|| format!("找不到模板 {tpl_name}"))?;
     let set = TemplateSet::load_from_dir(&tpl_dir).map_err(|e| format!("加载模板失败：{e}"))?;
     let template = set.into_full_template().ok_or("模板缺少必要规则")?;
@@ -189,10 +189,5 @@ impl LogEvent {
     fn error(msg: String) -> Self {
         Self { level: "ERROR".into(), message: msg }
     }
-}
-
-/// 解析模板目录：走 core::paths 统一解析链（开发态源码目录优先，打包态回退随包资源）。
-fn resolve_template_dir(name: &str) -> Option<PathBuf> {
-    crate::core::paths::resolve_dir(&format!("templates/{name}"))
 }
 

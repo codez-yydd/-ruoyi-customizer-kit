@@ -956,7 +956,7 @@ where
         params.ui_template.as_str()
     };
     let template_dir =
-        crate::core::paths::require_dir(&format!("templates/ruoyi-vue/ui/{ui_subdir}"), "后台 UI ")?;
+        crate::core::paths::require_dir(&format!("templates/ruoyi-vue/ui/{ui_subdir}"), "后台 UI")?;
     let output_dir = PathBuf::from(&params.output_dir);
     let result = crate::core::replace_ui::generate_ui_project(&template_dir, &output_dir, params, &|msg| log(msg))?;
     r.created_files = result.files_created;

@@ -57,7 +57,7 @@ pub fn detect_project(
 
     let mut last_resp: Option<DetectResponse> = None;
     for tpl_name in &candidate_names {
-        let tpl_dir = match resolve_template_dir(tpl_name) {
+        let tpl_dir = match crate::core::paths::resolve_template_dir(tpl_name) {
             Some(d) => d,
             None => {
                 diag(&format!("detect_project 模板目录缺失，跳过：{tpl_name}"));
@@ -325,11 +325,6 @@ pub fn cleanup_extract_dir(path: String) -> CleanupResponse {
             message: format!("清理临时目录失败：{e}"),
         },
     }
-}
-
-/// 解析模板目录（走 core::paths 统一解析链，与 template 命令一致）
-fn resolve_template_dir(name: &str) -> Option<PathBuf> {
-    crate::core::paths::resolve_dir(&format!("templates/{name}"))
 }
 
 /// 模板识别优先级表：越靠前越严格（先尝试），避免宽松模板抢先命中。
