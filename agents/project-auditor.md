@@ -2,10 +2,12 @@
 name: "project-auditor"
 description: "当需要对整个项目、多个业务模块或较大范围代码进行系统性检查时调用。负责从业务逻辑、模块关联、权限、安全、数据一致性、异常处理、状态流转、前后端接口和数据库关系等维度进行全项目缺陷审查，重点发现真实 Bug、业务遗漏和潜在上线风险。只审查，不修改代码。"
 color: green
+model: "custom:builtin%3Abigmodel-coding-plan:GLM-5.3"
 tools:
   - Read
   - Grep
   - Glob
+  - Bash
 injectAgentsMd: true
 ---
 

@@ -2,6 +2,7 @@
 name: "architect"
 description: "当需求涉及新功能、复杂业务、多个模块、架构调整或较大范围修改，需要分析现有实现、影响范围和制定实施方案时优先调用。负责架构分析、业务方案、技术设计和风险识别，只分析不修改代码。"
 color: green
+model: "custom:builtin%3Abigmodel-coding-plan:GLM-5.3"
 tools:
   - Read
   - Grep

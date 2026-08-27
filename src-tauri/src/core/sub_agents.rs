@@ -18,7 +18,9 @@ const END_MARKER: &str = "<!-- SUB_AGENTS_RULES_END -->";
 /// 打包态走 core::paths 统一解析链（agents/ 打包进 resource_dir，
 /// Windows 与 exe 同目录、macOS/Linux 布局由注入基址覆盖），最终兜底 current_dir/agents。
 fn agents_source_dir() -> PathBuf {
-    let primary = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("agents");
+    let primary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("agents");
     if primary.is_dir() {
         return primary;
     }
@@ -178,7 +180,10 @@ pub fn inject_sub_agents(
         let new_content = format!("# AI 编码规范\n\n{marked}\n");
         std::fs::write(&agents_path, &new_content)
             .map_err(|e| format!("写入 {} 失败：{e}", agents_path.display()))?;
-        log(&format!("已创建并注入子智能体说明：{}", agents_path.display()));
+        log(&format!(
+            "已创建并注入子智能体说明：{}",
+            agents_path.display()
+        ));
         Ok(1)
     }
 }
@@ -214,13 +219,25 @@ mod tests {
             "code-reviewer",
             "database-reviewer",
             "fullstack-developer",
+            "lightweight-developer",
             "project-auditor",
             "project-explorer",
             "ui-reviewer",
             "vision",
         ] {
-            assert!(desc.contains(&format!("## {name}")), "缺少智能体小节：{name}");
+            assert!(
+                desc.contains(&format!("## {name}")),
+                "缺少智能体小节：{name}"
+            );
         }
+        assert!(
+            desc.contains("主 Agent 不得直接新增、修改或删除项目源码"),
+            "应包含主 Agent 不直接参与代码改动的硬性规则"
+        );
+        assert!(
+            desc.contains("简单、局部、低风险任务交给 lightweight-developer"),
+            "应包含轻量开发智能体的调度规则"
+        );
     }
 
     /// frontmatter 解析：正确提取 name 与 description，忽略其他字段。

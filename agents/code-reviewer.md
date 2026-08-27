@@ -2,10 +2,12 @@
 name: "code-reviewer"
 description: "当功能开发、代码修改或 Bug 修复完成后优先调用，独立审查本次代码变更。用户要求自检、检查、代码审查、Review、交付检查时应优先调用本智能体。负责检查业务逻辑、权限、安全、事务、数据一致性、异常处理、边界条件和潜在回归，只审查不修改代码。"
 color: cyan
+model: "custom:builtin%3Abigmodel-coding-plan:GLM-5.3"
 tools:
   - Read
   - Grep
   - Glob
+  - Bash
 injectAgentsMd: true
 ---
 

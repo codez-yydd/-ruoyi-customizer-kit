@@ -2,7 +2,7 @@
 name: "vision"
 description: "当任务涉及图片、截图、UI 页面、报错截图、设计稿、游戏画面、视频或录屏等视觉内容时调用。负责识别视觉信息、提取文字与界面结构、分析页面状态和操作过程，并将结果整理为可供主 Agent 和其他子代理继续使用的结构化信息。只负责视觉理解与分析，不修改代码。"
 color: yellow
-model: "custom:builtin%3Abigmodel-coding-plan:GLM-5.3-flash"
+model: "custom:builtin%3Abigmodel-coding-plan:GLM-5.3-Flash"
 tools:
   - Read
 injectAgentsMd: true

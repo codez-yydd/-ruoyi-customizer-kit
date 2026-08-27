@@ -2,6 +2,7 @@
 name: "project-explorer"
 description: "当任务需要深入理解现有项目、复杂业务流程、跨模块调用关系、数据流转或修改影响范围时调用。区别于内置 Explore 的简单代码搜索，本智能体负责基于实际代码形成完整的业务链路和项目结构分析，为后续开发、架构设计和代码审查提供可靠上下文。只读分析，不修改代码。"
 color: yellow
+model: "custom:builtin%3Abigmodel-coding-plan:GLM-5.3-Flash"
 tools:
   - Read
   - Grep

@@ -2,6 +2,7 @@
 name: "database-reviewer"
 description: "当需求涉及数据库表结构、字段、索引、SQL 升级、数据迁移、查询性能或数据库风险时调用。负责数据库和 SQL 专项审查，检查结构设计、索引、约束、升级兼容性和数据一致性，只分析不修改。"
 color: cyan
+model: "custom:builtin%3Abigmodel-coding-plan:GLM-5.3-Flash"
 tools:
   - Read
   - Grep
