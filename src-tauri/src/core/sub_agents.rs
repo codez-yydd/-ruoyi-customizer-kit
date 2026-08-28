@@ -222,6 +222,7 @@ mod tests {
             "lightweight-developer",
             "project-auditor",
             "project-explorer",
+            "senior-fullstack-developer",
             "ui-reviewer",
             "vision",
         ] {
@@ -237,6 +238,14 @@ mod tests {
         assert!(
             desc.contains("简单、局部、低风险任务交给 lightweight-developer"),
             "应包含轻量开发智能体的调度规则"
+        );
+        assert!(
+            desc.contains("复杂或高风险任务交给 senior-fullstack-developer"),
+            "应包含高级全栈开发智能体的调度规则"
+        );
+        assert!(
+            desc.contains("三个开发角色是互斥选择"),
+            "应避免多个开发智能体串行重复实现同一任务"
         );
     }
 
