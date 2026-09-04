@@ -48,10 +48,9 @@ pub fn apply_security_hardening(
         None
     } else {
         let h = bcrypt_hash(&params.admin_password)?;
-        summary.push(format!(
-            "admin 账号密码已修改为「{}」（BCrypt 已写入 SQL）",
-            params.admin_password
-        ));
+        // 密码值脱敏：summary 会进入任务 message（前端日志 / 执行结果表 / report.md 共用），
+        // 不回显明文，仅以掩码保留「已修改」事实
+        summary.push("admin 密码已修改为「******」（BCrypt 已写入 SQL）".into());
         log(&format!("admin 密码已 BCrypt 加密并准备写入 SQL"));
         Some(h)
     };

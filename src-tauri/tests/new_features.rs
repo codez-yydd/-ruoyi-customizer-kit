@@ -239,9 +239,10 @@ fn security_hardening_writes_bcrypt_to_sql() {
     assert!(!content.contains("7JB720yubVSZvUI0rEqK"), "旧哈希应被替换");
     // demo 账号 ry 已清除
     assert!(!content.contains("'ry'"), "ry 应被清除");
-    // summary 含明文密码
+    // summary 脱敏：出现掩码、不出现明文（密码修改事实保留）
     let combined = outcome.summary.join(" ");
-    assert!(combined.contains("MyNew@2024"), "summary 应回显明文密码");
+    assert!(combined.contains("******"), "summary 应以掩码呈现密码");
+    assert!(!combined.contains("MyNew@2024"), "summary 不应回显明文密码");
     assert!(outcome.modified_files >= 1);
 }
 

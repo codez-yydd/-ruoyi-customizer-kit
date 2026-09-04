@@ -104,10 +104,9 @@ pub fn customize_sql_scripts(
 
     summary.push(format!("库名替换为「{}」（{} 处）", new_db, db_replaced_total));
     if admin_hash.is_some() {
-        summary.push(format!(
-            "admin 密码已修改为「{}」",
-            params.admin_password
-        ));
+        // 密码值脱敏：summary 会进入任务 message（前端日志 / 执行结果表 / report.md 共用），
+        // 不回显明文，仅以掩码保留「已修改」事实
+        summary.push("admin 密码已修改为「******」".into());
     }
     if params.clean_quartz {
         summary.push(format!("清除 quartz 表块 {} 处", quartz_removed_total));

@@ -59,7 +59,6 @@ pub fn generate_report(
         .collect();
     if !security_msgs.is_empty() {
         md.push_str("\n## 安全加固 & SQL 定制结果\n\n");
-        md.push_str("> ⚠️ admin 密码明文显示于此，请妥善保管，确认后建议删除本节。\n\n");
         for m in &security_msgs {
             md.push_str(&format!("- {}\n", m));
         }
