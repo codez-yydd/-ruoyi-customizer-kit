@@ -9,7 +9,6 @@ import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { pickDirectory, pickZipFile } from '@/api/dialog'
 import * as api from '@/api'
-import { mark } from '@/utils/diagnostic'
 
 export function useProjectFlow() {
   const router = useRouter()
@@ -20,17 +19,8 @@ export function useProjectFlow() {
   async function runDetect(path: string): Promise<boolean> {
     detecting.value = true
     store.log('开始识别项目结构...', 'INFO')
-    mark('detect.invoke', { path })
     try {
       const resp = await api.detectProject(path)
-      mark('detect.response', {
-        success: resp.success,
-        hasProject: !!resp.project,
-        recognized: resp.project?.confidence?.recognized,
-        rootPath: resp.project?.root_path,
-        backendCount: resp.project?.backend_modules?.length,
-        configCount: resp.project?.config_files?.length
-      })
       store.setProjectInfo(resp.project)
       if (resp.success && resp.project) {
         store.log(resp.message, 'SUCCESS')
@@ -43,7 +33,6 @@ export function useProjectFlow() {
       store.log(`识别未通过：${resp.message}`, 'WARN')
       return false
     } catch (e) {
-      mark('detect.error', { error: String(e) })
       store.log(`识别异常：${e}`, 'ERROR')
       return false
     } finally {
@@ -63,9 +52,6 @@ export function useProjectFlow() {
     opts?: { navigate?: boolean }
   ): Promise<boolean> {
     const navigate = opts?.navigate ?? true
-    // 流程开始标记：detectInterruptedSession 依赖 flow.start / flow.end 配对
-    // 若页面 reload，会留下"有 start 无 end"的会话，Home.vue 会据此提示用户
-    mark('flow.start', { mode, navigate })
     let projectRoot = ''
     let capturedZipPath = ''
     let capturedExtractRoot = ''
@@ -73,7 +59,6 @@ export function useProjectFlow() {
     if (mode === 'directory') {
       const path = await pickDirectory()
       if (!path) {
-        mark('flow.end', { reason: 'cancel:directory' })
         return false
       }
       projectRoot = path
@@ -82,33 +67,23 @@ export function useProjectFlow() {
       // zip：选择压缩包，解压到临时目录用于识别
       const zipFilePath = await pickZipFile()
       if (!zipFilePath) {
-        mark('flow.end', { reason: 'cancel:zip' })
         return false
       }
       capturedZipPath = zipFilePath
       detecting.value = true
       store.log(`已选择压缩包：${zipFilePath}`, 'INFO')
       store.log('正在解压到临时目录（仅供识别）...', 'INFO')
-      mark('extract.invoke', { zipPath: zipFilePath })
       try {
         const resp = await api.extractZipProject(zipFilePath)
-        mark('extract.response', {
-          success: resp.success,
-          rootPath: resp.root_path,
-          extractRoot: resp.extract_root
-        })
         if (!resp.success || !resp.root_path) {
           store.log(`解压失败：${resp.message}`, 'ERROR')
-          mark('flow.end', { reason: 'extract failed' })
           return false
         }
         store.log(resp.message, 'SUCCESS')
         projectRoot = resp.root_path
         capturedExtractRoot = resp.extract_root
       } catch (e) {
-        mark('extract.error', { error: String(e) })
         store.log(`解压异常：${e}`, 'ERROR')
-        mark('flow.end', { reason: 'extract exception' })
         return false
       } finally {
         detecting.value = false
@@ -117,7 +92,6 @@ export function useProjectFlow() {
 
     // 重新选择项目：先清理上一次 zip 模式遗留的临时解压目录，再重置状态
     if (store.sourceType === 'zip' && store.extractRoot) {
-      mark('cleanup.previous', { extractRoot: store.extractRoot })
       await cleanupExtractRoot(store.extractRoot)
     }
 
@@ -133,17 +107,9 @@ export function useProjectFlow() {
     }
 
     const ok = await runDetect(projectRoot)
-    mark('beforeNavigate', {
-      recognized: store.projectInfo?.confidence?.recognized,
-      maxStep: store.maxStep,
-      hasProjectInfo: !!store.projectInfo,
-      sourceType: store.sourceType
-    })
     if (navigate) {
-      mark('router.push', { to: 'detect' })
       router.push({ name: 'detect' })
     }
-    mark('flow.end', { reason: 'completed', ok })
     return ok
   }
 

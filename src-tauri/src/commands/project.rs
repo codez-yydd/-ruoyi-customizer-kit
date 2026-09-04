@@ -4,17 +4,6 @@ use crate::core::detector;
 use crate::rules::template::{Template, TemplateSet};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-/// 诊断日志：输出到 stderr（终端可见，不受 webview reload 影响）。
-/// 格式 `[RF-DIAG <unix_ms>] <msg>`，便于在终端 grep 过滤。
-fn diag(msg: &str) {
-    let ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    eprintln!("[RF-DIAG {ms}] {msg}");
-}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DetectResponse {
@@ -32,12 +21,8 @@ pub fn detect_project(
     root_path: String,
     template: Option<String>,
 ) -> DetectResponse {
-    diag(&format!(
-        "detect_project 入口：root_path={root_path} template={template:?}"
-    ));
     let root = PathBuf::from(&root_path);
     if !root.is_dir() {
-        diag("detect_project 失败：root_path 不是目录");
         return DetectResponse {
             success: false,
             message: format!("项目目录不存在或不是目录：{root_path}"),
@@ -53,14 +38,12 @@ pub fn detect_project(
         Some(name) => vec![name.clone()],
         None => list_template_names(),
     };
-    diag(&format!("detect_project 候选模板：{:?}", candidate_names));
 
     let mut last_resp: Option<DetectResponse> = None;
     for tpl_name in &candidate_names {
         let tpl_dir = match crate::core::paths::resolve_template_dir(tpl_name) {
             Some(d) => d,
             None => {
-                diag(&format!("detect_project 模板目录缺失，跳过：{tpl_name}"));
                 continue;
             }
         };
@@ -69,27 +52,13 @@ pub fn detect_project(
                 let mut project = detector::detect(&root, &template);
                 // 记录命中的模板目录名，供 preview/execute 反查，消除主模板名硬编码
                 project.template_dir = tpl_name.clone();
-                diag(&format!(
-                    "detect_project 识别完成：type={} recognized={} hit={}/{} backend={} frontend={} config={} logback={} gen={}",
-                    project.project_type,
-                    project.confidence.recognized,
-                    project.confidence.required_hit,
-                    project.confidence.required_total,
-                    project.backend_modules.len(),
-                    project.frontend_dirs.len(),
-                    project.config_files.len(),
-                    project.logback_files.len(),
-                    project.generator_template_files.len()
-                ));
                 let resp = build_detect_response(&project);
                 if resp.success {
-                    diag("detect_project 返回（即将序列化）");
                     return resp;
                 }
                 last_resp = Some(resp);
             }
             Err(msg) => {
-                diag(&format!("detect_project 模板 {tpl_name} 构建失败：{msg}"));
                 last_resp = Some(DetectResponse {
                     success: false,
                     message: msg,
@@ -100,7 +69,6 @@ pub fn detect_project(
     }
 
     // 所有候选都不识别：返回最后一个结果（或兜底错误）
-    diag("detect_project 无模板命中，返回最后结果");
     last_resp.unwrap_or_else(|| DetectResponse {
         success: false,
         message: "无可用模板".into(),
@@ -237,12 +205,10 @@ fn make_extract_dest() -> PathBuf {
 /// - 支持的扩展名：.zip
 #[tauri::command]
 pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
-    diag(&format!("extract_zip_project 入口：zip_path={zip_path}"));
     let zip = PathBuf::from(&zip_path);
 
     // 基本校验
     if !zip.is_file() {
-        diag(&format!("extract_zip_project 失败：不是文件 {zip_path}"));
         return ExtractResponse {
             success: false,
             message: format!("压缩包不存在或不是文件：{zip_path}"),
@@ -255,7 +221,6 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
         .map(|e| e.eq_ignore_ascii_case("zip"))
         .unwrap_or(false);
     if !is_zip {
-        diag("extract_zip_project 失败：扩展名非 zip");
         return ExtractResponse {
             success: false,
             message: "目前仅支持 .zip 压缩包".into(),
@@ -266,9 +231,7 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
 
     // 解压到系统临时目录下的唯一子目录
     let dest = make_extract_dest();
-    diag(&format!("extract_zip_project 解压目标：{}", dest.display()));
     if let Err(e) = crate::utils::archive::extract_zip(&zip, &dest) {
-        diag(&format!("extract_zip_project 解压失败：{e}"));
         return ExtractResponse {
             success: false,
             message: format!("解压失败：{e}"),
@@ -276,15 +239,8 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
             extract_root: String::new(),
         };
     }
-    diag("extract_zip_project 解压完成，开始定位项目根");
-
     // 定位真正的项目根
     let root = crate::utils::archive::find_project_root(&dest);
-    diag(&format!(
-        "extract_zip_project 返回：root_path={} extract_root={}",
-        root.display(),
-        dest.display()
-    ));
     ExtractResponse {
         success: true,
         message: format!("解压完成，项目根目录：{}", root.display()),
@@ -299,7 +255,6 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
 /// 防止前端误传任意路径导致误删用户数据。
 #[tauri::command]
 pub fn cleanup_extract_dir(path: String) -> CleanupResponse {
-    diag(&format!("cleanup_extract_dir 入口：path={path}"));
     let target = PathBuf::from(&path);
     if target.as_os_str().is_empty() || !target.is_dir() {
         // 目录不存在视为已清理，不报错
