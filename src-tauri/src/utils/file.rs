@@ -3,9 +3,12 @@
 
 use std::path::Path;
 
-/// 安全读取文本文件内容（失败返回 None）
+/// 安全读取文本文件内容（失败返回 None）。
+/// 编码感知：UTF-8 原样读取；非 UTF-8 尝试按 GBK 解码转码（写回时统一 UTF-8）；
+/// 两者均失败返回 None。转码/跳过的文件记入编码登记表（见 utils::encoding），
+/// 供执行日志与校验结果提示，不再静默跳过。
 pub fn read_text(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path).ok()
+    crate::utils::encoding::read_text_tracked(path)
 }
 
 /// 安全写入文本文件（UTF-8），失败返回错误信息

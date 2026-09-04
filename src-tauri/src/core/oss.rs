@@ -102,8 +102,8 @@ fn add_oss_dependency(
         if !pom.is_file() {
             continue;
         }
-        let content = std::fs::read_to_string(&pom)
-            .map_err(|e| format!("读取 {} 失败：{e}", pom.display()))?;
+        let content = crate::utils::file::read_text(&pom)
+            .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom.display()))?;
         let dep_block = format!(
             "\n    <dependency>\n        <groupId>{gid}</groupId>\n        <artifactId>{aid}</artifactId>\n        <version>{ver}</version>\n    </dependency>\n"
         );
@@ -313,8 +313,8 @@ fn append_oss_yml(
     for name in &["application.yaml", "application.yml"] {
         let path = res_dir.join(name);
         if path.is_file() {
-            let content = std::fs::read_to_string(&path)
-                .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+            let content = crate::utils::file::read_text(&path)
+                .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", path.display()))?;
             // 幂等：已含 {prefix}.oss 顶层则跳过
             let marker = format!("{prefix}:");
             let mut has_oss = false;
@@ -360,7 +360,7 @@ fn prioritize_modules(modules: &[String]) -> Vec<String> {
 fn any_pom_has(root: &Path, modules: &[String], marker: &str) -> bool {
     for m in modules {
         let pom = root.join(m).join("pom.xml");
-        if let Ok(c) = std::fs::read_to_string(&pom) {
+        if let Some(c) = crate::utils::file::read_text(&pom) {
             if c.contains(marker) {
                 return true;
             }

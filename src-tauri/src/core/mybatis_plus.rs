@@ -4,6 +4,7 @@
 // 依赖优先加到公共模块（common/framework），配置类放 admin 模块新包路径下。
 
 use crate::core::CustomizeParams;
+use crate::utils::file::read_text;
 use crate::utils::path::package_to_path;
 use std::path::Path;
 
@@ -34,9 +35,9 @@ pub fn detect_boot_major_version(root: &Path) -> Option<u32> {
         }
     }
     for pom in &pom_paths {
-        let content = match std::fs::read_to_string(pom) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(pom) {
+            Some(c) => c,
+            None => continue,
         };
         // 1) <spring-boot.version>3.x</spring-boot.version> 属性
         if let Some(v) = extract_version_after(&content, "<spring-boot.version>") {
@@ -90,7 +91,8 @@ pub fn add_dependency(root: &Path, backend_modules: &[String], log: &dyn Fn(&str
         if !pom.is_file() {
             continue;
         }
-        let content = std::fs::read_to_string(&pom).map_err(|e| format!("读取 {} 失败：{e}", pom.display()))?;
+        let content = read_text(&pom)
+            .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom.display()))?;
         // 幂等：项目任意 pom 已有任一 MyBatis-Plus starter 则不再添加
         if dep_markers.iter().any(|m| any_pom_has(root, backend_modules, m)) {
             log(&format!("MyBatis-Plus 依赖已存在，跳过"));
@@ -165,9 +167,9 @@ pub fn adapt_generator_templates(
             continue;
         }
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(&path) {
+            Some(c) => c,
+            None => continue,
         };
         let new_content = match name.as_str() {
             "mapper.java.vm" => adapt_mapper_vm(&content),
@@ -300,9 +302,9 @@ pub fn adapt_existing_sources(
             continue;
         }
         let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(path) {
+            Some(c) => c,
+            None => continue,
         };
 
         let new_content = if file_name.ends_with("Mapper.java") {
@@ -482,7 +484,7 @@ fn find_java_package(root: &Path, class_name: &str) -> Option<String> {
         if entry.file_name().to_string_lossy() != target.as_str() {
             continue;
         }
-        let content = std::fs::read_to_string(entry.path()).ok()?;
+        let content = read_text(entry.path())?;
         for line in content.lines() {
             let t = line.trim();
             if let Some(rest) = t.strip_prefix("package ") {
@@ -554,7 +556,7 @@ fn prioritize_modules(modules: &[String]) -> Vec<String> {
 fn any_pom_has(root: &Path, modules: &[String], marker: &str) -> bool {
     for m in modules {
         let pom = root.join(m).join("pom.xml");
-        if let Ok(c) = std::fs::read_to_string(&pom) {
+        if let Some(c) = read_text(&pom) {
             if c.contains(marker) {
                 return true;
             }

@@ -381,8 +381,8 @@ pub fn set_admin_pom_final_name(
             return Ok(false);
         }
     };
-    let content = std::fs::read_to_string(&pom_path)
-        .map_err(|e| format!("读取 {} 失败：{e}", pom_path.display()))?;
+    let content = crate::utils::file::read_text(&pom_path)
+        .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom_path.display()))?;
     // 幂等：已有 finalName 则跳过，保护用户既有配置
     if content.contains("<finalName>") {
         log(&format!("{} 已含 finalName，跳过", pom_path.display()));

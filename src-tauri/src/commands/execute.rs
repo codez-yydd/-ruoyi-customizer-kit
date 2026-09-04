@@ -113,6 +113,9 @@ pub async fn execute_transform(
 
     let _ = app.emit("transform:progress", LogEvent::info(format!("开始改造：{}", root.display())));
 
+    // 清空上一次执行残留的编码登记表（GBK 转码/编码无法识别清单）
+    crate::utils::encoding::reset_registry();
+
     // 3. 加载模板（优先用识别阶段命中的 template_dir；旧数据为空则回退 ruoyi-vue）
     let tpl_name = if project_info.template_dir.is_empty() {
         "ruoyi-vue"
@@ -140,6 +143,37 @@ pub async fn execute_transform(
 
     // 7. 校验
     let _ = app.emit("transform:progress", LogEvent::info("执行后校验...".into()));
+    // 先复核转码清单（仅解码参与判断但未写回的文件移出），校验项与日志据此生成
+    crate::utils::encoding::finalize_registry();
+
+    // 非 UTF-8 文件处理结果实时可见：转码与跳过均不再静默
+    let transcoded = crate::utils::encoding::transcoded_files();
+    if !transcoded.is_empty() {
+        let _ = app.emit("transform:progress", LogEvent {
+            level: "WARN".into(),
+            message: format!("编码转码：{} 个非 UTF-8 文件已按 GBK 解码并统一写回 UTF-8", transcoded.len()),
+        });
+        for p in &transcoded {
+            let _ = app.emit("transform:progress", LogEvent::info(format!("  已转码：{p}")));
+        }
+    }
+    let skipped = crate::utils::encoding::skipped_files();
+    if !skipped.is_empty() {
+        let _ = app.emit("transform:progress", LogEvent {
+            level: "ERROR".into(),
+            message: format!(
+                "编码无法识别：{} 个文件未参与文本替换（不参与包名/标题等任何替换），详见校验结果",
+                skipped.len()
+            ),
+        });
+        for p in &skipped {
+            let _ = app.emit("transform:progress", LogEvent {
+                level: "WARN".into(),
+                message: format!("  已跳过：{p}"),
+            });
+        }
+    }
+
     let checks = validator::validate(&root, &params, &template);
 
     // 8. 报告

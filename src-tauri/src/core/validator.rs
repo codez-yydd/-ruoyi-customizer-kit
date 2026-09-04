@@ -3,6 +3,7 @@
 use crate::core::scanner;
 use crate::rules::replace_rule::ReplaceEngine;
 use crate::rules::template::Template;
+use crate::utils::encoding::read_text_plain;
 use crate::utils::path::package_to_path;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -38,7 +39,7 @@ pub fn validate(
     let pkg_slash = &package_to_path(pkg_dot).to_string_lossy().to_string();
     let mut residue_files = Vec::new();
     for p in &scan.text_files {
-        if let Ok(content) = std::fs::read_to_string(p) {
+        if let Some(content) = read_text_plain(p) {
             if content.contains(pkg_dot.as_str()) || content.contains(pkg_slash.as_str()) {
                 residue_files.push(p.to_string_lossy().to_string());
             }
@@ -61,7 +62,7 @@ pub fn validate(
         let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         // 只检查 pom.xml 与脚本类文件
         if name == "pom.xml" || name.ends_with(".bat") || name.ends_with(".sh") {
-            if let Ok(content) = std::fs::read_to_string(p) {
+            if let Some(content) = read_text_plain(p) {
                 if content.contains(&format!("{}-", old_mod_prefix)) {
                     mod_residue.push(p.to_string_lossy().to_string());
                 }
@@ -98,7 +99,7 @@ pub fn validate(
                 let p = res.join(f);
                 let exists = p.is_file();
                 let valid = if exists {
-                    serde_yaml::from_str::<serde_yaml::Value>(&std::fs::read_to_string(&p).unwrap_or_default()).is_ok()
+                    serde_yaml::from_str::<serde_yaml::Value>(&read_text_plain(&p).unwrap_or_default()).is_ok()
                 } else {
                     false
                 };
@@ -127,7 +128,7 @@ pub fn validate(
     if params.enable_mybatis_plus {
         let dep_ok = scan.text_files.iter().any(|p| {
             p.file_name().map(|n| n == "pom.xml").unwrap_or(false)
-                && std::fs::read_to_string(p).map(|c| {
+                && read_text_plain(p).map(|c| {
                     c.contains("mybatis-plus-boot-starter")
                         || c.contains("mybatis-plus-spring-boot3-starter")
                 }).unwrap_or(false)
@@ -143,7 +144,7 @@ pub fn validate(
     if params.enable_generator_mybatis_plus {
         let mapper_adapted = scan.text_files.iter().any(|p| {
             p.file_name().map(|n| n == "mapper.java.vm").unwrap_or(false)
-                && std::fs::read_to_string(p).map(|c| c.contains("BaseMapper")).unwrap_or(false)
+                && read_text_plain(p).map(|c| c.contains("BaseMapper")).unwrap_or(false)
         });
         items.push(CheckItem {
             item: "generator Mapper 模板适配".into(),
@@ -187,7 +188,7 @@ pub fn validate(
         for json_file in &["package.json", "pages.json", "manifest.json"] {
             let p = uniapp_dir.join(json_file);
             let valid = p.is_file()
-                && serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&p).unwrap_or_default()).is_ok();
+                && serde_json::from_str::<serde_json::Value>(&read_text_plain(&p).unwrap_or_default()).is_ok();
             items.push(CheckItem {
                 item: format!("UniApp {} 合法性", json_file),
                 result: if valid { CheckResult::Pass } else { CheckResult::Fail },
@@ -199,7 +200,7 @@ pub fn validate(
         let mut residue = Vec::new();
         for p in &scan.text_files {
             if p.starts_with(&uniapp_dir) {
-                if let Ok(content) = std::fs::read_to_string(p) {
+                if let Some(content) = read_text_plain(p) {
                     for ph in &placeholders {
                         if content.contains(ph) {
                             residue.push(format!("{} 含 {}", p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), ph));
@@ -253,7 +254,7 @@ pub fn validate(
         let mut residue = Vec::new();
         for rel in spec.placeholder_check_files {
             let p = ui_dir.join(rel);
-            if let Ok(content) = std::fs::read_to_string(&p) {
+            if let Some(content) = read_text_plain(&p) {
                 for ph in &placeholders {
                     if content.contains(ph) {
                         residue.push(format!("{rel} 含 {ph}"));
@@ -275,6 +276,38 @@ pub fn validate(
             },
         });
     }
+
+    // 10. 非 UTF-8 文件处理（来自本次执行的全局编码登记表，见 utils::encoding）
+    // - GBK 转码：内容已正确参与替换并写回 UTF-8，WARN 提示编码已变更（版本对比会显示整文件差异）
+    // - 编码无法识别：文件未参与任何文本替换（改造不完整），FAIL 需人工处理
+    let transcoded = crate::utils::encoding::transcoded_files();
+    let skipped = crate::utils::encoding::skipped_files();
+    items.push(CheckItem {
+        item: "非 UTF-8 文件转码".into(),
+        result: if transcoded.is_empty() { CheckResult::Pass } else { CheckResult::Warn },
+        message: if transcoded.is_empty() {
+            "全部文本文件均为 UTF-8".into()
+        } else {
+            format!(
+                "{} 个文件已按 GBK 转码并统一写回 UTF-8：{}",
+                transcoded.len(),
+                transcoded.iter().take(5).cloned().collect::<Vec<_>>().join("、")
+            )
+        },
+    });
+    items.push(CheckItem {
+        item: "编码无法识别的文件".into(),
+        result: if skipped.is_empty() { CheckResult::Pass } else { CheckResult::Fail },
+        message: if skipped.is_empty() {
+            "无编码无法识别的文本文件".into()
+        } else {
+            format!(
+                "{} 个文件无法按 UTF-8/GBK 解码，未参与文本替换，需人工处理：{}",
+                skipped.len(),
+                skipped.iter().take(5).cloned().collect::<Vec<_>>().join("、")
+            )
+        },
+    });
 
     items
 }
@@ -336,7 +369,7 @@ fn check_logback_path(root: &Path, engine: &ReplaceEngine) -> bool {
     for p in &scan.text_files {
         let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         if name.starts_with("logback") && name.ends_with(".xml") {
-            if let Ok(content) = std::fs::read_to_string(p) {
+            if let Some(content) = read_text_plain(p) {
                 if content.contains("log.path") {
                     return content.contains(r#"value="logs""#);
                 }

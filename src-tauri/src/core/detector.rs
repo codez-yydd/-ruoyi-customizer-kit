@@ -168,7 +168,7 @@ fn detect_from_application_class(
             if !path.to_string_lossy().ends_with("Application.java") {
                 continue;
             }
-            if let Ok(content) = std::fs::read_to_string(path) {
+            if let Some(content) = crate::utils::encoding::read_text_plain(path) {
                 for line in content.lines() {
                     if let Some(caps) = re_pkg.captures(line) {
                         let pkg = caps[1].to_string();
@@ -272,7 +272,8 @@ fn detect_from_admin_java_dir(root: &Path, rules: &ModuleRules) -> Option<String
 /// 从根 pom.xml 读取首个 <groupId>。
 fn detect_from_root_pom_groupid(root: &Path) -> Option<String> {
     let pom = root.join("pom.xml");
-    let content = std::fs::read_to_string(&pom).ok()?;
+    // 识别阶段只读探测：编码感知但不登记转码/跳过清单（那是执行管线的职责）
+    let content = crate::utils::encoding::read_text_plain(&pom)?;
     let re = Regex::new(r"(?s)<groupId>([\w.]+)</groupId>").ok()?;
     re.captures(&content).map(|c| c[1].to_string())
 }

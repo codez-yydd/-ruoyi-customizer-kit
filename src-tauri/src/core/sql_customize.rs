@@ -52,9 +52,9 @@ pub fn customize_sql_scripts(
     let mut quartz_removed_total = 0usize;
 
     for sql in &sql_files {
-        let content = match std::fs::read_to_string(sql) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match crate::utils::file::read_text(sql) {
+            Some(c) => c,
+            None => continue,
         };
         let mut new_content = content;
         let mut changed = false;

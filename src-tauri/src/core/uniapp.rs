@@ -265,8 +265,8 @@ fn format_wechat_config(params: &CustomizeParams) -> String {
 
 /// 幂等追加配置块：如果文件中已存在 `{prefix}:` 顶层键则跳过
 fn append_config_if_missing(path: &Path, prefix: &str, block: &str) -> Result<bool, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+    let content = crate::utils::file::read_text(path)
+        .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", path.display()))?;
 
     // 检查是否已存在该顶层键（简单文本级检查）
     let marker = format!("{}:", prefix);

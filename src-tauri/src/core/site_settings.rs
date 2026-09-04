@@ -95,7 +95,7 @@ fn inject_sql_seeds(root: &Path, log: &dyn Fn(&str)) -> (usize, Option<String>) 
     let mut warn: Option<String> = None;
 
     for sql in security::collect_sql_files(root) {
-        let Ok(content) = std::fs::read_to_string(&sql) else {
+        let Some(content) = crate::utils::file::read_text(&sql) else {
             continue;
         };
         let lower = content.to_lowercase();
@@ -391,7 +391,7 @@ fn patch_classic_frontend(ui: &Path, log: &dyn Fn(&str)) -> Option<(usize, usize
 
 /// read_write 的字符串版本：patch 结果与原文相同视为未修改。
 fn read_write_checked(path: &Path, patch: impl Fn(&str) -> String) -> bool {
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Some(content) = crate::utils::file::read_text(path) else {
         return false;
     };
     let new = patch(&content);

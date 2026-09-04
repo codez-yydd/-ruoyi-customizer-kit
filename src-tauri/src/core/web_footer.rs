@@ -189,7 +189,8 @@ fn find_java_file(module: &Path, file_name: &str) -> Option<PathBuf> {
 }
 
 fn read_write(path: &Path, patch: impl Fn(&str) -> Option<String>) -> Result<bool, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("读取 {} 失败：{e}", path.display()))?;
+    let content = crate::utils::file::read_text(path)
+        .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", path.display()))?;
     match patch(&content) {
         Some(new) if new != content => {
             std::fs::write(path, &new).map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
@@ -464,7 +465,7 @@ pub fn write_managed_file(target: &Path, tmpl_rel: &str, log: &dyn Fn(&str)) -> 
 
 /// read_write 的 Option<String> 版本：patch 返回的内容与原文相同视为未修改。
 fn read_write_checked(path: &Path, patch: impl Fn(&str) -> String) -> bool {
-    let Ok(content) = std::fs::read_to_string(path) else {
+    let Some(content) = crate::utils::file::read_text(path) else {
         return false;
     };
     let new = patch(&content);

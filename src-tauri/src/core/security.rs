@@ -9,6 +9,7 @@
 // 注意：admin 密码的 SQL 替换逻辑在本模块（pub），SQL 定制模块复用。
 
 use crate::core::CustomizeParams;
+use crate::utils::file::read_text;
 use std::path::Path;
 
 /// 加固结果
@@ -56,9 +57,9 @@ pub fn apply_security_hardening(
     };
 
     for sql in &sql_files {
-        let content = match std::fs::read_to_string(sql) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(sql) {
+            Some(c) => c,
+            None => continue,
         };
         let mut new_content = content.clone();
         let mut changed = false;
@@ -223,7 +224,7 @@ fn disable_demo_mode_in_config(root: &Path, log: &dyn Fn(&str)) -> bool {
     let mut changed = false;
     for name in &["application.yaml", "application.yml"] {
         let path = res_dir.join(name);
-        if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Some(content) = read_text(&path) {
             // 匹配 demoEnabled: true（容忍空格）改为 false
             let re = regex::Regex::new(r"(?m)(demoEnabled\s*:\s*)true\b").unwrap();
             let new = re.replace_all(&content, "${1}false").to_string();
@@ -341,9 +342,9 @@ fn customize_jwt_in_config(
     let mut changed = false;
     for name in &["application.yaml", "application.yml"] {
         let path = res_dir.join(name);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(&path) {
+            Some(c) => c,
+            None => continue,
         };
         let mut new_content = content;
         // 替换 secret: xxx（token 命名空间下；保守匹配行内首个 secret: 后的值）

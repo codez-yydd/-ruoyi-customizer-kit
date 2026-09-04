@@ -695,9 +695,9 @@ where
             continue;
         }
         let path = root.join(&rel);
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(&path) {
+            Some(c) => c,
+            None => continue,
         };
         if let Some(new_content) = crate::core::snowflake::inject_snowflake_to_service_impl_vm(&content) {
             if new_content != content {
@@ -721,9 +721,9 @@ where
                 continue;
             }
             let path = root.join(&rel);
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let content = match read_text(&path) {
+                Some(c) => c,
+                None => continue,
             };
             if let Some(new_content) = crate::core::snowflake::mark_domain_idtype_input(&content) {
                 if new_content != content {
@@ -787,9 +787,9 @@ where
         {
             continue;
         }
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(path) {
+            Some(c) => c,
+            None => continue,
         };
         if let Some(new_content) = crate::core::snowflake::mark_domain_idtype_input(&content) {
             if new_content != content {

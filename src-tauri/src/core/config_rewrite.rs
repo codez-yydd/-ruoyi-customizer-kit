@@ -668,7 +668,8 @@ fn read_first(dir: &Path, candidates: &[&str]) -> Result<(String, bool), String>
     for name in candidates {
         let p = dir.join(name);
         if p.is_file() {
-            let content = std::fs::read_to_string(&p).map_err(|e| format!("读取 {} 失败：{e}", p.display()))?;
+            let content = crate::utils::file::read_text(&p)
+                .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", p.display()))?;
             return Ok((content, true));
         }
     }

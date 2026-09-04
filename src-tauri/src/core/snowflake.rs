@@ -12,6 +12,7 @@
 // 与 MyBatis-Plus 共存时：domain 主键注解标 @TableId(type = IdType.INPUT)，
 // 表示主键由代码手动赋值，避免 MP 的 ASSIGN_ID 与 Hutool 雪花重复分配。
 
+use crate::utils::file::read_text;
 use std::path::Path;
 
 /// Hutool 依赖版本（默认）
@@ -36,8 +37,8 @@ pub fn add_hutool_dependency(
         if !pom.is_file() {
             continue;
         }
-        let content = std::fs::read_to_string(&pom)
-            .map_err(|e| format!("读取 {} 失败：{e}", pom.display()))?;
+        let content = read_text(&pom)
+            .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom.display()))?;
         let dep_block = format!(
             "\n    <dependency>\n        <groupId>cn.hutool</groupId>\n        <artifactId>hutool-all</artifactId>\n        <version>{ver}</version>\n    </dependency>\n",
             ver = HUTOOL_VERSION
@@ -120,9 +121,9 @@ pub fn inject_snowflake_to_existing_sources(
         {
             continue;
         }
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match read_text(path) {
+            Some(c) => c,
+            None => continue,
         };
         if let Some(new_content) = inject_snowflake_to_source(&content) {
             if new_content != content {
@@ -294,7 +295,7 @@ fn any_pom_has(root: &Path, modules: &[String], needle: &str) -> bool {
         paths.push(root.join(m).join("pom.xml"));
     }
     for p in paths {
-        if let Ok(c) = std::fs::read_to_string(p) {
+        if let Some(c) = read_text(&p) {
             if c.contains(needle) {
                 return true;
             }

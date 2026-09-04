@@ -845,14 +845,15 @@ fn rel(root: &Path, p: &Path) -> String {
         .unwrap_or_else(|_| p.to_string_lossy().to_string())
 }
 
-/// 读取文件内容判断是否包含目标字符串（预览用，文件不大）
+/// 读取文件内容判断是否包含目标字符串（预览用，文件不大）。
+/// 编码感知读取（GBK 亦可读出），预览只读不登记转码/跳过清单。
 fn matches_text_contains(path: &Path, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
-    match std::fs::read_to_string(path) {
-        Ok(content) => content.contains(needle),
-        Err(_) => false,
+    match crate::utils::encoding::read_text_plain(path) {
+        Some(content) => content.contains(needle),
+        None => false,
     }
 }
 

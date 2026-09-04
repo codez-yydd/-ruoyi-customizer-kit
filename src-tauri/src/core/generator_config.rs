@@ -89,8 +89,8 @@ fn customize_generator_yml(
             return Ok(0);
         }
     };
-    let content = std::fs::read_to_string(&yml_path)
-        .map_err(|e| format!("读取 {} 失败：{e}", yml_path.display()))?;
+    let content = crate::utils::file::read_text(&yml_path)
+        .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", yml_path.display()))?;
     let mut new_content = content.clone();
     let mut changed = false;
 
@@ -176,9 +176,9 @@ fn upgrade_vue3_templates(root: &Path, log: &dyn Fn(&str)) -> Result<usize, Stri
         if !path.extension().map(|e| e == "vm").unwrap_or(false) {
             continue;
         }
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match crate::utils::file::read_text(path) {
+            Some(c) => c,
+            None => continue,
         };
         let mut new_content = content.clone();
 

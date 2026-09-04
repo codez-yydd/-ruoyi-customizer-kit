@@ -36,8 +36,8 @@ pub fn add_wechat_dependency(
         if !pom.is_file() {
             continue;
         }
-        let content =
-            std::fs::read_to_string(&pom).map_err(|e| format!("读取 {} 失败：{e}", pom.display()))?;
+        let content = crate::utils::file::read_text(&pom)
+            .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom.display()))?;
         let dep_block = format!(
             "\n    <dependency>\n        <groupId>com.github.wechatpay-apiv3</groupId>\n        <artifactId>wechatpay-java</artifactId>\n        <version>{ver}</version>\n    </dependency>\n",
             ver = WECHATPAY_JAVA_VERSION
@@ -205,7 +205,7 @@ fn prioritize_modules(modules: &[String]) -> Vec<String> {
 fn any_pom_has(root: &Path, modules: &[String], marker: &str) -> bool {
     for m in modules {
         let pom = root.join(m).join("pom.xml");
-        if let Ok(c) = std::fs::read_to_string(&pom) {
+        if let Some(c) = crate::utils::file::read_text(&pom) {
             if c.contains(marker) {
                 return true;
             }
@@ -221,7 +221,7 @@ fn append_gitignore(root: &Path, admin: &str, log: &dyn Fn(&str)) -> Result<(), 
     let block = format!(
         "\n{marker}\nsrc/main/resources/cert/*.pem\nsrc/main/resources/cert/*.p12\n!src/main/resources/cert/.gitkeep\n!src/main/resources/cert/README.md\n"
     );
-    let existing = std::fs::read_to_string(&gitignore).unwrap_or_default();
+    let existing = crate::utils::file::read_text(&gitignore).unwrap_or_default();
     if existing.contains(marker) {
         return Ok(());
     }

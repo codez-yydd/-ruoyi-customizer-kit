@@ -166,8 +166,8 @@ pub fn inject_sub_agents(
     let agents_path = output_root.join("AGENTS.md");
 
     if agents_path.is_file() {
-        let content = std::fs::read_to_string(&agents_path)
-            .map_err(|e| format!("读取 {} 失败：{e}", agents_path.display()))?;
+        let content = crate::utils::file::read_text(&agents_path)
+            .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", agents_path.display()))?;
         let new_content = if content.contains(BEGIN_MARKER) {
             // 替换旧标记段（含首尾标记及其中所有内容）
             replace_marker_block(&content, &marked)

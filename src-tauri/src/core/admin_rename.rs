@@ -61,9 +61,9 @@ pub fn rename_admin_account(
     let mut seed_rows = 0usize;
     let mut audit_total = 0usize;
     for sql in security::collect_sql_files(root) {
-        let content = match std::fs::read_to_string(&sql) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let content = match crate::utils::file::read_text(&sql) {
+            Some(c) => c,
+            None => continue,
         };
         let mut new_content = content;
         let mut changed = false;
@@ -111,9 +111,9 @@ pub fn rename_admin_account(
     let mut login_files = 0usize;
     if want_user {
         for login in find_files_in_ui_dirs(root, "src/views/login.vue") {
-            let content = match std::fs::read_to_string(&login) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let content = match crate::utils::file::read_text(&login) {
+                Some(c) => c,
+                None => continue,
             };
             if let Some(new_content) = replace_login_prefill(&content, &params.admin_username) {
                 std::fs::write(&login, &new_content)
@@ -129,9 +129,9 @@ pub fn rename_admin_account(
     let mut vm_files = 0usize;
     if want_user {
         for vm in find_generator_sql_vm(root) {
-            let content = match std::fs::read_to_string(&vm) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let content = match crate::utils::file::read_text(&vm) {
+                Some(c) => c,
+                None => continue,
             };
             if content.contains("'admin'") {
                 let new_content = content.replace(
