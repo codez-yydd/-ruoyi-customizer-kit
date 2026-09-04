@@ -1,14 +1,19 @@
 <script setup lang="ts">
-// 执行改造页：触发 execute_transform，监听 transform:progress 事件，展示进度与实时日志。
-import { onMounted, onUnmounted, ref } from 'vue'
+// 执行改造页：触发 execute_transform，监听 transform:progress 事件，展示进度、
+// 实时日志、任务结果与执行后校验（checks）及报告路径（report_path）。
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { useProjectStore } from '@/stores/project'
 import { useProfilesStore } from '@/stores/profiles'
 import * as api from '@/api'
 import { Tools } from '@element-plus/icons-vue'
-import type { ExecuteResponse } from '@/types'
+// ElMessage/ElMessageBox 是函数式 API，ElementPlusResolver（只处理组件/指令）不自动注入，
+// 这里与 ParamConfig.vue 保持一致，显式从对应组件入口引入。
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import type { CheckItem, CheckResultType, ExecuteResponse } from '@/types'
 import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
@@ -102,6 +107,67 @@ const statusLabel = (s: string) => {
   if (s === 'Skipped') return '跳过'
   return '未知'
 }
+
+// ===== 执行后校验（execute_transform 返回的 checks） =====
+/** 校验项列表：旧持久化数据可能缺 checks 字段，兜底为空数组 */
+const checkItems = computed<CheckItem[]>(() => result.value?.checks ?? [])
+const checkFailCount = computed(() => checkItems.value.filter((c) => c.result === 'FAIL').length)
+const checkWarnCount = computed(() => checkItems.value.filter((c) => c.result === 'WARN').length)
+
+const checkTagType = (r: CheckResultType) => {
+  if (r === 'PASS') return 'success'
+  if (r === 'WARN') return 'warning'
+  if (r === 'FAIL') return 'danger'
+  return 'info'
+}
+const checkLabel = (r: CheckResultType) => {
+  if (r === 'PASS') return '✅ 通过'
+  if (r === 'WARN') return '⚠️ 警告'
+  if (r === 'FAIL') return '❌ 失败'
+  return '跳过'
+}
+
+/** 在系统文件管理器中打开报告所在目录并选中报告文件（失败不阻断，仅提示） */
+async function openReportDir() {
+  if (!result.value?.report_path) return
+  try {
+    await revealItemInDir(result.value.report_path)
+  } catch (e) {
+    store.log(`打开报告目录失败：${e}`, 'WARN')
+    ElMessage.warning('打开报告目录失败，请按路径手动前往')
+  }
+}
+
+/** 复制报告路径到剪贴板（clipboard API 不可用时降级 execCommand） */
+async function copyReportPath() {
+  const path = result.value?.report_path
+  if (!path) return
+  try {
+    await navigator.clipboard.writeText(path)
+    ElMessage.success('报告路径已复制')
+  } catch {
+    // 降级方案：隐藏 textarea + execCommand('copy')
+    const ta = document.createElement('textarea')
+    ta.value = path
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    } finally {
+      document.body.removeChild(ta)
+    }
+    if (ok) {
+      ElMessage.success('报告路径已复制')
+    } else {
+      ElMessage.error('复制失败，请手动复制')
+    }
+  }
+}
 </script>
 
 <template>
@@ -151,6 +217,49 @@ const statusLabel = (s: string) => {
       </el-table>
     </div>
 
+    <!-- 执行后校验：展示改造完成后的残留/合法性/产物完整性扫描，checks 为空时不渲染 -->
+    <div v-if="checkItems.length" class="rf-card">
+      <h3 class="section-title">执行后校验</h3>
+      <el-alert
+        v-if="checkFailCount"
+        class="check-alert"
+        type="error"
+        :title="`校验存在失败项：${checkFailCount} 失败 / ${checkWarnCount} 警告，请查看下方说明并在报告中确认处理方案`"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        v-else-if="checkWarnCount"
+        class="check-alert"
+        type="warning"
+        :title="`校验存在警告项：${checkWarnCount} 警告，建议核对残留说明后按需处理`"
+        :closable="false"
+        show-icon
+      />
+      <el-alert v-else class="check-alert" type="success" title="全部校验项通过" :closable="false" show-icon />
+      <el-table :data="checkItems" stripe size="default">
+        <el-table-column prop="item" label="校验项" min-width="200" />
+        <el-table-column label="结果" width="110">
+          <template #default="{ row }">
+            <el-tag :type="checkTagType(row.result)" size="small">{{ checkLabel(row.result) }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="message" label="说明" min-width="220" />
+      </el-table>
+    </div>
+
+    <!-- 改造报告路径：未生成报告（report_path 为空）时不渲染 -->
+    <div v-if="result?.report_path" class="rf-card report-card">
+      <div class="report-info">
+        <span class="report-label">改造报告</span>
+        <span class="report-path">{{ result.report_path }}</span>
+      </div>
+      <div class="report-actions">
+        <el-button size="small" @click="openReportDir">打开报告目录</el-button>
+        <el-button size="small" @click="copyReportPath">复制路径</el-button>
+      </div>
+    </div>
+
     <LogPanel />
 
     <div v-if="result" class="actions">
@@ -188,6 +297,34 @@ const statusLabel = (s: string) => {
   margin: 0 0 12px;
   font-size: 14px;
   font-weight: 600;
+}
+.check-alert {
+  margin-bottom: 12px;
+}
+.report-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.report-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.report-label {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.report-path {
+  font-size: 12.5px;
+  color: #909399;
+  word-break: break-all;
+}
+.report-actions {
+  flex-shrink: 0;
 }
 .actions {
   display: flex;
