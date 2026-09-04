@@ -289,7 +289,7 @@ pub fn validate(
             "全部文本文件均为 UTF-8".into()
         } else {
             format!(
-                "{} 个文件已按 GBK 转码并统一写回 UTF-8：{}",
+                "{} 个文件已按 GBK 转码并统一写回 UTF-8：{}；请确认项目构建编码为 UTF-8（如 pom 的 project.build.sourceEncoding），避免编译时中文乱码",
                 transcoded.len(),
                 transcoded.iter().take(5).cloned().collect::<Vec<_>>().join("、")
             )

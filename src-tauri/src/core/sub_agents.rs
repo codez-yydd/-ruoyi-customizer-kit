@@ -46,20 +46,13 @@ fn scan_agents() -> Vec<(String, String)> {
 
 /// 递归遍历 dir 下所有 *.md 文件并解析 frontmatter，结果按 name 去重写入 out。
 /// 非 frontmatter 文件（如 zcode/AGENTS.md、claude/CLAUDE.md）解析出空 name，自然跳过。
+/// read_dir 的遍历顺序不作保证，因此先收集全部路径并按字典序排序后再解析，
+/// 使「同 name 去重保留首个命中」跨环境确定为路径靠前的文件（claude/ 先于 zcode/）。
 fn walk_agent_files(dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(it) => it,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            walk_agent_files(&path, out);
-            continue;
-        }
-        if path.extension().and_then(|e| e.to_str()) != Some("md") {
-            continue;
-        }
+    let mut paths = Vec::new();
+    collect_agent_md_paths(dir, &mut paths);
+    paths.sort();
+    for path in paths {
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -70,6 +63,22 @@ fn walk_agent_files(dir: &Path, out: &mut std::collections::BTreeMap<String, Str
             continue;
         }
         out.entry(name.to_string()).or_insert(desc);
+    }
+}
+
+/// 递归收集 dir 下所有 *.md 文件路径（read_dir 失败的目录直接忽略）。
+fn collect_agent_md_paths(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(it) => it,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_agent_md_paths(&path, out);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            out.push(path);
+        }
     }
 }
 
