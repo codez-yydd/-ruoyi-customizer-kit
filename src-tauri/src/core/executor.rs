@@ -100,7 +100,7 @@ where
         TaskType::UpdateMavenPom => do_update_pom(root, params, &engine, &mut r, log),
         TaskType::RenameMavenModule => do_rename_modules(root, params, template, &mut r, log),
         TaskType::UpdateFrontendTitle => do_update_frontend(root, params, template, &engine, &mut r, log),
-        TaskType::RewriteApplicationProfiles => do_rewrite_config(root, params, template, &mut r, log),
+        TaskType::RewriteApplicationProfiles => do_rewrite_config(root, info, params, template, &mut r, log),
         TaskType::RewriteLogbackPath => do_rewrite_logback(root, &engine, &mut r, log),
         TaskType::InjectColoredConsolePattern => do_inject_colored_console(root, &engine, &mut r, log),
         TaskType::AddMybatisPlusDependency => do_add_mp_dependency(root, info, &mut r, log),
@@ -500,7 +500,14 @@ pub fn clear_frontend_home(path: &Path) -> bool {
 }
 
 /// 6. 配置文件重构（三件套）
-fn do_rewrite_config<F>(root: &Path, params: &CustomizeParams, template: &Template, r: &mut TaskResult, log: &F) -> Result<(), String>
+fn do_rewrite_config<F>(
+    root: &Path,
+    info: &crate::core::ProjectInfo,
+    params: &CustomizeParams,
+    template: &Template,
+    r: &mut TaskResult,
+    log: &F,
+) -> Result<(), String>
 where
     F: Fn(&str),
 {
@@ -513,7 +520,7 @@ where
             return Ok(());
         }
     };
-    let outcome = crate::core::config_rewrite::rewrite(&res_dir, params, log)?;
+    let outcome = crate::core::config_rewrite::rewrite(&res_dir, params, info.spring_boot_major, log)?;
     r.created_files = 3;
     log(&format!(
         "配置重构：{} / {} / {}",
@@ -603,7 +610,7 @@ where
 {
     // 注意：执行到此步时模块可能已被重命名，扫描当前实际存在的模块目录，而非依赖 info.backend_modules
     let modules = current_backend_modules(root, info);
-    let added = crate::core::mybatis_plus::add_dependency(root, &modules, log)?;
+    let added = crate::core::mybatis_plus::add_dependency(root, &modules, info.spring_boot_major, log)?;
     if added {
         r.modified_files = 1;
     } else {

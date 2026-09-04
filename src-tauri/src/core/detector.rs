@@ -60,6 +60,7 @@ pub fn detect(project_root: &Path, template: &Template) -> ProjectInfo {
         original_package,
         original_module_prefix,
         original_artifact_prefix,
+        spring_boot_major: detect_boot_major_version(project_root),
         confidence: Confidence {
             required_hit,
             required_total,
@@ -69,6 +70,60 @@ pub fn detect(project_root: &Path, template: &Template) -> ProjectInfo {
         },
         detected_at,
     }
+}
+
+/// 检测项目使用的 Spring Boot 大版本。
+///
+/// 扫描根 pom（含子模块 pom）的 `spring-boot-starter-parent` 版本及
+/// `<spring-boot.version>` 属性，返回主版本号（如 2 / 3 / 4）。检测不到返回 None。
+///
+/// 锚点仅此两种写法，不扩展。官方 RuoYi-Vue master 已是 Boot 4.x（核实日期 2026-09-05），
+/// 根 pom 仍是 `<spring-boot.version>` 属性或 `spring-boot-starter-parent`。
+///
+/// 用途：MyBatis-Plus starter、Redis 配置键位、执行后版本一致性校验均依赖此结果。
+pub fn detect_boot_major_version(root: &Path) -> Option<u32> {
+    // 候选 pom：根 pom + 一级子模块 pom
+    let mut pom_paths: Vec<PathBuf> = vec![root.join("pom.xml")];
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let p = e.path().join("pom.xml");
+            if p.is_file() {
+                pom_paths.push(p);
+            }
+        }
+    }
+    for pom in &pom_paths {
+        let content = match crate::utils::file::read_text(pom) {
+            Some(c) => c,
+            None => continue,
+        };
+        // 1) <spring-boot.version>3.x</spring-boot.version> 属性
+        if let Some(v) = extract_version_after(&content, "<spring-boot.version>") {
+            return major_of(&v);
+        }
+        // 2) spring-boot-starter-parent 的 <version>
+        //    形如 <parent>...<artifactId>spring-boot-starter-parent</artifactId><version>3.2.4</version>
+        if let Some(idx) = content.find("spring-boot-starter-parent") {
+            let tail = &content[idx..];
+            if let Some(v) = extract_version_after(tail, "<version>") {
+                return major_of(&v);
+            }
+        }
+    }
+    None
+}
+
+/// 在 content 中找到 tag 后，提取紧随其后的版本号文本（到下一个 < 为止）
+fn extract_version_after(content: &str, tag: &str) -> Option<String> {
+    let idx = content.find(tag)?;
+    let after = &content[idx + tag.len()..];
+    let end = after.find('<')?;
+    Some(after[..end].trim().to_string())
+}
+
+/// 从版本号字符串取主版本号（如 "3.2.4" → 3）
+fn major_of(version: &str) -> Option<u32> {
+    version.split('.').next()?.parse::<u32>().ok()
 }
 
 /// 计算「存在的」模块清单。frontend=true 时取前端模块，否则取后端模块。

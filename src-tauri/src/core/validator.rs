@@ -124,13 +124,15 @@ pub fn validate(
 
     // 6. MyBatis-Plus 依赖与配置类（仅在开启时校验）
     // 注意：starter 名随 Spring Boot 大版本变化——SB2 用 mybatis-plus-boot-starter，
-    // SB3 用 mybatis-plus-spring-boot3-starter。两个都视为合法依赖标记。
+    // SB3 用 mybatis-plus-spring-boot3-starter，SB4 用 mybatis-plus-spring-boot4-starter。
+    // 三个都视为「依赖已添加」的合法标记；版本是否匹配见下方失败级校验。
     if params.enable_mybatis_plus {
         let dep_ok = scan.text_files.iter().any(|p| {
             p.file_name().map(|n| n == "pom.xml").unwrap_or(false)
                 && read_text_plain(p).map(|c| {
                     c.contains("mybatis-plus-boot-starter")
                         || c.contains("mybatis-plus-spring-boot3-starter")
+                        || c.contains("mybatis-plus-spring-boot4-starter")
                 }).unwrap_or(false)
         });
         items.push(CheckItem {
@@ -138,6 +140,22 @@ pub fn validate(
             result: if dep_ok { CheckResult::Pass } else { CheckResult::Fail },
             message: if dep_ok { "依赖已添加".into() } else { "未找到依赖".into() },
         });
+    }
+
+    // 6b / 6c. 版本一致性（失败级）：仅当开启对应功能且能识别到 Boot 大版本时校验
+    let boot_major = crate::core::detector::detect_boot_major_version(root);
+    if params.enable_mybatis_plus {
+        items.push(check_mp_jsqlparser(root, boot_major));
+        if let Some(major) = boot_major {
+            items.push(check_mp_starter_matches_boot(root, major));
+        }
+    }
+    if params.enable_config_rewrite {
+        if let Some(major) = boot_major {
+            if let Some(res) = find_resources_dir(root, template) {
+                items.push(check_redis_keys_match_boot(&res, major));
+            }
+        }
     }
 
     // 7. generator 模板已适配（仅在开启时校验）
@@ -315,6 +333,189 @@ pub fn validate(
     }
 
     items
+}
+
+/// MyBatis-Plus jsqlparser 分页模块（失败级）。
+/// 扫描范围：根 pom + 一级子模块 pom。使用精确 `<artifactId>` 标签，
+/// 避免 `mybatis-plus-jsqlparser` 误匹配 `mybatis-plus-jsqlparser-4.9`。
+fn check_mp_jsqlparser(root: &Path, boot_major: Option<u32>) -> CheckItem {
+    const JSQL_TAG: &str = "<artifactId>mybatis-plus-jsqlparser</artifactId>";
+    const JSQL_JDK8_TAG: &str = "<artifactId>mybatis-plus-jsqlparser-4.9</artifactId>";
+    let texts = collect_root_and_module_pom_texts(root);
+    let has_modern = texts.iter().any(|c| c.contains(JSQL_TAG));
+    let has_jdk8 = texts.iter().any(|c| c.contains(JSQL_JDK8_TAG));
+
+    let (ok, message) = match boot_major {
+        Some(major) if major < 3 => {
+            if has_jdk8 {
+                (true, format!("Boot {major}.x 已声明 mybatis-plus-jsqlparser-4.9"))
+            } else {
+                (
+                    false,
+                    format!("Boot {major}.x 未找到 mybatis-plus-jsqlparser-4.9（JDK 8 分页模块）"),
+                )
+            }
+        }
+        Some(major) => {
+            if has_modern && !has_jdk8 {
+                (true, format!("Boot {major}.x 已声明 mybatis-plus-jsqlparser"))
+            } else if has_jdk8 && !has_modern {
+                (
+                    false,
+                    format!("Boot {major}.x 需要 mybatis-plus-jsqlparser，不要使用 jsqlparser-4.9"),
+                )
+            } else if has_modern {
+                (true, format!("Boot {major}.x 已声明 mybatis-plus-jsqlparser"))
+            } else {
+                (
+                    false,
+                    format!("Boot {major}.x 未找到 mybatis-plus-jsqlparser 分页模块"),
+                )
+            }
+        }
+        None => {
+            if has_modern || has_jdk8 {
+                (true, "已声明 jsqlparser 分页模块".into())
+            } else {
+                (false, "未找到 MyBatis-Plus jsqlparser 分页模块".into())
+            }
+        }
+    };
+
+    CheckItem {
+        item: "MyBatis-Plus jsqlparser 分页模块".into(),
+        result: if ok {
+            CheckResult::Pass
+        } else {
+            CheckResult::Fail
+        },
+        message,
+    }
+}
+
+/// MP starter 与 Boot 大版本匹配（失败级）。
+/// 扫描范围：根 pom + 一级子模块 pom。
+fn check_mp_starter_matches_boot(root: &Path, boot_major: u32) -> CheckItem {
+    const BOOT2: &str = "mybatis-plus-boot-starter";
+    const BOOT3: &str = "mybatis-plus-spring-boot3-starter";
+    const BOOT4: &str = "mybatis-plus-spring-boot4-starter";
+    let forbidden: &[&str] = match boot_major {
+        m if m < 3 => &[BOOT3, BOOT4],
+        3 => &[BOOT2, BOOT4],
+        _ => &[BOOT2, BOOT3],
+    };
+    let mut found: Vec<&str> = Vec::new();
+    for content in collect_root_and_module_pom_texts(root) {
+        for name in forbidden {
+            if content.contains(name) && !found.contains(name) {
+                found.push(*name);
+            }
+        }
+    }
+    CheckItem {
+        item: "MyBatis-Plus starter 与 Boot 大版本匹配".into(),
+        result: if found.is_empty() {
+            CheckResult::Pass
+        } else {
+            CheckResult::Fail
+        },
+        message: if found.is_empty() {
+            format!("Boot {boot_major}.x 未发现不匹配的 starter")
+        } else {
+            format!(
+                "Boot {boot_major}.x 不应出现：{}",
+                found.join("、")
+            )
+        },
+    }
+}
+
+/// Redis 键位与 Boot 大版本匹配（失败级）。
+/// 扫描 admin resources 下 application-dev/prod 的 yaml/yml。
+fn check_redis_keys_match_boot(res: &Path, boot_major: u32) -> CheckItem {
+    let files = [
+        "application-dev.yaml",
+        "application-dev.yml",
+        "application-prod.yaml",
+        "application-prod.yml",
+    ];
+    let mut bad: Vec<String> = Vec::new();
+    for name in files {
+        let p = res.join(name);
+        if !p.is_file() {
+            continue;
+        }
+        let content = read_text_plain(&p).unwrap_or_default();
+        if boot_major == 2 {
+            if yaml_has_spring_data_redis(&content) {
+                bad.push(format!("{name} 含 spring.data.redis"));
+            }
+        } else if yaml_has_spring_direct_redis(&content) {
+            bad.push(format!("{name} 含 spring.redis 直挂键"));
+        }
+    }
+    CheckItem {
+        item: "Redis 键位与 Boot 大版本匹配".into(),
+        result: if bad.is_empty() {
+            CheckResult::Pass
+        } else {
+            CheckResult::Fail
+        },
+        message: if bad.is_empty() {
+            if boot_major == 2 {
+                "Boot 2.x 使用 spring.redis，未发现 spring.data.redis".into()
+            } else {
+                format!("Boot {boot_major}.x 使用 spring.data.redis，未发现 spring.redis 直挂键")
+            }
+        } else {
+            bad.join("；")
+        },
+    }
+}
+
+/// 根 pom + 一级子模块 pom 的文本
+fn collect_root_and_module_pom_texts(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(c) = read_text_plain(&root.join("pom.xml")) {
+        out.push(c);
+    }
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            if !e.path().is_dir() {
+                continue;
+            }
+            if let Some(c) = read_text_plain(&e.path().join("pom.xml")) {
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
+/// 按 YAML 结构判断是否存在 spring.data.redis（不误伤注释）
+fn yaml_has_spring_data_redis(content: &str) -> bool {
+    match serde_yaml::from_str::<serde_yaml::Value>(content) {
+        Ok(v) => v
+            .get("spring")
+            .and_then(|s| s.get("data"))
+            .and_then(|d| d.get("redis"))
+            .is_some(),
+        Err(_) => content.lines().any(|l| {
+            let t = l.trim();
+            !t.starts_with('#') && t.contains("spring.data.redis")
+        }),
+    }
+}
+
+/// 按 YAML 结构判断 spring 是否直挂 redis（Boot 2 键位；不误伤 spring.data.redis）
+fn yaml_has_spring_direct_redis(content: &str) -> bool {
+    match serde_yaml::from_str::<serde_yaml::Value>(content) {
+        Ok(v) => v.get("spring").and_then(|s| s.get("redis")).is_some(),
+        Err(_) => content.lines().any(|l| {
+            let t = l.trim();
+            !t.starts_with('#') && l.starts_with("  redis:") && !l.starts_with("   ")
+        }),
+    }
 }
 
 /// PostgreSQL 改造后校验：yaml url/driver、MP 分页方言为失败级；pom 仍含 MySQL 驱动为警告级。
@@ -702,6 +903,81 @@ mod tests {
         assert_eq!(
             ui_template_spec("").required_files,
             ui_template_spec("vben-web-ele").required_files
+        );
+    }
+
+    /// Boot 4 项目残留 boot3 starter → 该项 Fail
+    #[test]
+    fn boot4_with_boot3_starter_residue_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <properties>\n    <spring-boot.version>4.0.0</spring-boot.version>\n  </properties>\n</project>\n",
+        )
+        .unwrap();
+        let common = root.join("ruoyi-common");
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::write(
+            common.join("pom.xml"),
+            "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.baomidou</groupId>\n      <artifactId>mybatis-plus-spring-boot3-starter</artifactId>\n      <version>3.5.15</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+        )
+        .unwrap();
+        let mut params = crate::core::CustomizeParams::default();
+        params.enable_mybatis_plus = true;
+        params.enable_config_rewrite = false;
+        params.enable_logback_rewrite = false;
+        params.enable_generator_mybatis_plus = false;
+        params.enable_replace_ui = false;
+        params.enable_uniapp = false;
+        let items = validate(root, &params, &empty_template());
+        let item = items
+            .iter()
+            .find(|c| c.item.contains("starter 与 Boot"))
+            .expect("应存在 MP starter 版本一致性校验项");
+        assert!(
+            matches!(item.result, CheckResult::Fail),
+            "Boot 4 + boot3 starter 残留应 FAIL，实际: {} - {}",
+            item.message,
+            item.item
+        );
+        assert!(item.message.contains("mybatis-plus-spring-boot3-starter"));
+    }
+
+    /// 开启 MP、已有 starter、无 jsqlparser → 分页模块校验 Fail
+    #[test]
+    fn enable_mp_without_jsqlparser_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::write(
+            root.join("pom.xml"),
+            "<project>\n  <properties>\n    <spring-boot.version>4.0.3</spring-boot.version>\n  </properties>\n</project>\n",
+        )
+        .unwrap();
+        let common = root.join("ruoyi-common");
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::write(
+            common.join("pom.xml"),
+            "<project>\n  <dependencies>\n    <dependency>\n      <groupId>com.baomidou</groupId>\n      <artifactId>mybatis-plus-spring-boot4-starter</artifactId>\n      <version>3.5.15</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+        )
+        .unwrap();
+        let mut params = crate::core::CustomizeParams::default();
+        params.enable_mybatis_plus = true;
+        params.enable_config_rewrite = false;
+        params.enable_logback_rewrite = false;
+        params.enable_generator_mybatis_plus = false;
+        params.enable_replace_ui = false;
+        params.enable_uniapp = false;
+        let items = validate(root, &params, &empty_template());
+        let item = items
+            .iter()
+            .find(|c| c.item.contains("jsqlparser 分页模块"))
+            .expect("应存在 MyBatis-Plus jsqlparser 分页模块校验项");
+        assert!(
+            matches!(item.result, CheckResult::Fail),
+            "开启 MP 且无 jsqlparser 应 FAIL，实际: {} - {}",
+            item.message,
+            item.item
         );
     }
 }

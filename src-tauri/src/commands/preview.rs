@@ -84,7 +84,13 @@ pub fn preview_tasks(
 
     // 3. 规划任务
     let tasks = planner::plan(&project_info, &params, &template);
-    let summary = planner::summarize(&tasks);
+    let mut summary = planner::summarize(&tasks);
+    // 提示性高风险项：不新增可执行 Task，不阻塞
+    if project_info.spring_boot_major == Some(4) && params.enable_mybatis_plus {
+        summary.high_risk_items.push(
+            "Spring Boot 4 项目：已注入 mybatis-plus-spring-boot4-starter（3.5.15+），如遇自动装配问题参考官方 issue #7009".into(),
+        );
+    }
 
     PreviewResponse {
         success: true,

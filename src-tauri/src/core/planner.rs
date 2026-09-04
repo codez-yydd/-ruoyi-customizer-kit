@@ -956,6 +956,7 @@ mod tests {
             original_package: "com.ruoyi".into(),
             original_module_prefix: "ruoyi".into(),
             original_artifact_prefix: "ruoyi".into(),
+            spring_boot_major: None,
             confidence: Confidence {
                 required_hit: 0,
                 required_total: 0,

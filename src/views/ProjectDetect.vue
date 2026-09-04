@@ -21,6 +21,15 @@ const templateDesc = computed(() =>
   getTemplateMeta(projectInfo.value?.template_dir || '').desc
 )
 
+/** Spring Boot 大版本展示：2 → 2.x / 缺省 → 未识别 */
+const springBootLabel = computed(() => {
+  const major = projectInfo.value?.spring_boot_major
+  if (major === 2) return '2.x'
+  if (major === 3) return '3.x'
+  if (major === 4) return '4.x'
+  return '未识别'
+})
+
 /** 回首页重新选择项目：清理 zip 临时目录并重置流程 */
 async function backToHome() {
   // 若为 zip 模式，清理临时解压目录（静默失败）
@@ -119,6 +128,10 @@ function goConfig() {
           <div class="kv">
             <span class="kv__k">原 artifactId 前缀</span>
             <code>{{ projectInfo.original_artifact_prefix || '未识别' }}</code>
+          </div>
+          <div class="kv">
+            <span class="kv__k">Spring Boot 版本</span>
+            <code>{{ springBootLabel }}</code>
           </div>
         </div>
 

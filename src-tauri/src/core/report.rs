@@ -28,6 +28,14 @@ pub fn generate_report(
     md.push_str(&format!("- 项目类型：{}\n", info.project_type));
     md.push_str(&format!("- 后端模块：{}\n", info.backend_modules.join("、")));
     md.push_str(&format!("- 前端目录：{}\n", info.frontend_dirs.join("、")));
+    let boot_label = match info.spring_boot_major {
+        Some(2) => "2".to_string(),
+        Some(3) => "3".to_string(),
+        Some(4) => "4".to_string(),
+        Some(n) => n.to_string(),
+        None => "未识别".to_string(),
+    };
+    md.push_str(&format!("- Spring Boot 大版本：{}\n", boot_label));
 
     // 改造参数
     md.push_str("\n## 改造参数\n\n");

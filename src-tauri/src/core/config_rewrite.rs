@@ -135,9 +135,12 @@ const ENV_KEYS: &[&str] = &["spring", "redis", "druid", "datasource", "log"];
 // base 只保留 server / token / mybatis-plus / ruoyi / 自定义业务配置。
 
 /// 执行配置重构。resources_dir 指向含 application*.yml 的目录（通常是 admin/src/main/resources）。
+///
+/// `boot_major`：识别到的 Spring Boot 大版本；`None` 时 Redis 键位按 Boot 3/4 的 `spring.data.redis` 生成。
 pub fn rewrite(
     resources_dir: &Path,
     params: &CustomizeParams,
+    boot_major: Option<u32>,
     log: &dyn Fn(&str),
 ) -> Result<RewriteOutcome, String> {
     // 1. 读取原始 application.yml/yaml（原文，保留注释）
@@ -255,7 +258,7 @@ pub fn rewrite(
         }
     };
     let dialect = crate::core::db_dialect::from_params(params);
-    let std_block = build_standard_datasource_redis(dialect, &db_name);
+    let std_block = build_standard_datasource_redis(dialect, &db_name, boot_major);
     let dev = std_block.clone();
     let prod = std_block;
 
@@ -350,7 +353,9 @@ fn extract_spring_datasource_block(druid_content: &str) -> Option<String> {
 ///
 /// 这样 base 仍能正确加载 i18n（spring.messages.basename）、Jackson 日期格式等运行时行为。
 fn extract_spring_runtime_children(lines: &[String]) -> Vec<String> {
-    // 环境相关子项（按 key 名匹配，冒号结尾）：整体丢弃其子树
+    // 环境相关子项（按 key 名匹配，冒号结尾）：整体丢弃其子树。
+    // 同时覆盖 Boot 2 的 `spring.redis` 与 Boot 3/4 的 `spring.data.redis`，
+    // 两种原始形态都会被丢弃后按 Boot 版本重建。
     const ENV_CHILD_KEYS: &[&str] = &["datasource:", "data:", "redis:", "profiles:"];
 
     let mut out: Vec<String> = Vec::new();
@@ -675,17 +680,79 @@ fn db_name_from_url_line(line: &str) -> Option<String> {
     Some(db.to_string())
 }
 
-/// 构建标准完整的 spring.datasource + spring.data.redis 配置块（明文）。
+/// 构建标准完整的 spring.datasource + Redis 配置块（明文）。
 ///
 /// 用于 dev / prod：druid 全量连接池参数 + lettuce 连接池。dev 与 prod 内容完全一致，
 /// 不注入 ${ENV} 占位（由部署人员后续按需替换）。
 ///
+/// Redis 键位按 Boot 大版本分支（核实日期 2026-09-05）：
+/// - Boot 2：`spring.redis.*`（少一层 `data`，子项内容不变）
+/// - Boot 3 / 4 / 未识别：`spring.data.redis.*`
+///
+/// Spring Boot 4 延续 `spring.data.redis` 键位：
+/// `DataRedisProperties` 自 4.0.0 起 `@ConfigurationProperties("spring.data.redis")`；
+/// 官方文档：https://docs.spring.io/spring-boot/4.0/reference/data/nosql.html
+///
 /// `db_name`：数据库名（写入 url 路径段）。
-fn build_standard_datasource_redis(dialect: &crate::core::db_dialect::DbDialect, db_name: &str) -> String {
+pub(crate) fn build_standard_datasource_redis(
+    dialect: &crate::core::db_dialect::DbDialect,
+    db_name: &str,
+    boot_major: Option<u32>,
+) -> String {
     let url = format!(
         "{}://localhost:{}/{}?{}",
         dialect.url_scheme, dialect.default_port, db_name, dialect.url_params
     );
+    let redis_block = if boot_major == Some(2) {
+        r#"  # redis 配置
+  redis:
+    # 地址
+    host: localhost
+    # 端口，默认为6379
+    port: 6379
+    # 数据库索引
+    database: 1
+    # 密码
+    password:
+    # 连接超时时间
+    timeout: 10s
+    lettuce:
+      pool:
+        # 连接池中的最小空闲连接
+        min-idle: 0
+        # 连接池中的最大空闲连接
+        max-idle: 8
+        # 连接池的最大数据库连接数
+        max-active: 8
+        # #连接池最大阻塞等待时间（使用负值表示没有限制）
+        max-wait: -1ms
+"#
+    } else {
+        r#"  data:
+    # redis 配置
+    redis:
+      # 地址
+      host: localhost
+      # 端口，默认为6379
+      port: 6379
+      # 数据库索引
+      database: 1
+      # 密码
+      password:
+      # 连接超时时间
+      timeout: 10s
+      lettuce:
+        pool:
+          # 连接池中的最小空闲连接
+          min-idle: 0
+          # 连接池中的最大空闲连接
+          max-idle: 8
+          # 连接池的最大数据库连接数
+          max-active: 8
+          # #连接池最大阻塞等待时间（使用负值表示没有限制）
+          max-wait: -1ms
+"#
+    };
     format!(
         r#"# ===== 数据源 + Redis 配置（dev/prod 明文，部署时按需替换密码/地址） =====
 spring:
@@ -748,33 +815,11 @@ spring:
         wall:
           config:
             multi-statement-allow: true
-  data:
-    # redis 配置
-    redis:
-      # 地址
-      host: localhost
-      # 端口，默认为6379
-      port: 6379
-      # 数据库索引
-      database: 1
-      # 密码
-      password:
-      # 连接超时时间
-      timeout: 10s
-      lettuce:
-        pool:
-          # 连接池中的最小空闲连接
-          min-idle: 0
-          # 连接池中的最大空闲连接
-          max-idle: 8
-          # 连接池的最大数据库连接数
-          max-active: 8
-          # #连接池最大阻塞等待时间（使用负值表示没有限制）
-          max-wait: -1ms
-"#,
+{redis_block}"#,
         driver = dialect.driver_class,
         url = url,
-        validation = dialect.validation_query
+        validation = dialect.validation_query,
+        redis_block = redis_block
     )
 }
 
@@ -855,6 +900,33 @@ mod tests {
     fn parse_db_name_postgresql_url() {
         let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:postgresql://localhost:5432/pgdb?currentSchema=public\n";
         assert_eq!(parse_master_db_name(yaml).as_deref(), Some("pgdb"));
+    }
+
+    #[test]
+    fn redis_keys_boot2_uses_spring_redis() {
+        let dialect = crate::core::db_dialect::from_params(&CustomizeParams::default());
+        let yaml = build_standard_datasource_redis(dialect, "ry", Some(2));
+        assert!(yaml.contains("spring:"), "应含 spring 块");
+        assert!(
+            yaml.contains("\n  redis:\n"),
+            "Boot 2 应为 spring 直挂 redis：{yaml}"
+        );
+        assert!(
+            !yaml.contains("spring.data.redis") && !yaml.contains("\n  data:\n"),
+            "Boot 2 不应含 spring.data.redis：{yaml}"
+        );
+    }
+
+    #[test]
+    fn redis_keys_boot3_boot4_none_use_spring_data_redis() {
+        let dialect = crate::core::db_dialect::from_params(&CustomizeParams::default());
+        for major in [Some(3), Some(4), None] {
+            let yaml = build_standard_datasource_redis(dialect, "ry", major);
+            assert!(
+                yaml.contains("\n  data:\n") && yaml.contains("\n    redis:\n"),
+                "Boot {major:?} 应含 spring.data.redis：{yaml}"
+            );
+        }
     }
 
     #[test]

@@ -494,6 +494,9 @@ pub struct ProjectInfo {
     pub original_module_prefix: String,
     /// 识别到的原 artifactId 前缀（如 ruoyi）
     pub original_artifact_prefix: String,
+    /// 识别到的 Spring Boot 大版本（如 2 / 3 / 4）；未识别到为 None
+    #[serde(default)]
+    pub spring_boot_major: Option<u32>,
     /// 识别置信度说明（命中了哪些必备/可选文件）
     pub confidence: Confidence,
     /// 识别时间戳（RFC3339）
@@ -512,4 +515,36 @@ pub struct Confidence {
     pub recognized: bool,
     /// 未命中的必备文件（用于 UI 给出明确原因）
     pub missing_required: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧 ProjectInfo JSON（无 spring_boot_major）反序列化不报错且为 None
+    #[test]
+    fn old_project_info_json_defaults_spring_boot_major() {
+        let json = r#"{
+            "root_path": "/tmp/p",
+            "project_type": "RuoYi-Vue",
+            "backend_modules": [],
+            "frontend_dirs": [],
+            "config_files": [],
+            "logback_files": [],
+            "generator_template_files": [],
+            "original_package": "com.ruoyi",
+            "original_module_prefix": "ruoyi",
+            "original_artifact_prefix": "ruoyi",
+            "confidence": {
+                "required_hit": 1,
+                "required_total": 1,
+                "optional_hit": [],
+                "recognized": true,
+                "missing_required": []
+            },
+            "detected_at": "2026-01-01T00:00:00+08:00"
+        }"#;
+        let info: ProjectInfo = serde_json::from_str(json).expect("旧 JSON 应能反序列化");
+        assert_eq!(info.spring_boot_major, None);
+    }
 }

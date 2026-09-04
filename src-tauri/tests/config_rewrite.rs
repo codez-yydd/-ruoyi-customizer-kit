@@ -77,7 +77,7 @@ fn rewrites_config_into_three_profiles() {
     let dir = build_resources();
     let res = dir.path();
     let params = params_with_config();
-    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let outcome = config_rewrite::rewrite(res, &params, None, &|_| {}).expect("配置重构应成功");
 
     // 三个文件都存在
     assert!(outcome.base_path.is_file(), "application.yaml 应存在");
@@ -167,7 +167,7 @@ fn keeps_original_db_name_when_sql_customize_disabled() {
     params.db_name = String::new();
     params.enable_sql_customize = false;
 
-    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let outcome = config_rewrite::rewrite(res, &params, None, &|_| {}).expect("配置重构应成功");
     let dev = fs::read_to_string(&outcome.dev_path).unwrap();
     let prod = fs::read_to_string(&outcome.prod_path).unwrap();
 
@@ -186,7 +186,7 @@ fn uses_module_prefix_when_sql_customize_enabled_and_db_empty() {
     params.db_name = String::new();
     params.enable_sql_customize = true;
 
-    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let outcome = config_rewrite::rewrite(res, &params, None, &|_| {}).expect("配置重构应成功");
     let dev = fs::read_to_string(&outcome.dev_path).unwrap();
 
     assert!(dev.contains("3306/demo?"), "开启 SQL 定制且留空库名时应用模块前缀 demo");
@@ -203,7 +203,7 @@ fn falls_back_to_module_prefix_when_original_url_unparsable() {
 
     let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let logs_clone = logs.clone();
-    let outcome = config_rewrite::rewrite(res, &params, &move |msg: &str| {
+    let outcome = config_rewrite::rewrite(res, &params, None, &move |msg: &str| {
         logs_clone.lock().unwrap().push(msg.to_string());
     })
     .expect("配置重构应成功");
@@ -225,7 +225,7 @@ fn postgresql_template_driver_url_and_validation() {
     let mut params = params_with_config();
     params.db_type = "postgresql".into();
     params.db_name = "demo_pg".into();
-    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let outcome = config_rewrite::rewrite(res, &params, None, &|_| {}).expect("配置重构应成功");
     let dev = fs::read_to_string(&outcome.dev_path).unwrap();
     let prod = fs::read_to_string(&outcome.prod_path).unwrap();
     for yaml in [&dev, &prod] {
@@ -256,7 +256,7 @@ fn postgresql_url_keeps_original_db_name() {
     params.db_type = "postgresql".into();
     params.db_name = String::new();
     params.enable_sql_customize = false;
-    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let outcome = config_rewrite::rewrite(res, &params, None, &|_| {}).expect("配置重构应成功");
     let dev = fs::read_to_string(&outcome.dev_path).unwrap();
     assert!(
         dev.contains("5432/legacy_pg?"),

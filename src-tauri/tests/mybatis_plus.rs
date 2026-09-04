@@ -51,16 +51,24 @@ fn adds_mybatis_plus_dependency_idempotently() {
     let root = dir.path();
     let modules = vec!["ruoyi-common".to_string(), "ruoyi-admin".to_string()];
 
-    // 首次添加（合成项目无 parent 版本 → 默认 Boot 3 → boot3-starter）
-    let added = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
+    // 首次添加（合成项目无 parent 版本 → 默认 Boot 4 → boot4-starter + 现代档 jsqlparser）
+    let added = mybatis_plus::add_dependency(root, &modules, None, &|_| {}).unwrap();
     assert!(added, "首次应添加依赖");
     let common_pom = fs::read_to_string(root.join("ruoyi-common/pom.xml")).unwrap();
-    assert!(common_pom.contains("mybatis-plus-spring-boot3-starter"), "默认 Boot 3 应注入 boot3 starter");
-    assert!(common_pom.contains("3.5.7"), "版本应为 3.5.7");
+    assert!(common_pom.contains("mybatis-plus-spring-boot4-starter"), "默认 Boot 4 应注入 boot4 starter");
+    assert!(
+        common_pom.contains("<artifactId>mybatis-plus-jsqlparser</artifactId>"),
+        "默认 / Boot 4 应同时注入现代档 jsqlparser"
+    );
+    assert!(
+        !common_pom.contains("jsqlparser-4.9"),
+        "默认 / Boot 4 不应注入 jsqlparser-4.9"
+    );
+    assert!(common_pom.contains("3.5.15"), "版本应为 3.5.15");
 
-    // 再次添加应跳过（幂等）
-    let added2 = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
-    assert!(!added2, "已存在时应跳过");
+    // 再次添加应跳过（幂等：starter + jsqlparser 均已存在）
+    let added2 = mybatis_plus::add_dependency(root, &modules, None, &|_| {}).unwrap();
+    assert!(!added2, "两者都有时应跳过");
 }
 
 #[test]
@@ -73,11 +81,19 @@ fn selects_boot2_starter_when_parent_is_boot2() {
         "<project>\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>2.7.18</version>\n  </parent>\n</project>\n",
     );
     let modules = vec!["ruoyi-common".to_string()];
-    let added = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
+    let added = mybatis_plus::add_dependency(root, &modules, None, &|_| {}).unwrap();
     assert!(added);
     let common_pom = fs::read_to_string(root.join("ruoyi-common/pom.xml")).unwrap();
     assert!(common_pom.contains("mybatis-plus-boot-starter"), "Boot 2 应注入 boot2 starter");
     assert!(!common_pom.contains("boot3-starter"), "Boot 2 不应注入 boot3 starter");
+    assert!(
+        common_pom.contains("<artifactId>mybatis-plus-jsqlparser-4.9</artifactId>"),
+        "Boot 2 应注入 jsqlparser-4.9"
+    );
+    assert!(
+        !common_pom.contains("<artifactId>mybatis-plus-jsqlparser</artifactId>"),
+        "Boot 2 不应注入现代档 jsqlparser 精确标签"
+    );
 }
 
 #[test]
@@ -90,10 +106,48 @@ fn selects_boot3_starter_when_parent_is_boot3() {
         "<project>\n  <parent>\n    <groupId>org.springframework.boot</groupId>\n    <artifactId>spring-boot-starter-parent</artifactId>\n    <version>3.2.4</version>\n  </parent>\n</project>\n",
     );
     let modules = vec!["ruoyi-common".to_string()];
-    let added = mybatis_plus::add_dependency(root, &modules, &|_| {}).unwrap();
+    let added = mybatis_plus::add_dependency(root, &modules, None, &|_| {}).unwrap();
     assert!(added);
     let common_pom = fs::read_to_string(root.join("ruoyi-common/pom.xml")).unwrap();
     assert!(common_pom.contains("mybatis-plus-spring-boot3-starter"), "Boot 3 应注入 boot3 starter");
+    assert!(
+        common_pom.contains("<artifactId>mybatis-plus-jsqlparser</artifactId>"),
+        "Boot 3 应注入现代档 jsqlparser 精确标签"
+    );
+    assert!(
+        !common_pom.contains("jsqlparser-4.9"),
+        "Boot 3 不应注入 jsqlparser-4.9"
+    );
+}
+
+#[test]
+fn backfills_jsqlparser_when_starter_already_present() {
+    let dir = build_project();
+    let root = dir.path();
+    write(
+        root.join("ruoyi-common/pom.xml"),
+        "<project>\n  <artifactId>ruoyi-common</artifactId>\n  <dependencies>\n    <dependency>\n      <groupId>com.baomidou</groupId>\n      <artifactId>mybatis-plus-spring-boot4-starter</artifactId>\n      <version>3.5.15</version>\n    </dependency>\n  </dependencies>\n</project>\n",
+    );
+    let modules = vec!["ruoyi-common".to_string(), "ruoyi-admin".to_string()];
+    let added = mybatis_plus::add_dependency(root, &modules, None, &|_| {}).unwrap();
+    assert!(added, "starter 已有但缺 jsqlparser 时应补依赖并返回 true");
+    let common_pom = fs::read_to_string(root.join("ruoyi-common/pom.xml")).unwrap();
+    assert!(
+        common_pom.contains("<artifactId>mybatis-plus-jsqlparser</artifactId>"),
+        "应补上现代档 jsqlparser"
+    );
+    assert!(
+        !common_pom.contains("jsqlparser-4.9"),
+        "补依赖时不应写入 jsqlparser-4.9"
+    );
+    assert_eq!(
+        common_pom.matches("mybatis-plus-spring-boot4-starter").count(),
+        1,
+        "不应重复写入 starter"
+    );
+
+    let added2 = mybatis_plus::add_dependency(root, &modules, None, &|_| {}).unwrap();
+    assert!(!added2, "两者都有时应幂等返回 false");
 }
 
 #[test]

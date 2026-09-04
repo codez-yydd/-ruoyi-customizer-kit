@@ -8,120 +8,194 @@ use crate::utils::file::read_text;
 use crate::utils::path::package_to_path;
 use std::path::Path;
 
-/// MyBatis-Plus 依赖版本（默认）
-const MP_VERSION: &str = "3.5.7";
+/// MyBatis-Plus 依赖版本。
+///
+/// 2026-09-05 已在 Maven Central 核实 3.5.15 同时提供三个 starter：
+/// - `com.baomidou:mybatis-plus-boot-starter:3.5.15`
+/// - `com.baomidou:mybatis-plus-spring-boot3-starter:3.5.15`
+/// - `com.baomidou:mybatis-plus-spring-boot4-starter:3.5.15`
+/// 来源：https://repo1.maven.org/maven2/com/baomidou/.../3.5.15/
+/// 不要改成 3.5.16/3.5.17（三个 starter 的最高公共版本以核实结果为准）。
+const MP_VERSION: &str = "3.5.15";
 
 /// Boot 2.x 用 starter（面向 Spring 5）
 const MP_STARTER_BOOT2: &str = "mybatis-plus-boot-starter";
 /// Boot 3.x 用 starter（面向 Spring 6 / Jakarta EE）
 const MP_STARTER_BOOT3: &str = "mybatis-plus-spring-boot3-starter";
+/// Boot 4.x 用 starter（面向 Spring 7；旧 starter 会因自动配置类失效而启动报错，见 baomidou/mybatis-plus#7009）
+const MP_STARTER_BOOT4: &str = "mybatis-plus-spring-boot4-starter";
 
-/// 检测项目使用的 Spring Boot 大版本。
+/// 分页插件 jsqlparser 模块（Boot 3 / 4 / 检测不到）。
 ///
-/// 扫描根 pom（含子模块 pom）的 `spring-boot-starter-parent` 版本及
-/// `<spring-boot.version>` 属性，返回主版本号（如 2 / 3）。检测不到返回 None。
+/// 2026-09-05 核实：MyBatis-Plus 3.5.9+ 将 `PaginationInnerInterceptor` 拆到可选模块，
+/// starter 不再传递该依赖。来源：官方安装文档
+/// https://baomidou.com/en/getting-started/install/
+/// 与 Maven Central（`mybatis-plus-jsqlparser` / `mybatis-plus-jsqlparser-4.9` 的 3.5.15 均存在）。
+const MP_JSQLPARSER: &str = "mybatis-plus-jsqlparser";
+/// JDK 8 / Boot 2 用（jsqlparser 5+ 不支持 JDK 8）
+const MP_JSQLPARSER_JDK8: &str = "mybatis-plus-jsqlparser-4.9";
+
+/// 精确 artifactId 标签，禁止用 `contains("mybatis-plus-jsqlparser")` 判断现代档
+/// （它是 `mybatis-plus-jsqlparser-4.9` 的前缀）。
+fn artifact_id_tag(artifact: &str) -> String {
+    format!("<artifactId>{artifact}</artifactId>")
+}
+
+/// 版本检测已上移至 `detector`；此处 re-export，oss.rs 与原位单测调用路径不变。
+pub use crate::core::detector::detect_boot_major_version;
+
+/// 按 Boot 大版本选择 MyBatis-Plus starter artifactId。
+/// 检测不到版本时默认 Boot 4（兜底跟随最新生态）。
+fn select_starter(boot_major: Option<u32>) -> &'static str {
+    match boot_major {
+        Some(major) if major < 3 => MP_STARTER_BOOT2, // 2.x
+        Some(3) => MP_STARTER_BOOT3,                   // 3.x
+        _ => MP_STARTER_BOOT4,                         // >=4 及检测不到（默认现代版本）
+    }
+}
+
+/// 按 Boot 大版本选择 jsqlparser 分页模块 artifactId。
+/// Boot 2（major < 3）→ `jsqlparser-4.9`（JDK 8）；其余（3 / 4 / None）→ 现代档。
+fn select_jsqlparser(boot_major: Option<u32>) -> &'static str {
+    match boot_major {
+        Some(major) if major < 3 => MP_JSQLPARSER_JDK8,
+        _ => MP_JSQLPARSER,
+    }
+}
+
+/// 添加 MyBatis-Plus 依赖到公共模块 pom。
+/// 一次写入同时注入 starter + 对应 jsqlparser；幂等拆开：
+/// 1. 三个 starter 任一已存在 → 不再加 starter
+/// 2. 两个 jsqlparser 精确标签任一已存在 → 不再加 jsqlparser
+/// 3. starter 已有、jsqlparser 缺失 → 只补 jsqlparser，返回 `Ok(true)`
+/// 4. 两者都有 → `Ok(false)`
 ///
-/// 用途：MyBatis-Plus 的 starter 必须与 Boot 大版本匹配，否则会带入与 Spring 不兼容的
-/// `mybatis-spring`（Boot 2 starter 带 mybatis-spring 2.x，与 Spring 6 不兼容，登录全挂）。
-pub fn detect_boot_major_version(root: &Path) -> Option<u32> {
-    // 候选 pom：根 pom + 一级子模块 pom
-    let mut pom_paths: Vec<std::path::PathBuf> = vec![root.join("pom.xml")];
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for e in entries.flatten() {
-            let p = e.path().join("pom.xml");
-            if p.is_file() {
-                pom_paths.push(p);
-            }
+/// `boot_major` 为 `Some(x)` 时直接使用，不再扫 pom；为 `None` 时现场检测（自测 / 集成测试旧路径）。
+pub fn add_dependency(
+    root: &Path,
+    backend_modules: &[String],
+    boot_major: Option<u32>,
+    log: &dyn Fn(&str),
+) -> Result<bool, String> {
+    let starter_markers = [MP_STARTER_BOOT2, MP_STARTER_BOOT3, MP_STARTER_BOOT4];
+    let boot_major = boot_major.or_else(|| detect_boot_major_version(root));
+    let starter = select_starter(boot_major);
+    let jsql = select_jsqlparser(boot_major);
+
+    let has_starter = starter_markers
+        .iter()
+        .any(|m| any_pom_has(root, backend_modules, m));
+    let has_jsql = any_pom_has(root, backend_modules, &artifact_id_tag(MP_JSQLPARSER))
+        || any_pom_has(root, backend_modules, &artifact_id_tag(MP_JSQLPARSER_JDK8));
+
+    if has_starter && has_jsql {
+        log("MyBatis-Plus starter 与 jsqlparser 分页模块均已存在，跳过");
+        return Ok(false);
+    }
+    if has_starter {
+        log("MyBatis-Plus starter 已存在，跳过");
+    }
+    if has_jsql {
+        log("MyBatis-Plus jsqlparser 分页模块已存在，跳过");
+    }
+
+    let mut added = false;
+    if !has_starter && !has_jsql {
+        let module = first_writable_module(root, backend_modules)?;
+        write_mp_artifacts(root, &module, &[starter, jsql], boot_major, log)?;
+        return Ok(true);
+    }
+    if !has_starter {
+        let module = first_writable_module(root, backend_modules)?;
+        write_mp_artifacts(root, &module, &[starter], boot_major, log)?;
+        added = true;
+    }
+    if !has_jsql {
+        let module = find_starter_module(root, backend_modules)
+            .or_else(|| first_writable_module(root, backend_modules).ok())
+            .ok_or_else(|| "找不到合适的 pom.xml 来添加 MyBatis-Plus 依赖".to_string())?;
+        write_mp_artifacts(root, &module, &[jsql], boot_major, log)?;
+        added = true;
+    }
+    Ok(added)
+}
+
+/// 构造单条 MyBatis-Plus 依赖 XML。
+fn mp_dep_xml(artifact: &str) -> String {
+    format!(
+        "\n    <dependency>\n        <groupId>com.baomidou</groupId>\n        <artifactId>{artifact}</artifactId>\n        <version>{ver}</version>\n    </dependency>\n",
+        ver = MP_VERSION
+    )
+}
+
+/// 在已有 `<dependencies>` 后插入依赖块；若无该节点则在 `</project>` 前包一层。
+fn insert_dep_block(content: &str, dep_block: &str) -> String {
+    if let Some(idx) = content.find("<dependencies>") {
+        let mark = "<dependencies>";
+        let mut s = String::with_capacity(content.len() + dep_block.len());
+        s.push_str(&content[..idx + mark.len()]);
+        s.push_str(dep_block);
+        s.push_str(&content[idx + mark.len()..]);
+        s
+    } else {
+        content.replace(
+            "</project>",
+            &format!("    <dependencies>{dep_block}    </dependencies>\n</project>"),
+        )
+    }
+}
+
+/// 将若干 artifact 写入指定模块 pom，并分别打日志。
+fn write_mp_artifacts(
+    root: &Path,
+    module: &str,
+    artifacts: &[&str],
+    boot_major: Option<u32>,
+    log: &dyn Fn(&str),
+) -> Result<(), String> {
+    let pom = root.join(module).join("pom.xml");
+    let content = read_text(&pom)
+        .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom.display()))?;
+    let dep_block: String = artifacts.iter().copied().map(mp_dep_xml).collect();
+    let new_content = insert_dep_block(&content, &dep_block);
+    std::fs::write(&pom, new_content).map_err(|e| format!("写入 {} 失败：{e}", pom.display()))?;
+    let boot_label = boot_major.map_or("版本未知，默认按 Boot 4".to_string(), |m| format!("{m}.x"));
+    for artifact in artifacts {
+        if *artifact == MP_JSQLPARSER || *artifact == MP_JSQLPARSER_JDK8 {
+            log(&format!(
+                "已在 {module}/pom.xml 添加 {artifact}:{MP_VERSION}（分页插件 jsqlparser 模块）"
+            ));
+        } else {
+            log(&format!(
+                "已在 {module}/pom.xml 添加 {artifact}:{MP_VERSION}（Spring Boot {boot_label}）"
+            ));
         }
     }
-    for pom in &pom_paths {
-        let content = match read_text(pom) {
-            Some(c) => c,
-            None => continue,
-        };
-        // 1) <spring-boot.version>3.x</spring-boot.version> 属性
-        if let Some(v) = extract_version_after(&content, "<spring-boot.version>") {
-            return major_of(&v);
+    Ok(())
+}
+
+/// 候选模块中第一个存在 pom.xml 的模块（common > framework > admin > 其余）。
+fn first_writable_module(root: &Path, modules: &[String]) -> Result<String, String> {
+    for module in &prioritize_modules(modules) {
+        if root.join(module).join("pom.xml").is_file() {
+            return Ok(module.clone());
         }
-        // 2) spring-boot-starter-parent 的 <version>
-        //    形如 <parent>...<artifactId>spring-boot-starter-parent</artifactId><version>3.2.4</version>
-        if let Some(idx) = content.find("spring-boot-starter-parent") {
-            let tail = &content[idx..];
-            if let Some(v) = extract_version_after(tail, "<version>") {
-                return major_of(&v);
+    }
+    Err("找不到合适的 pom.xml 来添加 MyBatis-Plus 依赖".into())
+}
+
+/// 在优先级顺序中查找已声明任一 MP starter 的模块。
+fn find_starter_module(root: &Path, modules: &[String]) -> Option<String> {
+    let starters = [MP_STARTER_BOOT2, MP_STARTER_BOOT3, MP_STARTER_BOOT4];
+    for module in &prioritize_modules(modules) {
+        let pom = root.join(module).join("pom.xml");
+        if let Some(c) = read_text(&pom) {
+            if starters.iter().any(|s| c.contains(s)) {
+                return Some(module.clone());
             }
         }
     }
     None
-}
-
-/// 在 content 中找到 tag 后，提取紧随其后的版本号文本（到下一个 < 为止）
-fn extract_version_after(content: &str, tag: &str) -> Option<String> {
-    let idx = content.find(tag)?;
-    let after = &content[idx + tag.len()..];
-    let end = after.find('<')?;
-    Some(after[..end].trim().to_string())
-}
-
-/// 从版本号字符串取主版本号（如 "3.2.4" → 3）
-fn major_of(version: &str) -> Option<u32> {
-    version.split('.').next()?.parse::<u32>().ok()
-}
-
-/// 按 Boot 大版本选择 MyBatis-Plus starter artifactId。
-/// 检测不到版本时默认 Boot 3（现代若依多为 Boot 3，避免重复踩坑）。
-fn select_starter(boot_major: Option<u32>) -> &'static str {
-    match boot_major {
-        Some(major) if major < 3 => MP_STARTER_BOOT2,
-        _ => MP_STARTER_BOOT3, // >=3 或检测不到
-    }
-}
-
-/// 添加 MyBatis-Plus 依赖到公共模块 pom（幂等：已存在则跳过）。
-/// 返回是否实际添加。
-pub fn add_dependency(root: &Path, backend_modules: &[String], log: &dyn Fn(&str)) -> Result<bool, String> {
-    // 两个 starter 名都视为「已有依赖」（幂等检查兼容老项目可能已注入 Boot 2 starter）
-    let dep_markers = [MP_STARTER_BOOT2, MP_STARTER_BOOT3];
-    let boot_major = detect_boot_major_version(root);
-    let artifact = select_starter(boot_major);
-    // 候选模块优先级：common > framework > admin > 任意
-    let candidates = prioritize_modules(backend_modules);
-    for module in &candidates {
-        let pom = root.join(module).join("pom.xml");
-        if !pom.is_file() {
-            continue;
-        }
-        let content = read_text(&pom)
-            .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom.display()))?;
-        // 幂等：项目任意 pom 已有任一 MyBatis-Plus starter 则不再添加
-        if dep_markers.iter().any(|m| any_pom_has(root, backend_modules, m)) {
-            log(&format!("MyBatis-Plus 依赖已存在，跳过"));
-            return Ok(false);
-        }
-        // 在 <dependencies> 后插入（若无 <dependencies> 则在 </project> 前插入整个块）
-        let dep_block = format!(
-            "\n    <dependency>\n        <groupId>com.baomidou</groupId>\n        <artifactId>{artifact}</artifactId>\n        <version>{ver}</version>\n    </dependency>\n",
-            artifact = artifact,
-            ver = MP_VERSION
-        );
-        let new_content = if let Some(idx) = content.find("<dependencies>") {
-            let mut s = String::with_capacity(content.len() + dep_block.len());
-            s.push_str(&content[..idx + "<dependencies>".len()]);
-            s.push_str(&dep_block);
-            s.push_str(&content[idx + "<dependencies>".len()..]);
-            s
-        } else {
-            // 无 dependencies 节点，插在 </project> 前
-            content.replace("</project>", &format!("    <dependencies>{dep_block}    </dependencies>\n</project>"))
-        };
-        std::fs::write(&pom, new_content).map_err(|e| format!("写入 {} 失败：{e}", pom.display()))?;
-        log(&format!(
-            "已在 {module}/pom.xml 添加 {artifact}:{MP_VERSION}（Spring Boot {}）",
-            boot_major.map_or("版本未知，默认按 Boot 3".to_string(), |m| format!("{m}.x"))
-        ));
-        return Ok(true);
-    }
-    Err("找不到合适的 pom.xml 来添加 MyBatis-Plus 依赖".into())
 }
 
 /// 生成 MybatisPlusConfig.java（幂等：已存在则跳过）
@@ -645,7 +719,45 @@ mod tests {
         assert_eq!(select_starter(Some(2)), MP_STARTER_BOOT2);
         assert_eq!(select_starter(Some(1)), MP_STARTER_BOOT2);
         assert_eq!(select_starter(Some(3)), MP_STARTER_BOOT3);
-        // 检测不到默认 Boot 3
-        assert_eq!(select_starter(None), MP_STARTER_BOOT3);
+        assert_eq!(select_starter(Some(4)), MP_STARTER_BOOT4);
+        // 检测不到默认 Boot 4
+        assert_eq!(select_starter(None), MP_STARTER_BOOT4);
+    }
+
+    #[test]
+    fn select_jsqlparser_matches_boot_major() {
+        assert_eq!(select_jsqlparser(Some(2)), MP_JSQLPARSER_JDK8);
+        assert_eq!(select_jsqlparser(Some(1)), MP_JSQLPARSER_JDK8);
+        assert_eq!(select_jsqlparser(Some(3)), MP_JSQLPARSER);
+        assert_eq!(select_jsqlparser(Some(4)), MP_JSQLPARSER);
+        assert_eq!(select_jsqlparser(None), MP_JSQLPARSER);
+    }
+
+    /// Boot 4：根 pom 用 <spring-boot.version> 属性
+    #[test]
+    fn detect_sb4_via_property() {
+        let pom = r#"<?xml version="1.0"?>
+<project>
+  <properties>
+    <spring-boot.version>4.0.0</spring-boot.version>
+  </properties>
+</project>"#;
+        let dir = mk_root(pom);
+        assert_eq!(detect_boot_major_version(dir.path()), Some(4));
+    }
+
+    /// Boot 4 parent 继承形式
+    #[test]
+    fn detect_sb4_via_parent_version() {
+        let pom = r#"<?xml version="1.0"?>
+<project>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>4.0.1</version>
+  </parent>
+</project>"#;
+        let dir = mk_root(pom);
+        assert_eq!(detect_boot_major_version(dir.path()), Some(4));
     }
 }

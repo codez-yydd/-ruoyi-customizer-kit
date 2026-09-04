@@ -14,6 +14,8 @@ export interface ProjectInfo {
   original_package: string
   original_module_prefix: string
   original_artifact_prefix: string
+  /** 识别到的 Spring Boot 大版本（如 2 / 3 / 4）；未识别到为 undefined */
+  spring_boot_major?: number
   confidence: Confidence
   detected_at: string
 }
