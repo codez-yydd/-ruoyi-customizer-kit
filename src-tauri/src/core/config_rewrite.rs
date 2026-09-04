@@ -149,9 +149,10 @@ pub fn rewrite(
         "server:\n  port: 8080\n".to_string()
     };
 
-    // 2. 探测 application-druid.yml/yaml 是否存在（datasource 已改用标准模板生成，
-    //    不再读取其内容，但旧文件需在迁移后删除）
-    let (_druid_content, druid_existed) =
+    // 2. 读取 application-druid.yml/yaml：内容用于「未开 SQL 定制时解析原库名」
+    //    （必须在末尾删除旧文件之前完成解析，此处读取后一直保留在内存中），
+    //    旧文件本身在迁移完成后仍需删除
+    let (druid_content, druid_existed) =
         read_first(resources_dir, &["application-druid.yml", "application-druid.yaml"])?;
 
     // 3. 按顶层块切分 application，挑出公共块（保留注释）；环境相关块（spring/redis 等）
@@ -219,14 +220,41 @@ pub fn rewrite(
     }
 
     // 5. 构建 dev / prod：统一用「标准完整模板」明文写入 datasource + redis
-    //    （druid 全量连接池参数 + lettuce 连接池；库名取 db_name 或 new_module_prefix）
+    //    （druid 全量连接池参数 + lettuce 连接池）
     //    dev 与 prod 内容完全一致：都明文，无 ${ENV} 占位（由部署人员后续按需替换）
-    let db_name = if params.db_name.is_empty() {
-        params.new_module_prefix.as_str()
+    //
+    //    库名三分支决策：
+    //    1) 用户填写了数据库名 → 直接使用；
+    //    2) 未填写但开启了 SQL 定制 → 用模块前缀（与前端「留空则用模块前缀」提示一致）；
+    //    3) 未填写且未开 SQL 定制 → 从原 druid/application 配置解析原库名并保持，
+    //       保证数据库层零改动；解析失败才回退模块前缀并提示。
+    //       （解析基于函数开头已读入内存的原文，早于第 7 步删除旧 druid 文件，不受影响）
+    let db_name: String = if !params.db_name.is_empty() {
+        params.db_name.clone()
+    } else if params.enable_sql_customize {
+        params.new_module_prefix.clone()
     } else {
-        params.db_name.as_str()
+        // 未开 SQL 定制：优先解析旧 druid 文件，其次尝试 application 原文
+        let parsed = if druid_existed {
+            parse_master_db_name(&druid_content).or_else(|| parse_master_db_name(&base_content))
+        } else {
+            parse_master_db_name(&base_content)
+        };
+        match parsed {
+            Some(name) => {
+                log(&format!("未填写数据库名，配置重构保持原库名：{name}"));
+                name
+            }
+            None => {
+                log(&format!(
+                    "未能从原配置解析数据库名，回退使用模块前缀 {prefix}，请手工确认连接配置",
+                    prefix = params.new_module_prefix
+                ));
+                params.new_module_prefix.clone()
+            }
+        }
     };
-    let std_block = build_standard_datasource_redis(db_name);
+    let std_block = build_standard_datasource_redis(&db_name);
     let dev = std_block.clone();
     let prod = std_block;
 
@@ -567,6 +595,82 @@ fn sync_server_port(content: &str, target_port: i32) -> String {
     out.join("\n")
 }
 
+/// 从 YAML 文本解析主库（master）数据源 url 中的数据库名。
+///
+/// 规则：
+/// 1. 优先定位 `master:` 行，仅在其块内查找 `url:` 行；找不到 `master:` 时，
+///    回退为全文第一个 `jdbc:mysql://` 开头的 url 行（兼容 datasource 直写在 application.yml 的项目）。
+/// 2. url 为空、无 `/` 路径段、库名段为空，或库名段含非法字符（`/`、空白）均视为解析失败，返回 None。
+fn parse_master_db_name(yaml: &str) -> Option<String> {
+    let lines: Vec<&str> = yaml.lines().collect();
+
+    // 定位 master: 行（行内注释不影响识别），记录缩进用于判断块结束
+    let mut master: Option<(usize, usize)> = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_end();
+        let key_part = trimmed.split('#').next().unwrap_or("").trim();
+        if key_part == "master:" {
+            master = Some((i, indent_width(trimmed)));
+            break;
+        }
+    }
+
+    match master {
+        Some((mi, mindent)) => {
+            // 仅在 master 块内查找 url（直到出现缩进 <= master 的非注释行）
+            for line in lines.iter().skip(mi + 1) {
+                let trimmed = line.trim_end();
+                let t = trimmed.trim_start();
+                if t.is_empty() || t.starts_with('#') {
+                    continue;
+                }
+                if indent_width(trimmed) <= mindent {
+                    break; // 已离开 master 块
+                }
+                if let Some(db) = db_name_from_url_line(trimmed) {
+                    return Some(db);
+                }
+            }
+            None
+        }
+        None => {
+            // 无 master 块：回退为全文第一个 jdbc:mysql url 行
+            for line in &lines {
+                let trimmed = line.trim_end();
+                let t = trimmed.trim_start();
+                if t.is_empty() || t.starts_with('#') {
+                    continue;
+                }
+                if let Some(db) = db_name_from_url_line(trimmed) {
+                    return Some(db);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// 行首缩进宽度（字符数；仅用于同文件内的块范围比较）
+fn indent_width(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// 从单行 `url: jdbc:mysql://host:port/<db>?params` 中提取库名；非 jdbc:mysql url 行返回 None。
+fn db_name_from_url_line(line: &str) -> Option<String> {
+    let rest = line.trim_start().strip_prefix("url:")?;
+    // 去掉行内注释后取值（值两侧空白一并去除）
+    let value = rest.split('#').next().unwrap_or("").trim();
+    let after = value.strip_prefix("jdbc:mysql://")?;
+    // 去掉查询参数，得到 host:port/<db> 路径段；无 `/` 视为解析失败
+    let path = after.split('?').next().unwrap_or("");
+    let (_host, db) = path.split_once('/')?;
+    // 库名段为空或含非法字符（`/`、空白）均视为解析失败
+    if db.is_empty() || db.contains('/') || db.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(db.to_string())
+}
+
 /// 构建标准完整的 spring.datasource + spring.data.redis 配置块（明文）。
 ///
 /// 用于 dev / prod：druid 全量连接池参数 + lettuce 连接池。dev 与 prod 内容完全一致，
@@ -674,4 +778,71 @@ fn read_first(dir: &Path, candidates: &[&str]) -> Result<(String, bool), String>
         }
     }
     Ok((String::new(), false))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_db_name_standard_druid_url() {
+        // 标准 druid 配置：master url 带查询参数 → 解析出 ry-vue
+        let yaml = "# 数据源配置\nspring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:mysql://localhost:3306/ry-vue?useUnicode=true&characterEncoding=utf8&serverTimezone=GMT%2B8\n        username: root\n        password: password\n      slave:\n        enabled: false\n        url:\n";
+        assert_eq!(parse_master_db_name(yaml).as_deref(), Some("ry-vue"));
+    }
+
+    #[test]
+    fn parse_db_name_url_without_query() {
+        // url 无查询参数（行尾结束）→ 解析出 ry-vue
+        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:mysql://localhost:3306/ry-vue\n";
+        assert_eq!(parse_master_db_name(yaml).as_deref(), Some("ry-vue"));
+    }
+
+    #[test]
+    fn parse_db_name_url_empty_fails() {
+        // master url 为空（未开启从库时的典型占位写法）→ 解析失败
+        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url:\n        username: root\n        password: password\n      slave:\n        enabled: false\n";
+        assert_eq!(parse_master_db_name(yaml), None);
+    }
+
+    #[test]
+    fn parse_db_name_no_path_segment_fails() {
+        // 无 `/` 路径段 → 解析失败
+        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:mysql://localhost:3306\n";
+        assert_eq!(parse_master_db_name(yaml), None);
+        // 库名段为空（/ 后直接跟查询参数）→ 解析失败
+        let yaml2 = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:mysql://localhost:3306/?useUnicode=true\n";
+        assert_eq!(parse_master_db_name(yaml2), None);
+    }
+
+    #[test]
+    fn parse_db_name_illegal_chars_fail() {
+        // 库名段含空格 → 解析失败
+        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:mysql://localhost:3306/ry vue?x=1\n";
+        assert_eq!(parse_master_db_name(yaml), None);
+        // 库名段含 `/`（多级路径）→ 解析失败
+        let yaml2 = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:mysql://localhost:3306/a/b?x=1\n";
+        assert_eq!(parse_master_db_name(yaml2), None);
+    }
+
+    #[test]
+    fn parse_db_name_falls_back_to_first_url_without_master() {
+        // 无 master 块（datasource 直写 application.yml）→ 回退全文第一个 jdbc:mysql url
+        let yaml = "spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/rydb?useSSL=false\n";
+        assert_eq!(parse_master_db_name(yaml).as_deref(), Some("rydb"));
+    }
+
+    #[test]
+    fn parse_db_name_non_mysql_url_ignored() {
+        // 非 jdbc:mysql url → 解析失败
+        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:postgresql://localhost:5432/pgdb\n";
+        assert_eq!(parse_master_db_name(yaml), None);
+    }
+
+    #[test]
+    fn parse_db_name_slave_url_not_picked_when_master_present() {
+        // master url 可解析时，不应取到 slave 的空 url 或其他值
+        let yaml = "spring:\n  datasource:\n    druid:\n      slave:\n        enabled: false\n        url:\n      master:\n        url: jdbc:mysql://localhost:3306/masterdb?x=1\n        username: root\n";
+        assert_eq!(parse_master_db_name(yaml).as_deref(), Some("masterdb"));
+    }
 }

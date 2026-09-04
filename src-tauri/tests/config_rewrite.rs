@@ -15,8 +15,9 @@ fn write(path: PathBuf, content: &str) {
     fs::write(path, content).unwrap();
 }
 
-/// 构造贴近真实的若依配置目录（admin/src/main/resources），含注释
-fn build_resources() -> tempfile::TempDir {
+/// 构造贴近真实的若依配置目录（admin/src/main/resources），含注释；
+/// druid 主库 url 可自定义（用于验证「未开 SQL 定制保持原库名」的三分支逻辑）
+fn build_resources_with_master_url(master_url_line: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     let res = dir.path();
 
@@ -25,12 +26,19 @@ fn build_resources() -> tempfile::TempDir {
         res.join("application.yml"),
         "# 项目相关配置\nserver:\n  port: 8080\n\n# Spring 配置\nspring:\n  profiles:\n    active: druid\n  # 国际化资源\n  messages:\n    basename: i18n/messages\n  jackson:\n    date-format: yyyy-MM-dd HH:mm:ss\n    time-zone: GMT+8\n  redis:\n    host: localhost\n    port: 6379\n    password:\n\n# token 配置\ntoken:\n  header: Authorization\n  secret: abcdefghijklmnopqrstuvwxyz\n\n# MyBatis 配置\nmybatis:\n  mapperLocations: classpath*:mapper/**/*Mapper.xml\n\n# RuoYi 配置\nruoyi:\n  name: RuoYi\n  # 文件上传路径\n  profile: D:/ruoyi/uploadPath\n",
     );
-    // 标准 application-druid.yml（datasource）
+    // 标准 application-druid.yml（datasource，主库 url 可自定义）
     write(
         res.join("application-druid.yml"),
-        "# 数据源配置\nspring:\n  datasource:\n    type: com.alibaba.druid.pool.DruidDataSource\n    druid:\n      master:\n        url: jdbc:mysql://localhost:3306/ry?useSSL=true\n        username: root\n        password: password\n      slave:\n        enabled: false\n",
+        &format!(
+            "# 数据源配置\nspring:\n  datasource:\n    type: com.alibaba.druid.pool.DruidDataSource\n    druid:\n      master:\n        url: {master_url_line}\n        username: root\n        password: password\n      slave:\n        enabled: false\n"
+        ),
     );
     dir
+}
+
+/// 构造默认资源目录（druid 主库库名为 ry）
+fn build_resources() -> tempfile::TempDir {
+    build_resources_with_master_url("jdbc:mysql://localhost:3306/ry?useSSL=true")
 }
 
 fn params_with_config() -> CustomizeParams {
@@ -147,6 +155,67 @@ fn rewrites_config_into_three_profiles() {
     assert!(serde_yaml::from_str::<serde_yaml::Value>(&base).is_ok(), "application.yaml 应为合法 YAML");
     assert!(serde_yaml::from_str::<serde_yaml::Value>(&dev).is_ok(), "application-dev.yaml 应为合法 YAML");
     assert!(serde_yaml::from_str::<serde_yaml::Value>(&prod).is_ok(), "application-prod.yaml 应为合法 YAML");
+}
+
+#[test]
+fn keeps_original_db_name_when_sql_customize_disabled() {
+    // Bug 修复回归：未开启 SQL 定制、未填写库名时，配置重构必须保持原库名（ry-vue），
+    // 不得擅自改成模块前缀（demo），否则用户按原庛建库后应用启动即报表不存在。
+    let dir = build_resources_with_master_url("jdbc:mysql://localhost:3306/ry-vue?useUnicode=true&characterEncoding=utf8");
+    let res = dir.path();
+    let mut params = params_with_config();
+    params.db_name = String::new();
+    params.enable_sql_customize = false;
+
+    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let dev = fs::read_to_string(&outcome.dev_path).unwrap();
+    let prod = fs::read_to_string(&outcome.prod_path).unwrap();
+
+    assert!(dev.contains("3306/ry-vue?"), "未开 SQL 定制时 dev 库名应保持原库名 ry-vue");
+    assert!(prod.contains("3306/ry-vue?"), "未开 SQL 定制时 prod 库名应保持原库名 ry-vue");
+    assert!(!dev.contains("3306/demo?"), "不应擅自改为模块前缀 demo");
+    assert!(!prod.contains("3306/demo?"), "不应擅自改为模块前缀 demo");
+}
+
+#[test]
+fn uses_module_prefix_when_sql_customize_enabled_and_db_empty() {
+    // 开启 SQL 定制且未填写库名：沿用「留空则用模块前缀」的既有语义（与前端提示一致）
+    let dir = build_resources_with_master_url("jdbc:mysql://localhost:3306/ry-vue?useUnicode=true");
+    let res = dir.path();
+    let mut params = params_with_config();
+    params.db_name = String::new();
+    params.enable_sql_customize = true;
+
+    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let dev = fs::read_to_string(&outcome.dev_path).unwrap();
+
+    assert!(dev.contains("3306/demo?"), "开启 SQL 定制且留空库名时应用模块前缀 demo");
+}
+
+#[test]
+fn falls_back_to_module_prefix_when_original_url_unparsable() {
+    // 原配置 master url 为空（无可解析库名）：回退模块前缀，且不 panic
+    let dir = build_resources_with_master_url("");
+    let res = dir.path();
+    let mut params = params_with_config();
+    params.db_name = String::new();
+    params.enable_sql_customize = false;
+
+    let logs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let logs_clone = logs.clone();
+    let outcome = config_rewrite::rewrite(res, &params, &move |msg: &str| {
+        logs_clone.lock().unwrap().push(msg.to_string());
+    })
+    .expect("配置重构应成功");
+    let dev = fs::read_to_string(&outcome.dev_path).unwrap();
+
+    assert!(dev.contains("3306/demo?"), "解析失败应回退模块前缀 demo");
+    let logs = logs.lock().unwrap();
+    assert!(
+        logs.iter().any(|m| m.contains("未能从原配置解析数据库名")),
+        "应输出解析失败的提示日志，实际日志：{:?}",
+        *logs
+    );
 }
 
 #[test]
