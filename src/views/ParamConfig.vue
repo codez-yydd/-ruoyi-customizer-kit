@@ -51,7 +51,11 @@ function sanitizeDisabledFeatures() {
   const disabled = DISABLED_FEATURES[templateDir.value]
   if (disabled) {
     for (const key of disabled) {
-      ;(form[key] as unknown as boolean) = false
+      if (key === 'db_type') {
+        form.db_type = 'mysql'
+      } else {
+        ;(form[key] as unknown as boolean) = false
+      }
     }
   }
   // 纠正无效/空的 UI 模板 key，避免界面显示「未知」
@@ -78,6 +82,7 @@ const SECTION = {
 } as const
 
 // 默认参数（从识别结果预填原值）
+// 开关默认值须与 src-tauri/src/cli/mod.rs 的 default_params() 保持同步
 const defaults = (): CustomizeParams => ({
   original_package: projectInfo.value?.original_package || 'com.ruoyi',
   new_package: '',
@@ -123,6 +128,7 @@ const defaults = (): CustomizeParams => ({
   // SQL 定制
   enable_sql_customize: false,
   db_name: '',
+  db_type: 'mysql',
   admin_username: '',
   admin_nickname: '',
   clean_quartz: false,
@@ -165,6 +171,7 @@ const defaults = (): CustomizeParams => ({
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
 // 历史配置可能缺 ui_template 或值已失效，统一纠正，避免开关旁显示「未知」
 form.ui_template = normalizeUiTemplateKey(form.ui_template)
+if (!form.db_type) form.db_type = 'mysql'
 
 // 识别结果变化时重置原值
 watch(
@@ -759,6 +766,15 @@ function generateRandomSecret(): string {
               <span class="section-title">安全 &amp; SQL</span>
               <el-badge v-if="sectionCounts.security > 0" :value="`已启用 ${sectionCounts.security}`" class="section-badge" type="primary" />
             </template>
+            <div v-if="!isDisabled('db_type')" class="detail-panel" style="margin-bottom: 12px">
+              <el-form-item label="数据库类型">
+                <el-radio-group v-model="form.db_type" @change="onSwitchChange">
+                  <el-radio value="mysql">MySQL</el-radio>
+                  <el-radio value="postgresql">PostgreSQL</el-radio>
+                </el-radio-group>
+                <span class="inline-hint muted">将改写数据源、驱动与分页方言；与下方 SQL 脚本定制相互独立</span>
+              </el-form-item>
+            </div>
             <div class="switch-grid">
               <div class="switch-item">
                 <div class="switch-item__head">
@@ -791,6 +807,7 @@ function generateRandomSecret(): string {
                     v-model="form.db_name"
                     :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`"
                   />
+                  <span v-if="form.db_type === 'postgresql'" class="inline-hint muted">同时用于 PG 连接 url</span>
                 </el-form-item>
                 <el-form-item
                   v-if="form.enable_sql_customize"

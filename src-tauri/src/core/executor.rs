@@ -116,6 +116,7 @@ where
         TaskType::CreateWechatCertDir => do_create_wechat_cert_dir(root, params, info, &mut r, log),
         TaskType::SetupOss => do_setup_oss(root, params, info, &mut r, log),
         TaskType::ApplySecurityHardening => do_apply_security(root, params, &mut r, log),
+        TaskType::SwitchDatabaseDialect => do_switch_db_dialect(root, params, &mut r, log),
         TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
         TaskType::RenameAdminAccount => do_rename_admin_account(root, params, &mut r, log),
         TaskType::CustomizeWebFooter => do_customize_web_footer(root, params, &mut r, log),
@@ -1082,6 +1083,20 @@ where
 {
     let outcome = crate::core::security::apply_security_hardening(root, params, &|msg| log(msg))?;
     r.modified_files = outcome.modified_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 12g-2. 数据库方言切换：pom 驱动、PG 脚本资产、代码生成器 mapper
+fn do_switch_db_dialect<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::db_dialect::switch(root, params, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
     }

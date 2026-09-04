@@ -5,7 +5,7 @@
 //   绝不全局替换 'admin'——若依 SQL 中 157 处 admin 只有 1 处是登录账号，
 //   sys_role 的 role_key='admin'（Java Constants.SUPER_ADMIN / 前端 hasRole 指令依赖）不能动。
 // - 改账号时同步三处一致性：
-//     1) 种子 SQL 审计列 create_by（`'admin', sysdate(` 模式，只命中审计列，role_key 后跟数字不会误伤）
+//     1) 种子 SQL 审计列 create_by（`'admin', sysdate(` / `'admin', now(`，只命中审计列，role_key 后跟数字不会误伤）
 //     2) 前端登录页默认预填 username: "admin"（ruoyi-ui 有预填；vben 模板无预填则跳过）
 //     3) 代码生成器 sql.vm 中 create_by 的 'admin'（该文件中 'admin' 全部是 create_by）
 // - 改昵称只动种子行（演示账号 ry 的昵称也叫 若依，由 clean_demo_users 负责删除）
@@ -213,11 +213,11 @@ fn replace_seed_row(
 }
 
 /// 替换种子 SQL 审计列 create_by 的 'admin'。
-/// 模式 `'admin', sysdate(`：若依所有 INSERT 尾部的 create_by + create_time 组合，
+/// 模式 `'admin', sysdate(` / `'admin', now(`：若依 INSERT 尾部的 create_by + create_time，
 /// 登录账号列后面跟的是 `', '<昵称>'`，role_key 后面跟的是数字，均不会命中。
 /// 返回替换次数。
 fn replace_audit_columns(content: &mut String, new_user: &str) -> usize {
-    let re = regex::Regex::new(r#"(?i)'admin'(\s*,\s*sysdate\s*\()"#).unwrap();
+    let re = regex::Regex::new(r#"(?i)'admin'(\s*,\s*(?:sysdate|now)\s*\()"#).unwrap();
     let hits = re.find_iter(content).count();
     if hits > 0 {
         let new = re.replace_all(content, |caps: &regex::Captures| {
@@ -294,4 +294,23 @@ fn find_generator_sql_vm(root: &Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replace_audit_columns_matches_pg_now() {
+        let mut sql = String::from(
+            "insert into sys_dept values(100, '100', '若依科技', '0', '若依', '15888888888', 'ry@163.com', '0', '0', 'admin', now(), '', null, '若依');\n\
+             insert into sys_role values('1', '超级管理员', 'admin', 1, '1', 1, 1, '0', '0', 'admin', now(), '', null, '超级管理员');\n",
+        );
+        let hits = replace_audit_columns(&mut sql, "boss");
+        assert!(hits >= 2, "应命中 PG now() 审计列，实际 {hits}");
+        assert!(sql.contains("'boss', now("));
+        assert!(!sql.contains("'admin', now("), "审计列 admin 应已替换：{sql}");
+        // role_key='admin' 后跟数字，不能误伤
+        assert!(sql.contains("'admin', 1,"), "role_key 不应被替换：{sql}");
+    }
 }

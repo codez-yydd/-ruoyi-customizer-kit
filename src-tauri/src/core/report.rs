@@ -34,6 +34,8 @@ pub fn generate_report(
     md.push_str(&format!("- 原包名 → 新包名：{} → {}\n", params.original_package, params.new_package));
     md.push_str(&format!("- 原模块前缀 → 新模块前缀：{} → {}\n", params.original_module_prefix, params.new_module_prefix));
     md.push_str(&format!("- 前端标题：{}\n", params.frontend_title));
+    let db_display = crate::core::db_dialect::from_params(params).display_name;
+    md.push_str(&format!("- 数据库类型：{}\n", db_display));
     md.push_str(&format!("- MyBatis-Plus：{}\n", bool_cn(params.enable_mybatis_plus)));
     md.push_str(&format!("- 配置文件重构：{}\n", bool_cn(params.enable_config_rewrite)));
     md.push_str(&format!("- logback 修正：{}\n", bool_cn(params.enable_logback_rewrite)));

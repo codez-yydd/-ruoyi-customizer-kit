@@ -126,6 +126,8 @@ export interface CustomizeParams {
   enable_sql_customize: boolean
   /** 新数据库名（留空则用 new_module_prefix 推导） */
   db_name: string
+  /** 数据库类型：mysql | postgresql */
+  db_type: string
   /** 管理员登录账号（留空保持 admin；仅改 user_id=1 种子行，不动 role_key='admin' 权限体系） */
   admin_username: string
   /** 管理员昵称（留空保持 若依；仅改 user_id=1 种子行） */

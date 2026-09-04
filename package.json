@@ -9,7 +9,8 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "build:cli": "cargo build --release --bin forge-cli"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

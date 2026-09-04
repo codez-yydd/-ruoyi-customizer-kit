@@ -143,9 +143,11 @@ pub fn add_config_class(
         return Ok(false);
     }
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败：{e}"))?;
+    let dialect = crate::core::db_dialect::from_params(params);
     let java = format!(
-        "package {pkg}.framework.config;\n\nimport com.baomidou.mybatisplus.annotation.DbType;\nimport com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;\nimport com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\n\n/**\n * MyBatis-Plus 配置\n */\n@Configuration\npublic class MybatisPlusConfig\n{{\n    /**\n     * 分页插件\n     */\n    @Bean\n    public MybatisPlusInterceptor mybatisPlusInterceptor()\n    {{\n        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();\n        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));\n        return interceptor;\n    }}\n}}\n",
-        pkg = params.new_package
+        "package {pkg}.framework.config;\n\nimport com.baomidou.mybatisplus.annotation.DbType;\nimport com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;\nimport com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\n\n/**\n * MyBatis-Plus 配置\n */\n@Configuration\npublic class MybatisPlusConfig\n{{\n    /**\n     * 分页插件\n     */\n    @Bean\n    public MybatisPlusInterceptor mybatisPlusInterceptor()\n    {{\n        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();\n        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.{mp_db_type}));\n        return interceptor;\n    }}\n}}\n",
+        pkg = params.new_package,
+        mp_db_type = dialect.mp_db_type
     );
     std::fs::write(&config_file, java).map_err(|e| format!("写入配置类失败：{e}"))?;
     log(&format!("已生成 {admin}/.../framework/config/MybatisPlusConfig.java"));

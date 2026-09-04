@@ -29,13 +29,18 @@ pub fn detect_project(
             project: None,
         };
     }
+    detect_auto(&root, template.as_deref())
+}
 
+/// 按严格度遍历模板识别（template 为 Some 时只用该模板）。
+/// CLI 与管线自动识别共用，行为与 detect_project 命令一致。
+pub fn detect_auto(root: &Path, template: Option<&str>) -> DetectResponse {
     // 模板选择策略：
     // - 显式指定 template → 只用该模板
     // - 未指定（None）→ 依次尝试所有可用模板（ruoyi-vue 优先），取首个识别成功的；
     //   都不识别则回退到 ruoyi-vue 的结果（保持向后兼容）
-    let candidate_names: Vec<String> = match &template {
-        Some(name) => vec![name.clone()],
+    let candidate_names: Vec<String> = match template {
+        Some(name) => vec![name.to_string()],
         None => list_template_names(),
     };
 
@@ -49,7 +54,7 @@ pub fn detect_project(
         };
         match build_template(&tpl_dir) {
             Ok(template) => {
-                let mut project = detector::detect(&root, &template);
+                let mut project = detector::detect(root, &template);
                 // 记录命中的模板目录名，供 preview/execute 反查，消除主模板名硬编码
                 project.template_dir = tpl_name.clone();
                 let resp = build_detect_response(&project);

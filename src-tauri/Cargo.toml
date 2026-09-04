@@ -4,11 +4,16 @@ version = "1.0.1"
 description = "RuoYi Forge / 若依锻造台 — 若依新项目初始化快速定制工具"
 authors = ["RuoYi Forge"]
 edition = "2021"
+default-run = "ruoyi-forge"
 
 [lib]
 # `_lib` 后缀用于避免 lib 名与 bin 名冲突（Windows 上尤为关键）
 name = "ruoyi_forge_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "forge-cli"
+path = "src/bin/forge_cli.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -32,6 +37,7 @@ bcrypt = "0.15"
 rand = "0.8"
 # 文本编码检测与 GBK 转码（非 UTF-8 项目文件参与改造）
 encoding_rs = "0.8"
+clap = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3"

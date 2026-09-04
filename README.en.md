@@ -13,12 +13,14 @@ A desktop tool for rapid initialization and customization of [RuoYi-Vue](https:/
 - **Maven Coordinate Update** — Batch replacement of groupId / artifactId / module dependency references
 - **Config File Refactoring** — Splits `application.yml` + `application-druid.yml` into `application.yaml` + `application-dev.yaml` + `application-prod.yaml`
 - **MyBatis-Plus Integration** — Adds dependency, generates pagination config, refactors existing Mapper/Service/ServiceImpl to inherit MP base classes, adapts code generator templates
+- **PostgreSQL Dialect** — For RuoYi-Vue, switch datasource, driver, pagination, init scripts, and code-generator queries to PostgreSQL (standalone / microservice not supported in this release)
 - **Long ID Precision Fix** — Adds `@JsonSerialize(using = ToStringSerializer.class)` to Long primary key fields
 - **UniApp Scaffolding** — Optionally generates `{prefix}-uniapp` project with request utilities, login framework, env config; auto-appends WeChat config to backend application files
 - **Deferred Extraction** — ZIP archives are extracted at execution time to a user-chosen output directory; original files are never modified
 - **Execution Preview** — Preview task list, impact scope, and high-risk items before executing
 - **Residue Scanning** — Post-execution validation for leftover old package/module names
 - **Execution Report** — Generates a Markdown transformation report
+- **CLI Mode** — Standalone `forge-cli` binary, config-file driven, unattended / CI-friendly (not bundled into the GUI installer)
 
 ## Screenshots
 
@@ -91,6 +93,194 @@ npm run tauri dev
 npm run typecheck
 ```
 
+## CLI Mode
+
+Standalone `forge-cli` binary, driven by a config file, for unattended runs and CI.
+
+### Build and Run
+
+Development:
+
+```bash
+cd src-tauri
+cargo run --bin forge-cli -- --help
+```
+
+Release build:
+
+```bash
+npm run build:cli
+# Artifact: src-tauri/target/release/forge-cli (forge-cli.exe on Windows)
+```
+
+Release layout: place the `forge-cli` executable **alongside** `templates/` and `agents/` (it does not use GUI resource injection). CLI is **not** bundled into the `npm run tauri build` installer.
+
+### Subcommands
+
+Only `templates`, `detect`, `init-config`, `preview`, and `run` exist. There is no interactive wizard, no `doctor`, and no daemon.
+
+#### templates
+
+`forge-cli templates` — list built-in templates (name, loadable, detection notes).
+
+#### detect
+
+`forge-cli detect <path> [--json]` — detect an **already extracted** project directory. `--json` prints the full detection result as JSON.
+
+#### init-config
+
+Generate a prefilled config file. After detection, `original_*` is filled in; `new_project_name` = `--prefix` (same as the GUI). The written JSON is **not** redacted and includes `_comment` and `_source`. Secrets are stored in plaintext — do not commit the file to a public repository.
+
+Required: `--source` `--package` `--prefix` `--title` `--output`
+
+Optional: `--out` (default `forge.json`), `--set k=v` (repeatable)
+
+```bash
+forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo --title Demo --output ./out
+```
+
+#### preview
+
+`forge-cli preview --config forge.json [--json]` — preview transform tasks without writing files. `_source` in the config is required (this subcommand has no `--source`).
+
+#### run
+
+```text
+forge-cli run --config forge.json [--source <zip-or-dir>] [--set k=v ...] [--json] [--quiet]
+```
+
+- Without `--source`, `_source` in the config is required
+- A path ending with `.zip` is treated as a zip; otherwise as a directory
+- `--json`: progress as NDJSON (`{"type":"log",...}`), last line `{"type":"result",...}`; `result` redacts the JWT secret
+- `--quiet`: print only the final summary
+- `--set`: overlay `CustomizeParams` by serde field name using dotted paths; values are parsed as JSON (bool / number / string). Unknown fields or type mismatches exit with code 2
+- Env `FORGE_SET="k=v;k2=v2"` uses the same format as `--set` and can be combined (`init-config` / `preview` / `run`)
+
+`--set` examples:
+
+```text
+--set enable_sql_customize=true
+--set db_type=postgresql
+--set db_name=demo_db
+--set jwt_expire_minutes=60
+--set ui_template=arco
+```
+
+Full workflow (`init-config` → `preview` → `run --set db_type=postgresql --set db_name=demo_db`):
+
+PowerShell:
+
+```powershell
+.\forge-cli.exe init-config `
+  --source D:\dl\ruoyi-vue.zip `
+  --package com.demo `
+  --prefix demo `
+  --title Demo `
+  --output D:\out\demo
+.\forge-cli.exe preview --config forge.json
+.\forge-cli.exe run --config forge.json --set db_type=postgresql --set db_name=demo_db
+```
+
+bash (one line):
+
+```bash
+forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo --title Demo --output ./out && forge-cli preview --config forge.json && forge-cli run --config forge.json --set db_type=postgresql --set db_name=demo_db
+```
+
+### Exit Codes
+
+- `0` all succeeded
+- `1` finished but some tasks failed or a check is Fail
+- `2` usage / argument / config error
+
+### Configuration Parameters
+
+Field names match `CustomizeParams` in `src/types/index.ts`. Defaults match CLI `default_params()` / GUI `defaults()`.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| original_package | string | `com.ruoyi` | Original Java package. `init-config` overwrites this from detection |
+| new_package | string | `""` | New Java package. `init-config` fills from `--package` |
+| original_module_prefix | string | `ruoyi` | Original module prefix. `init-config` overwrites this from detection |
+| new_module_prefix | string | `""` | New module prefix. `init-config` fills from `--prefix` |
+| original_project_name | string | `ruoyi` | Original project name. `init-config` overwrites from the detected module prefix |
+| new_project_name | string | `""` | New project name. `init-config` sets this to `--prefix` (same as GUI) |
+| frontend_title | string | `""` | Frontend title. `init-config` fills from `--title` |
+| copyright_year | string | `""` | Copyright year (e.g. `2024-2026`); empty skips copyright replacement |
+| copyright_holder | string | `""` | Copyright holder; empty skips copyright replacement |
+| enable_footer_icp | boolean | `true` | Footer copyright and ICP: always show footer, extend year, read ICP from backend yaml |
+| enable_site_settings | boolean | `true` | Admin site-settings page: runtime title / logo / ICP (stored in `sys_config`) |
+| enable_mybatis_plus | boolean | `true` | Integrate MyBatis-Plus |
+| enable_config_rewrite | boolean | `true` | Rewrite application configs into the yaml trio |
+| enable_logback_rewrite | boolean | `true` | Rewrite logback paths |
+| enable_generator_mybatis_plus | boolean | `true` | Adapt code-generator templates for MyBatis-Plus |
+| enable_long_id_json_string | boolean | `true` | Serialize Long primary keys as strings to avoid JS precision loss |
+| enable_snowflake_id | boolean | `false` | Global snowflake IDs: setId on insert, disable auto-increment |
+| enable_report | boolean | `true` | Generate a Markdown transformation report |
+| enable_clear_home | boolean | `true` | Clear the RuoYi frontend home page to a blank page |
+| enable_remove_github | boolean | `true` | Remove GitHub / Gitee links from the top bar |
+| enable_remove_docs | boolean | `true` | Remove documentation links from the top bar |
+| output_dir | string | `""` | Output directory. `init-config` fills from `--output` |
+| enable_uniapp | boolean | `false` | Generate a UniApp mini-program project |
+| wx_appid | string | `""` | WeChat mini-program AppID (meaningful only when `enable_uniapp=true`) |
+| wx_appsecret | string | `""` | WeChat mini-program AppSecret |
+| pay_included | boolean | `false` | Include WeChat Pay (config block + SDK dependency + config class) |
+| pay_enabled | boolean | `false` | Enable WeChat Pay (yml `enabled`) |
+| pay_mode | string | `public-key` | Pay mode: `public-key` (V3 public key) / `certificate` (V3 platform cert) / `v2` |
+| pay_mch_id | string | `""` | Merchant ID |
+| pay_mch_serial_no | string | `""` | Merchant certificate serial (V3) |
+| pay_api_v3_key | string | `""` | API V3 key |
+| pay_private_key_path | string | `classpath:cert/apiclient_key.pem` | Merchant API private key path (V3) |
+| pay_public_key_id | string | `""` | WeChat Pay platform public key ID (V3 public-key mode) |
+| pay_public_key_path | string | `classpath:cert/wxp_pub.pem` | WeChat Pay platform public key path (V3 public-key mode) |
+| pay_api_key | string | `""` | API V2 key |
+| pay_cert_path | string | `classpath:cert/apiclient_cert.p12` | Merchant cert path `apiclient_cert.p12` (V2) |
+| pay_notify_url | string | `""` | Payment notify URL (shared by dev / prod) |
+| enable_security | boolean | `false` | Security hardening (admin password, disable register, clean demo users, etc.) |
+| admin_password | string | `""` | New admin password in plaintext; empty leaves it unchanged |
+| clean_demo_users | boolean | `false` | Remove demo user data (ry / ryadmin, etc.) |
+| enable_sql_customize | boolean | `false` | Customize SQL init scripts |
+| db_name | string | `""` | New database name; empty falls back to `new_module_prefix` |
+| db_type | string | `mysql` | Database type: `mysql` or `postgresql` only; `postgresql` is ruoyi-vue only |
+| admin_username | string | `""` | Admin login name; empty keeps `admin` (only the `user_id=1` seed row) |
+| admin_nickname | string | `""` | Admin nickname; empty keeps `若依` |
+| clean_quartz | boolean | `false` | Remove quartz tables and data |
+| enable_frontend_split | boolean | `false` | Split frontend out of the project root, sibling to the backend |
+| enable_ai_rules | boolean | `true` | Generate AI rule files (`AGENTS.md` + `CLAUDE.md`) |
+| enable_sub_agents | boolean | `false` | Inject sub-agent collaboration notes into `AGENTS.md` |
+| sub_agents_description | string | `""` | Sub-agent notes for `AGENTS.md` (can be generated by scanning `agents/`) |
+| enable_oss | boolean | `false` | Enable OSS object storage |
+| oss_provider | string | `aliyun` | OSS provider: `aliyun` / `tencent` / `minio` / `qiniu` |
+| oss_endpoint | string | `""` | Endpoint (Aliyun/Tencent region, MinIO address, or Qiniu domain) |
+| oss_bucket | string | `""` | Bucket name |
+| oss_access_key | string | `""` | accessKey |
+| oss_secret_key | string | `""` | secretKey |
+| oss_custom_domain | string | `""` | Custom domain (CDN); empty uses the default domain |
+| enable_jwt | boolean | `false` | Customize JWT settings |
+| jwt_secret | string | `""` | JWT secret; if enabled and empty, a random secret is generated |
+| jwt_expire_minutes | number | `30` | Token TTL in minutes |
+| enable_generator_config | boolean | `false` | Customize code-generator config (`generator.yml`) |
+| generator_author | string | `""` | Generated-code author name |
+| generator_table_prefix | string | `""` | Table prefixes to strip (comma-separated, e.g. `sys_,tb_`) |
+| generator_vue3 | boolean | `false` | Upgrade generator templates to Vue3 |
+| enable_nginx_config | boolean | `false` | Generate an Nginx reverse-proxy config |
+| server_port | number | `8080` | Backend service port |
+| server_name | string | `""` | Public hostname; empty uses `localhost` |
+| use_https | boolean | `false` | Enable HTTPS (certificate placeholder block) |
+| enable_startup_scripts | boolean | `false` | Generate start/stop scripts (`.sh` + `.bat`) |
+| enable_replace_ui | boolean | `false` | Replace original `ruoyi-ui` with a preset admin UI (ruoyi-vue only) |
+| ui_template | string | `vben-web-ele` | Admin UI template: `vben-web-ele` or `arco` |
+
+The config file may also contain `_comment` and `_source` (not `CustomizeParams` fields; CLI uses them to record notes and the source path).
+
+Constraints:
+
+- Older JSON without `db_type` is treated as `mysql`
+- `ruoyi` / `ruoyi-cloud` cannot use `postgresql`
+- PostgreSQL init scripts do not include `CREATE DATABASE`; create the database yourself
+- Passwords / secrets in the config are plaintext by design
+- GUI `save_config_json` redacts secrets; CLI `init-config` does not
+
 ## Build & Package
 
 ```bash
@@ -106,6 +296,7 @@ Build artifacts are located in `src-tauri/target/release/bundle/`.
 ruoyi-forge/
 ├── src/                     # Vue 3 frontend
 ├── src-tauri/               # Rust backend
+│   ├── src/bin/forge_cli.rs # forge-cli entry
 │   ├── src/core/            # Core engine (scan/detect/plan/execute/validate/report)
 │   ├── templates/ruoyi-vue/ # Rule JSON files + UniApp template
 │   └── tests/               # Integration tests

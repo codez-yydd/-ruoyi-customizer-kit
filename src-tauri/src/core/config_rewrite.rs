@@ -254,7 +254,8 @@ pub fn rewrite(
             }
         }
     };
-    let std_block = build_standard_datasource_redis(&db_name);
+    let dialect = crate::core::db_dialect::from_params(params);
+    let std_block = build_standard_datasource_redis(dialect, &db_name);
     let dev = std_block.clone();
     let prod = std_block;
 
@@ -655,12 +656,15 @@ fn indent_width(line: &str) -> usize {
     line.len() - line.trim_start().len()
 }
 
-/// 从单行 `url: jdbc:mysql://host:port/<db>?params` 中提取库名；非 jdbc:mysql url 行返回 None。
+/// 从单行 `url: jdbc:mysql://host:port/<db>?params` 或 `jdbc:postgresql://` 中提取库名。
+/// 其它协议（如 jdbc:oracle）返回 None。
 fn db_name_from_url_line(line: &str) -> Option<String> {
     let rest = line.trim_start().strip_prefix("url:")?;
     // 去掉行内注释后取值（值两侧空白一并去除）
     let value = rest.split('#').next().unwrap_or("").trim();
-    let after = value.strip_prefix("jdbc:mysql://")?;
+    let after = value
+        .strip_prefix("jdbc:mysql://")
+        .or_else(|| value.strip_prefix("jdbc:postgresql://"))?;
     // 去掉查询参数，得到 host:port/<db> 路径段；无 `/` 视为解析失败
     let path = after.split('?').next().unwrap_or("");
     let (_host, db) = path.split_once('/')?;
@@ -676,18 +680,22 @@ fn db_name_from_url_line(line: &str) -> Option<String> {
 /// 用于 dev / prod：druid 全量连接池参数 + lettuce 连接池。dev 与 prod 内容完全一致，
 /// 不注入 ${ENV} 占位（由部署人员后续按需替换）。
 ///
-/// `db_name`：数据库名（url 中 jdbc:mysql://localhost:3306/<db_name>）。
-fn build_standard_datasource_redis(db_name: &str) -> String {
+/// `db_name`：数据库名（写入 url 路径段）。
+fn build_standard_datasource_redis(dialect: &crate::core::db_dialect::DbDialect, db_name: &str) -> String {
+    let url = format!(
+        "{}://localhost:{}/{}?{}",
+        dialect.url_scheme, dialect.default_port, db_name, dialect.url_params
+    );
     format!(
         r#"# ===== 数据源 + Redis 配置（dev/prod 明文，部署时按需替换密码/地址） =====
 spring:
   datasource:
     type: com.alibaba.druid.pool.DruidDataSource
-    driverClassName: com.mysql.cj.jdbc.Driver
+    driverClassName: {driver}
     druid:
       # 主库数据源
       master:
-        url: jdbc:mysql://localhost:3306/{db_name}?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8
+        url: {url}
         username: root
         password: 123456
       # 从库数据源
@@ -716,7 +724,7 @@ spring:
       # 配置一个连接在池中最大生存的时间，单位是毫秒
       maxEvictableIdleTimeMillis: 900000
       # 配置检测连接是否有效
-      validationQuery: SELECT 1 FROM DUAL
+      validationQuery: {validation}
       testWhileIdle: true
       testOnBorrow: false
       testOnReturn: false
@@ -763,7 +771,10 @@ spring:
           max-active: 8
           # #连接池最大阻塞等待时间（使用负值表示没有限制）
           max-wait: -1ms
-"#
+"#,
+        driver = dialect.driver_class,
+        url = url,
+        validation = dialect.validation_query
     )
 }
 
@@ -834,9 +845,16 @@ mod tests {
 
     #[test]
     fn parse_db_name_non_mysql_url_ignored() {
-        // 非 jdbc:mysql url → 解析失败
-        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:postgresql://localhost:5432/pgdb\n";
+        // 不受支持的协议（非 mysql / postgresql）→ 解析失败
+        // 原用例用 jdbc:postgresql，现已纳入支持范围；改用 oracle 保持「未知协议返回 None」断言
+        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:oracle:thin:@localhost:1521:orcl\n";
         assert_eq!(parse_master_db_name(yaml), None);
+    }
+
+    #[test]
+    fn parse_db_name_postgresql_url() {
+        let yaml = "spring:\n  datasource:\n    druid:\n      master:\n        url: jdbc:postgresql://localhost:5432/pgdb?currentSchema=public\n";
+        assert_eq!(parse_master_db_name(yaml).as_deref(), Some("pgdb"));
     }
 
     #[test]

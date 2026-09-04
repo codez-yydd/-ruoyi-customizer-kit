@@ -9,6 +9,14 @@ use crate::rules::template::Template;
 use crate::utils::path::package_to_path;
 use std::path::{Path, PathBuf};
 
+/// 是否规划 PostgreSQL 方言切换。非 ruoyi-vue（且 template_dir 非空）本期不规划。
+pub fn should_plan_switch_database_dialect(info: &ProjectInfo, params: &CustomizeParams) -> bool {
+    if params.db_type.trim().to_ascii_lowercase() == "mysql" {
+        return false;
+    }
+    crate::core::db_dialect::supports_postgresql_template(&info.template_dir)
+}
+
 /// 规划全部任务。任务按执行顺序排列，每个任务附带 dry-run 统计。
 pub fn plan(
     info: &ProjectInfo,
@@ -469,6 +477,27 @@ pub fn plan(
     // 代码生成器配置定制（可选）：generator.yml + Vue3 模板
     // （规划放在 SQL 定制之后）
 
+    // 数据库方言切换：必须排在 CustomizeSqlScripts 之前，使 SQL 定制作用在已替换的 PG 脚本上。
+    // 本期仅 ruoyi-vue 支持；template_dir 非空且不是 ruoyi-vue 时不规划（pipeline 会再拦截）。
+    if should_plan_switch_database_dialect(info, params) {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "数据库方言切换（PostgreSQL）".into(),
+            task_type: TaskType::SwitchDatabaseDialect,
+            risk_level: RiskLevel::High,
+            affected_files: vec![
+                "pom.xml（驱动坐标）".into(),
+                "application-dev/prod.yaml（数据源，由配置重构生成）".into(),
+                "MybatisPlusConfig.java（分页方言）".into(),
+                "GenTableMapper.xml / GenTableColumnMapper.xml".into(),
+            ],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // SQL 初始化脚本定制（可选）：库名、admin 密码、清除演示/quartz 数据
     if params.enable_sql_customize {
         let db_name = if params.db_name.is_empty() {
@@ -905,4 +934,82 @@ fn existing_frontend_files(root: &Path, frontend_dirs: &[String]) -> Vec<String>
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::Confidence;
+    use crate::rules::template::TemplateSet;
+    use std::path::PathBuf;
+
+    fn dummy_info(root: &Path, template_dir: &str) -> ProjectInfo {
+        ProjectInfo {
+            root_path: root.to_string_lossy().into(),
+            project_type: "test".into(),
+            template_dir: template_dir.into(),
+            backend_modules: vec![],
+            frontend_dirs: vec![],
+            config_files: vec![],
+            logback_files: vec![],
+            generator_template_files: vec![],
+            original_package: "com.ruoyi".into(),
+            original_module_prefix: "ruoyi".into(),
+            original_artifact_prefix: "ruoyi".into(),
+            confidence: Confidence {
+                required_hit: 0,
+                required_total: 0,
+                optional_hit: vec![],
+                recognized: true,
+                missing_required: vec![],
+            },
+            detected_at: String::new(),
+        }
+    }
+
+    fn load_vue_template() -> Template {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue");
+        TemplateSet::load_from_dir(&dir)
+            .unwrap()
+            .into_full_template()
+            .unwrap()
+    }
+
+    #[test]
+    fn postgresql_not_planned_for_non_vue_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = load_vue_template();
+        let mut params = CustomizeParams::default();
+        params.db_type = "postgresql".into();
+
+        let ruoyi = dummy_info(dir.path(), "ruoyi");
+        assert!(!should_plan_switch_database_dialect(&ruoyi, &params));
+        let tasks = plan(&ruoyi, &params, &template);
+        assert!(
+            !tasks
+                .iter()
+                .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
+            "ruoyi 模板不应规划 PG 方言任务"
+        );
+
+        let cloud = dummy_info(dir.path(), "ruoyi-cloud");
+        assert!(!should_plan_switch_database_dialect(&cloud, &params));
+        let tasks = plan(&cloud, &params, &template);
+        assert!(
+            !tasks
+                .iter()
+                .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
+            "ruoyi-cloud 模板不应规划 PG 方言任务"
+        );
+
+        let vue = dummy_info(dir.path(), "ruoyi-vue");
+        assert!(should_plan_switch_database_dialect(&vue, &params));
+        let tasks = plan(&vue, &params, &template);
+        assert!(
+            tasks
+                .iter()
+                .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
+            "ruoyi-vue 应规划 PG 方言任务"
+        );
+    }
 }

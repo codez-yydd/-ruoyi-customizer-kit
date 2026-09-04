@@ -28,6 +28,7 @@ pub enum TaskType {
     CreateWechatCertDir,
     SetupOss,
     ApplySecurityHardening,
+    SwitchDatabaseDialect,
     CustomizeSqlScripts,
     RenameAdminAccount,
     CustomizeWebFooter,

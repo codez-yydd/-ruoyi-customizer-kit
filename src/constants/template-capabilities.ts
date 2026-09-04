@@ -47,9 +47,12 @@ export const DISABLED_FEATURES: Record<string, (keyof CustomizeParams)[]> = {
     'enable_uniapp', // UniApp 小程序（依赖独立前端作参考）
     'pay_included', // 微信支付（随 UniApp 一起禁用）
     'enable_nginx_config', // Nginx 反代（单体版通常内嵌 Tomcat 单体运行）
-    'enable_replace_ui' // 替换后台 UI（单体版无独立前端目录，不适用）
+    'enable_replace_ui', // 替换后台 UI（单体版无独立前端目录，不适用）
+    'db_type' // PostgreSQL 方言仅对 ruoyi-vue 开放
+  ],
+  'ruoyi-cloud': [
+    'db_type' // 微服务版本期不做方言支持
   ]
-  // ruoyi-vue / ruoyi-cloud：支持全部，无需列出
 }
 
 /** 默认元信息（未知模板目录时回退） */

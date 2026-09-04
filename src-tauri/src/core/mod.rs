@@ -23,6 +23,8 @@ pub mod logback;
 pub mod sub_agents;
 pub mod web_footer;
 pub mod site_settings;
+pub mod db_dialect;
+pub mod pipeline;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
 pub mod task;
@@ -76,6 +78,11 @@ fn default_server_port() -> i32 {
 /// serde 默认值辅助：后台 UI 模板默认 vben-web-ele
 fn default_ui_template() -> String {
     "vben-web-ele".into()
+}
+
+/// serde 默认值辅助：数据库类型默认 mysql（旧配置 JSON 无该字段时兜底）
+fn default_db_type() -> String {
+    "mysql".into()
 }
 
 /// 用户改造参数
@@ -187,6 +194,9 @@ pub struct CustomizeParams {
     /// 新数据库名（留空则用 new_module_prefix 推导）
     #[serde(default)]
     pub db_name: String,
+    /// 数据库类型：mysql | postgresql。旧配置 JSON 无该字段时默认为 mysql。
+    #[serde(default = "default_db_type")]
+    pub db_type: String,
     /// 管理员登录账号（留空保持 admin；仅改 user_id=1 种子行，不动 role_key='admin' 权限体系）
     #[serde(default)]
     pub admin_username: String,
@@ -327,6 +337,7 @@ impl Default for CustomizeParams {
             clean_demo_users: false,
             enable_sql_customize: false,
             db_name: String::new(),
+            db_type: "mysql".into(),
             admin_username: String::new(),
             admin_nickname: String::new(),
             clean_quartz: false,
@@ -382,6 +393,13 @@ impl CustomizeParams {
         }
         if self.frontend_title.is_empty() {
             return Some("前端标题不能为空".into());
+        }
+        let db_type = self.db_type.trim().to_ascii_lowercase();
+        if db_type != "mysql" && db_type != "postgresql" {
+            return Some(format!(
+                "数据库类型「{}」不合法：仅支持 mysql 或 postgresql",
+                self.db_type
+            ));
         }
         // UniApp 模块前缀校验
         if self.enable_uniapp {

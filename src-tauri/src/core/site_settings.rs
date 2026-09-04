@@ -43,7 +43,7 @@ pub fn customize_site_settings(
     let mut summary: Vec<String> = Vec::new();
 
     // 1. SQL 种子：菜单（后台设置 > 站点设置 > 站点修改）+ sys_config 三条
-    let (sql_files, sql_warn) = inject_sql_seeds(root, log);
+    let (sql_files, sql_warn) = inject_sql_seeds(root, params, log);
     modified += sql_files;
     if sql_files > 0 {
         summary.push("SQL 种子已追加：后台设置目录 + 站点设置菜单 + site:settings 权限 + sys.site.* 配置（仅超管默认可见）".into());
@@ -94,7 +94,7 @@ pub fn customize_site_settings(
 
 /// 向含 sys_menu / sys_config 种子的 SQL 文件追加后台设置相关行。
 /// 返回 (修改文件数, 警告)。
-fn inject_sql_seeds(root: &Path, log: &dyn Fn(&str)) -> (usize, Option<String>) {
+fn inject_sql_seeds(root: &Path, params: &CustomizeParams, log: &dyn Fn(&str)) -> (usize, Option<String>) {
     let mut modified = 0usize;
     let mut warn: Option<String> = None;
 
@@ -124,7 +124,14 @@ fn inject_sql_seeds(root: &Path, log: &dyn Fn(&str)) -> (usize, Option<String>) 
         block.push_str("-- 后台设置（由若依锻造台 RuoYi Forge 追加）：站点设置菜单 + sys.site.* 配置\n");
         block.push_str("-- ----------------------------\n");
 
-        if has_config && !config_done {
+        let now_fn = if crate::core::db_dialect::is_postgresql(params) {
+            "now()"
+        } else {
+            "sysdate()"
+        };
+
+        let wrote_config = has_config && !config_done;
+        if wrote_config {
             for (i, (name, key, remark)) in [
                 ("站点标题", "sys.site.title", "后台设置页面维护，留空用打包默认标题"),
                 ("后台Logo", "sys.site.logo", "后台设置页面维护，留空用默认Logo"),
@@ -134,7 +141,7 @@ fn inject_sql_seeds(root: &Path, log: &dyn Fn(&str)) -> (usize, Option<String>) 
             .enumerate()
             {
                 block.push_str(&format!(
-                    "insert into sys_config (config_id, config_name, config_key, config_value, config_type, create_by, create_time, remark) values ({}, '{}', '{}', '', 'Y', 'admin', sysdate(), '{}');\n",
+                    "insert into sys_config (config_id, config_name, config_key, config_value, config_type, create_by, create_time, remark) values ({}, '{}', '{}', '', 'Y', 'admin', {now_fn}, '{}');\n",
                     config_next + i as i64,
                     name,
                     key,
@@ -143,20 +150,31 @@ fn inject_sql_seeds(root: &Path, log: &dyn Fn(&str)) -> (usize, Option<String>) 
             }
         }
 
-        if has_menu && !menu_done {
+        let wrote_menu = has_menu && !menu_done;
+        if wrote_menu {
             let (m_dir, m_page, m_btn) = (menu_next, menu_next + 1, menu_next + 2);
             let route_col = if has_route_name { ", route_name" } else { "" };
             let route_val = if has_route_name { ", ''" } else { "" };
             let cols = format!("menu_id, menu_name, parent_id, order_num, path, component, query{route_col}, is_frame, is_cache, menu_type, visible, status, perms, icon, create_by, create_time, remark");
             block.push_str(&format!(
-                "insert into sys_menu ({cols}) values ({m_dir}, '后台设置', 0, 5, 'site', null, ''{route_val}, 1, 0, 'M', '0', '0', '', 'edit', 'admin', sysdate(), '后台设置目录');\n"
+                "insert into sys_menu ({cols}) values ({m_dir}, '后台设置', 0, 5, 'site', null, ''{route_val}, 1, 0, 'M', '0', '0', '', 'edit', 'admin', {now_fn}, '后台设置目录');\n"
             ));
             block.push_str(&format!(
-                "insert into sys_menu ({cols}) values ({m_page}, '站点设置', {m_dir}, 1, 'settings', 'site/settings/index', ''{route_val}, 1, 0, 'C', '0', '0', 'site:settings:list', 'form', 'admin', sysdate(), '站点设置菜单');\n"
+                "insert into sys_menu ({cols}) values ({m_page}, '站点设置', {m_dir}, 1, 'settings', 'site/settings/index', ''{route_val}, 1, 0, 'C', '0', '0', 'site:settings:list', 'form', 'admin', {now_fn}, '站点设置菜单');\n"
             ));
             block.push_str(&format!(
-                "insert into sys_menu ({cols}) values ({m_btn}, '站点修改', {m_page}, 1, '#', '', ''{route_val}, 1, 0, 'F', '0', '0', 'site:settings:edit', '#', 'admin', sysdate(), '');\n"
+                "insert into sys_menu ({cols}) values ({m_btn}, '站点修改', {m_page}, 1, '#', '', ''{route_val}, 1, 0, 'F', '0', '0', 'site:settings:edit', '#', 'admin', {now_fn}, '');\n"
             ));
+        }
+
+        // PG IDENTITY：文件末尾原 setval 会先于本块执行，追加种子后必须再校准序列，避免后台新增菜单主键冲突
+        if crate::core::db_dialect::is_postgresql(params) {
+            if wrote_menu {
+                block.push_str("SELECT setval(pg_get_serial_sequence('sys_menu', 'menu_id'), GREATEST((SELECT MAX(menu_id) FROM sys_menu), 2000));\n");
+            }
+            if wrote_config {
+                block.push_str("SELECT setval(pg_get_serial_sequence('sys_config', 'config_id'), GREATEST((SELECT MAX(config_id) FROM sys_config), 100));\n");
+            }
         }
 
         let mut new_content = content.clone();
@@ -179,7 +197,9 @@ fn inject_sql_seeds(root: &Path, log: &dyn Fn(&str)) -> (usize, Option<String>) 
 
 /// 判断 sys_menu 表定义是否含 route_name 列（SB3 有 / SB2 无）。
 fn has_sys_menu_route_name(lower_content: &str) -> bool {
-    match regex::Regex::new(r"(?s)create\s+table\s+sys_menu\s+\(.*?engine\s*=") {
+    // MySQL 建表以 engine= 结束；PostgreSQL 无 ENGINE，以 ); 结束。
+    // 两个结束锚点都接受，避免把后续表一并吃进匹配。
+    match regex::Regex::new(r"(?s)create\s+table\s+sys_menu\s+\(.*?(?:engine\s*=|\)\s*;)") {
         Ok(re) => re
             .find(lower_content)
             .map(|m| m.as_str().contains("route_name"))
@@ -425,7 +445,7 @@ mod tests {
         std::fs::create_dir_all(sql.parent().unwrap()).unwrap();
         std::fs::write(&sql, sample_sql(true)).unwrap();
 
-        let (modified, warn) = inject_sql_seeds(tmp.path(), &|_| {});
+        let (modified, warn) = inject_sql_seeds(tmp.path(), &CustomizeParams::default(), &|_| {});
         assert_eq!(modified, 1);
         assert!(warn.is_none());
 
@@ -449,7 +469,7 @@ mod tests {
         std::fs::create_dir_all(sql.parent().unwrap()).unwrap();
         std::fs::write(&sql, sample_sql(false)).unwrap();
 
-        inject_sql_seeds(tmp.path(), &|_| {});
+        inject_sql_seeds(tmp.path(), &CustomizeParams::default(), &|_| {});
         let out = std::fs::read_to_string(&sql).unwrap();
         assert!(!out.contains("route_name,"), "SB2 不应带 route_name 列：{out}");
         assert!(out.contains("query, is_frame,"), "{out}");
@@ -465,7 +485,7 @@ mod tests {
         content.push_str("insert into sys_menu values('2001', '自定义', '0', '9', 'custom', null, '', '', 1, 0, 'M', '0', '0', '', '#', 'admin', sysdate(), '', null, '');\n");
         std::fs::write(&sql, content).unwrap();
 
-        inject_sql_seeds(tmp.path(), &|_| {});
+        inject_sql_seeds(tmp.path(), &CustomizeParams::default(), &|_| {});
         let out = std::fs::read_to_string(&sql).unwrap();
         assert!(out.contains("values (2002, '后台设置'"), "应从 2002 续接：{out}");
     }
@@ -479,10 +499,10 @@ mod tests {
         std::fs::write(tmp.path().join("sql/quartz.sql"), "create table qrtz_job_details (...);\n").unwrap();
         std::fs::write(&sql, sample_sql(true)).unwrap();
 
-        inject_sql_seeds(tmp.path(), &|_| {});
+        inject_sql_seeds(tmp.path(), &CustomizeParams::default(), &|_| {});
         let first = std::fs::read_to_string(&sql).unwrap();
         // 幂等：再跑一次不重复
-        let (second, _) = inject_sql_seeds(tmp.path(), &|_| {});
+        let (second, _) = inject_sql_seeds(tmp.path(), &CustomizeParams::default(), &|_| {});
         assert_eq!(second, 0, "重复执行不应再追加");
         assert_eq!(first, std::fs::read_to_string(&sql).unwrap());
         assert_eq!(std::fs::read_to_string(tmp.path().join("sql/quartz.sql")).unwrap(), "create table qrtz_job_details (...);\n");
@@ -492,6 +512,53 @@ mod tests {
     fn route_name_detection() {
         assert!(has_sys_menu_route_name(&sample_sql(true).to_lowercase()));
         assert!(!has_sys_menu_route_name(&sample_sql(false).to_lowercase()));
+    }
+
+    fn sample_pg_sql(with_route_name: bool) -> String {
+        let route_col = if with_route_name {
+            "  route_name varchar(50) default '',\n"
+        } else {
+            ""
+        };
+        format!(
+            "drop table if exists sys_menu;\ncreate table sys_menu (\n  menu_id int8 not null generated by default as identity,\n  path varchar(200) default '',\n{route_col}  primary key (menu_id)\n);\n\ninsert into sys_menu values('1', '系统管理', '0', '1', 'system', null, '', '', 1, 0, 'M', '0', '0', '', 'system', 'admin', now(), '', null, '系统管理目录');\ninsert into sys_config values(1, '主框架页-默认皮肤样式名称', 'sys.index.skinName', 'skin-blue', 'Y', 'admin', now(), '', null, '蓝色');\n"
+        )
+    }
+
+    #[test]
+    fn route_name_detection_pg_create_table_without_engine() {
+        assert!(has_sys_menu_route_name(&sample_pg_sql(true).to_lowercase()));
+        assert!(!has_sys_menu_route_name(&sample_pg_sql(false).to_lowercase()));
+    }
+
+    #[test]
+    fn sql_seeds_pg_uses_now_not_sysdate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sql = tmp.path().join("sql/ry.sql");
+        std::fs::create_dir_all(sql.parent().unwrap()).unwrap();
+        std::fs::write(&sql, sample_pg_sql(true)).unwrap();
+        let mut params = CustomizeParams::default();
+        params.db_type = "postgresql".into();
+        inject_sql_seeds(tmp.path(), &params, &|_| {});
+        let out = std::fs::read_to_string(&sql).unwrap();
+        assert!(out.contains("now()"), "PG 种子应使用 now()：{out}");
+        // 原脚本里的 now() 加上追加行，不应再写入 sysdate()
+        let appended = out.split("-- 后台设置").nth(1).unwrap_or("");
+        assert!(
+            !appended.contains("sysdate()"),
+            "追加块不应含 sysdate()：{appended}"
+        );
+        assert!(appended.contains("'sys.site.title'"), "{out}");
+        assert!(out.contains("query, route_name,"), "{out}");
+        // PG IDENTITY：setval 必须出现在站点设置 insert 之后，校准追加后的序列
+        let title_at = appended.find("'sys.site.title'").expect("应有站点设置 insert");
+        let setval_at = appended.find("setval").expect("追加块应含 setval");
+        assert!(
+            setval_at > title_at,
+            "setval 应在站点设置 insert 之后：{appended}"
+        );
+        assert!(appended.contains("pg_get_serial_sequence('sys_menu', 'menu_id')"), "{appended}");
+        assert!(appended.contains("pg_get_serial_sequence('sys_config', 'config_id')"), "{appended}");
     }
 
     // ---------- 控制器生成 ----------

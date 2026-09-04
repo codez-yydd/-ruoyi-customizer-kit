@@ -10,6 +10,7 @@ pub mod commands;
 pub mod core;
 pub mod rules;
 pub mod utils;
+pub mod cli;
 
 use commands::{
     build_sub_agents_description, cleanup_extract_dir, detect_project, extract_zip_project,

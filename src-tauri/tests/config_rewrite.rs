@@ -219,6 +219,62 @@ fn falls_back_to_module_prefix_when_original_url_unparsable() {
 }
 
 #[test]
+fn postgresql_template_driver_url_and_validation() {
+    let dir = build_resources();
+    let res = dir.path();
+    let mut params = params_with_config();
+    params.db_type = "postgresql".into();
+    params.db_name = "demo_pg".into();
+    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let dev = fs::read_to_string(&outcome.dev_path).unwrap();
+    let prod = fs::read_to_string(&outcome.prod_path).unwrap();
+    for yaml in [&dev, &prod] {
+        assert!(
+            yaml.contains("driverClassName: org.postgresql.Driver"),
+            "PG 模板应使用 org.postgresql.Driver"
+        );
+        assert!(
+            yaml.contains("jdbc:postgresql://localhost:5432/demo_pg?currentSchema=public"),
+            "PG url 应为 5432 + currentSchema：{yaml}"
+        );
+        assert!(
+            yaml.contains("validationQuery: SELECT 1\n"),
+            "PG validationQuery 应为 SELECT 1"
+        );
+        assert!(!yaml.contains("jdbc:mysql://"), "PG 模板不应含 mysql url");
+        assert!(!yaml.contains("SELECT 1 FROM DUAL"), "PG 不应使用 FROM DUAL");
+    }
+}
+
+#[test]
+fn postgresql_url_keeps_original_db_name() {
+    let dir = build_resources_with_master_url(
+        "jdbc:postgresql://localhost:5432/legacy_pg?currentSchema=public",
+    );
+    let res = dir.path();
+    let mut params = params_with_config();
+    params.db_type = "postgresql".into();
+    params.db_name = String::new();
+    params.enable_sql_customize = false;
+    let outcome = config_rewrite::rewrite(res, &params, &|_| {}).expect("配置重构应成功");
+    let dev = fs::read_to_string(&outcome.dev_path).unwrap();
+    assert!(
+        dev.contains("5432/legacy_pg?"),
+        "未填库名时应从 jdbc:postgresql url 解析原库名：{dev}"
+    );
+}
+
+#[test]
+fn old_config_json_without_db_type_defaults_mysql() {
+    let p = CustomizeParams::default();
+    let mut v = serde_json::to_value(&p).unwrap();
+    v.as_object_mut().unwrap().remove("db_type");
+    assert!(v.get("db_type").is_none());
+    let loaded: CustomizeParams = serde_json::from_value(v).unwrap();
+    assert_eq!(loaded.db_type, "mysql");
+}
+
+#[test]
 fn logback_path_normalized_to_logs() {
     // 此测试保留：验证 logback 正则（与 executor 一致）
     let content = "<configuration>\n  <property name=\"log.path\" value=\"/home/ruoyi/logs\"/>\n</configuration>\n";
