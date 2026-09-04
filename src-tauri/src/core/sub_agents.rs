@@ -1,7 +1,9 @@
-// 子智能体协作说明：动态扫描 agents/ 目录，生成说明文本并注入 AGENTS.md。
+// 子智能体协作说明：递归扫描 agents/ 目录，生成说明文本并注入 AGENTS.md。
 //
 // 设计：
-// - 数据源：kit 根目录 agents/*.md（每个文件含 YAML frontmatter：name + description）
+// - 数据源：kit 根目录 agents/（含 zcode/、claude/ 子目录）下递归扫描的 *.md
+//   （每个文件含 YAML frontmatter：name + description）；两套客户端定义 name 相同，
+//   按 name 去重（保留首个命中）
 // - 说明文本：静态框架模板（sub-agents-framework.md）+ 动态扫描出的各智能体小节
 // - 注入：写入项目根 AGENTS.md，用首尾 HTML 注释标记包裹，幂等可重复执行
 // - 用户可在前端预览并修改 sub_agents_description，修改后的文本优先使用
@@ -32,17 +34,29 @@ fn framework_template_path() -> PathBuf {
     paths::resolve("templates/ruoyi-vue/ai-rules/sub-agents-framework.md")
 }
 
-/// 扫描 agents/*.md，返回 (name, description) 列表，按 name 字母序排列。
-/// 解析首部 YAML frontmatter 中的 name 与 description 字段；缺失则跳过该文件。
+/// 递归扫描 agents/ 目录（含子目录）下所有 *.md，返回 (name, description) 列表，
+/// 按 name 字母序排列。解析各文件首部 YAML frontmatter 中的 name 与 description
+/// 字段；缺失则跳过该文件。两套客户端定义 name 相同，按 name 去重（保留首个命中）。
 fn scan_agents() -> Vec<(String, String)> {
-    let dir = agents_source_dir();
-    let entries = match std::fs::read_dir(&dir) {
+    // BTreeMap 以 name 为键：天然去重（or_insert 保留首个命中）且迭代即字母序
+    let mut found: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    walk_agent_files(&agents_source_dir(), &mut found);
+    found.into_iter().collect()
+}
+
+/// 递归遍历 dir 下所有 *.md 文件并解析 frontmatter，结果按 name 去重写入 out。
+/// 非 frontmatter 文件（如 zcode/AGENTS.md、claude/CLAUDE.md）解析出空 name，自然跳过。
+fn walk_agent_files(dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
+    let entries = match std::fs::read_dir(dir) {
         Ok(it) => it,
-        Err(_) => return Vec::new(),
+        Err(_) => return,
     };
-    let mut out: Vec<(String, String)> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
+        if path.is_dir() {
+            walk_agent_files(&path, out);
+            continue;
+        }
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
@@ -55,10 +69,8 @@ fn scan_agents() -> Vec<(String, String)> {
         if name.is_empty() {
             continue;
         }
-        out.push((name.to_string(), desc));
+        out.entry(name.to_string()).or_insert(desc);
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    out
 }
 
 /// 从 markdown 文本中解析 YAML frontmatter 的 name 与 description。
@@ -226,9 +238,15 @@ mod tests {
             "ui-reviewer",
             "vision",
         ] {
+            let heading = format!("## {name}");
             assert!(
-                desc.contains(&format!("## {name}")),
+                desc.contains(&heading),
                 "缺少智能体小节：{name}"
+            );
+            assert_eq!(
+                desc.matches(&heading).count(),
+                1,
+                "智能体小节应恰好出现一次（不得重复）：{name}"
             );
         }
         assert!(
