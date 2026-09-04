@@ -1,0 +1,249 @@
+/* ============================================
+   Arco 组件覆写（原生 CSS + Arco CSS 变量，对齐 Arco Pro 视觉）
+   ============================================ */
+
+/* ---------- 内容区卡片 ---------- */
+/* 统一卡片圆角 8px + 极轻阴影（白卡浮于浅灰内容底之上；暗色下阴影自然弱化） */
+.arco-card {
+  border-radius: 8px;
+  border: none;
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.03),
+    0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+/* 内容区卡片式页面容器（供业务页面使用） */
+.app-page-card {
+  background-color: var(--color-bg-2);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+/* ---------- 侧边栏：深色外观 ---------- */
+/* 深色侧边栏（sidebarTheme=dark）：menu 背景透明化以透出 sider 底色
+   （arco-menu-pop-header 是折叠态父级弹出块，折叠后出现在窄栏内，必须一并透明化） */
+.app-sider--dark .arco-menu,
+.app-sider--dark .arco-menu .arco-menu-item,
+.app-sider--dark .arco-menu .arco-menu-pop-header,
+.app-sider--dark .arco-menu .arco-menu-inline-header,
+.app-sider--dark .arco-menu .arco-menu-group-title {
+  background-color: transparent;
+}
+
+/* 暗色全局主题下深色侧边栏用更深的黑 */
+body[arco-theme='dark'] .app-sider--dark {
+  background-color: #05070d;
+}
+
+/* 浅色侧边栏：menu 背景跟随 sider（var(--color-bg-2)） */
+.app-sider--light .arco-menu {
+  background-color: transparent;
+}
+
+/* ---------- 侧边栏菜单：Arco Pro 标志性选中态 ---------- */
+/* 菜单项统一圆角块 + 两侧 8px 留白（折叠态除外，折叠由 Arco 自身 48px 布局控制） */
+.app-sider .arco-menu:not(.arco-menu-collapsed) .arco-menu-item,
+.app-sider .arco-menu:not(.arco-menu-collapsed) .arco-menu-inline-header {
+  margin: 0 8px 4px;
+  border-radius: 6px;
+}
+
+/* 选中项：主色实心圆角块 + 白字（亮/暗主题下同一强调色语言）
+   注意：只作用于侧边栏菜单本体。折叠态根菜单会挂 arco-menu-pop 类（Arco 组件行为），
+   不能用 .arco-menu-pop 作弹层选择器，否则会误伤折叠态侧边栏菜单项 */
+.app-sider .arco-menu .arco-menu-item.arco-menu-selected {
+  background-color: rgb(var(--primary-6));
+  color: #fff;
+}
+
+.app-sider .arco-menu .arco-menu-item.arco-menu-selected .arco-icon,
+.app-sider .arco-menu .arco-menu-item.arco-menu-selected .arco-menu-icon {
+  color: #fff;
+}
+
+.app-sider .arco-menu .arco-menu-item.arco-menu-selected:hover {
+  background-color: rgb(var(--primary-5));
+}
+
+/* 深色侧边栏 hover：白色低透明圆角块（含折叠态父级弹出块 pop-header） */
+.app-sider--dark .arco-menu .arco-menu-item:not(.arco-menu-selected):hover,
+.app-sider--dark .arco-menu .arco-menu-pop-header:not(.arco-menu-selected):hover,
+.app-sider--dark .arco-menu .arco-menu-inline-header:not(.arco-menu-selected):hover {
+  background-color: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.app-sider--dark .arco-menu .arco-menu-item:hover .arco-icon,
+.app-sider--dark .arco-menu .arco-menu-pop-header:hover .arco-icon,
+.app-sider--dark .arco-menu .arco-menu-inline-header:hover .arco-icon {
+  color: #fff;
+}
+
+/* 子菜单展开标题（父级）选中时不用实心块：深色白字 / 浅色主色字，仅区分层级 */
+.app-sider .arco-menu .arco-menu-inline-header.arco-menu-selected {
+  background-color: transparent;
+}
+
+.app-sider .arco-menu-dark .arco-menu-inline-header.arco-menu-selected,
+.app-sider .arco-menu-dark .arco-menu-inline-header.arco-menu-selected .arco-icon {
+  color: #fff;
+}
+
+/* ---------- 折叠态侧边栏菜单（48px 窄栏，对齐 Vben 观感） ---------- */
+/* 折叠态菜单项与父级弹出块（arco-menu-pop-header）：显式 40×40、图标居中。
+   Arco 默认 has-icon 项为 flex 布局，高度由内容决定（不依赖 line-height），
+   必须显式给 height，否则行高变化会直接塌缩项高度 */
+.app-sider .arco-menu-collapsed .arco-menu-item,
+.app-sider .arco-menu-collapsed .arco-menu-pop-header {
+  height: 40px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 6px;
+}
+
+/* 折叠态只保留图标：标题改为彻底不占位（Arco 默认仅 opacity:0 + 图标 margin 推出，
+   flex 布局下会挤压图标位置），图标自身与包裹层右距清零保证水平居中 */
+.app-sider .arco-menu-collapsed .arco-menu-item .arco-icon,
+.app-sider .arco-menu-collapsed .arco-menu-pop-header .arco-icon,
+.app-sider .arco-menu-collapsed .arco-menu-item .arco-menu-icon,
+.app-sider .arco-menu-collapsed .arco-menu-pop-header .arco-menu-icon {
+  margin-right: 0;
+}
+
+.app-sider .arco-menu-collapsed .arco-menu-item .arco-menu-title,
+.app-sider .arco-menu-collapsed .arco-menu-pop-header .arco-menu-title {
+  display: none;
+}
+
+/* 折叠态图标 18px 正常大小（Arco 默认继承菜单 14px，窄栏下观感过小） */
+.app-sider .arco-menu-collapsed .arco-menu-item .arco-menu-icon,
+.app-sider .arco-menu-collapsed .arco-menu-pop-header .arco-menu-icon {
+  font-size: 18px;
+}
+
+/* ---------- 折叠/水平菜单的弹出子菜单面板（挂在 body，前缀 arco-trigger-menu） ---------- */
+/* 注意：弹层类名是 arco-trigger-menu（theme 与触发菜单一致：dark/light），
+   与折叠态侧边栏根菜单上的 arco-menu-pop 是两回事 */
+/* 面板：min-width 180px、圆角 8px、内边距 4px、解除默认 max-height 200px 的内滚动、阴影加强 */
+.arco-trigger-menu.arco-trigger-menu-vertical {
+  min-width: 180px;
+  max-height: none;
+  padding: 4px;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
+}
+
+/* 弹层菜单项：36px 高度/行高、14px 字号、6px 圆角、项间 2px 间隔 */
+.arco-trigger-menu .arco-trigger-menu-item {
+  height: 36px;
+  margin-bottom: 2px;
+  font-size: 14px;
+  line-height: 36px;
+  border-radius: 6px;
+}
+
+.arco-trigger-menu .arco-trigger-menu-item:last-child {
+  margin-bottom: 0;
+}
+
+/* 弹层图标 16px */
+.arco-trigger-menu .arco-trigger-menu-item .arco-trigger-menu-icon {
+  font-size: 16px;
+}
+
+/* 弹层选中态：主色实心圆角块白字（与侧边栏选中语言一致，浅色弹层同样适用） */
+.arco-trigger-menu .arco-trigger-menu-item.arco-trigger-menu-selected,
+.arco-trigger-menu .arco-trigger-menu-item.arco-trigger-menu-selected:hover {
+  background-color: rgb(var(--primary-6));
+  color: #fff;
+}
+
+.arco-trigger-menu .arco-trigger-menu-item.arco-trigger-menu-selected .arco-icon {
+  color: #fff;
+}
+
+/* 深色弹层（深色侧边栏触发，theme=dark）：底色统一 #001529 系，
+   替换 Arco 默认 #232324；文字用白色系保证深底可读 */
+.arco-trigger-menu-dark {
+  background-color: #001529;
+  border-color: #001529;
+}
+
+.arco-trigger-menu-dark .arco-trigger-menu-item {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.arco-trigger-menu-dark .arco-trigger-menu-item:hover {
+  color: #fff;
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+/* 深色侧边栏滚动条：浅色 thumb（默认灰色 thumb 在深底上不可见） */
+.app-sider--dark .arco-scrollbar-thumb-bar {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+body[arco-theme='dark'] .app-sider {
+  border-right-color: var(--color-border-2);
+}
+
+/* ---------- 顶部布局：水平菜单 ---------- */
+/* 水平菜单贴合顶栏：透明背景、占满 60px 高度、内边距与顶栏对齐（容器横向滚动） */
+.app-header__top-menu .arco-menu {
+  background-color: transparent;
+  height: var(--header-height);
+}
+
+.app-header__top-menu .arco-menu .arco-menu-inner {
+  height: 100%;
+  padding: 0 8px;
+}
+
+.app-header__top-menu .arco-menu .arco-menu-item,
+.app-header__top-menu .arco-menu .arco-menu-inline-header {
+  height: var(--header-height);
+  line-height: var(--header-height);
+  margin: 0;
+  border-radius: 0;
+}
+
+/* 水平菜单选中态：主色文字（子项弹层保持通用选中样式） */
+.app-header__top-menu .arco-menu-light.arco-menu-horizontal .arco-menu-item.arco-menu-selected,
+.app-header__top-menu
+  .arco-menu-light.arco-menu-horizontal
+  .arco-menu-inline-header.arco-menu-selected {
+  background: none;
+  color: rgb(var(--primary-6));
+}
+
+.app-header__top-menu
+  .arco-menu-light.arco-menu-horizontal
+  .arco-menu-item.arco-menu-selected
+  .arco-icon,
+.app-header__top-menu
+  .arco-menu-light.arco-menu-horizontal
+  .arco-menu-item.arco-menu-selected
+  .arco-menu-icon,
+.app-header__top-menu
+  .arco-menu-light.arco-menu-horizontal
+  .arco-menu-inline-header.arco-menu-selected
+  .arco-icon {
+  color: rgb(var(--primary-6));
+}
+
+/* 暗色全局主题下水平菜单文字色（a-menu theme 仍为 sidebarTheme 值，需按顶栏背景适配） */
+body[arco-theme='dark'] .app-header__top-menu .arco-menu .arco-menu-item,
+body[arco-theme='dark'] .app-header__top-menu .arco-menu .arco-menu-inline-header {
+  color: var(--color-text-2);
+}
+
+body[arco-theme='dark'] .app-header__top-menu .arco-menu .arco-menu-item:hover,
+body[arco-theme='dark'] .app-header__top-menu .arco-menu .arco-menu-inline-header:hover {
+  color: var(--color-text-1);
+  background-color: var(--color-fill-2);
+}
+
+body[arco-theme='dark'] .app-header__top-menu .arco-menu .arco-menu-item.arco-menu-selected,
+body[arco-theme='dark'] .app-header__top-menu .arco-menu .arco-menu-inline-header.arco-menu-selected {
+  color: rgb(var(--primary-6));
+}

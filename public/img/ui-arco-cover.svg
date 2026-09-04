@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 264" role="img" aria-label="RuoYi Arco">
+  <defs>
+    <linearGradient id="arcoGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#165DFF" />
+      <stop offset="1" stop-color="#722ED1" />
+    </linearGradient>
+  </defs>
+  <!-- Arco 品牌蓝紫渐变背景 -->
+  <rect width="480" height="264" fill="url(#arcoGrad)" />
+  <circle cx="430" cy="34" r="88" fill="#ffffff" opacity="0.08" />
+  <circle cx="46" cy="238" r="64" fill="#ffffff" opacity="0.06" />
+  <!-- 后台窗口线框示意 -->
+  <rect x="88" y="40" width="304" height="176" rx="10" fill="#ffffff" opacity="0.96" />
+  <!-- 顶栏（窗口控制点） -->
+  <path d="M88 50 a10 10 0 0 1 10 -10 h284 a10 10 0 0 1 10 10 v22 h-304 z" fill="#F2F3F5" />
+  <circle cx="104" cy="56" r="4" fill="#F53F3F" />
+  <circle cx="118" cy="56" r="4" fill="#FF7D00" />
+  <circle cx="132" cy="56" r="4" fill="#00B42A" />
+  <!-- 侧边栏 -->
+  <rect x="100" y="80" width="56" height="124" rx="6" fill="#165DFF" opacity="0.12" />
+  <rect x="108" y="92" width="40" height="8" rx="4" fill="#165DFF" />
+  <rect x="108" y="110" width="40" height="6" rx="3" fill="#165DFF" opacity="0.45" />
+  <rect x="108" y="124" width="40" height="6" rx="3" fill="#165DFF" opacity="0.45" />
+  <rect x="108" y="138" width="40" height="6" rx="3" fill="#165DFF" opacity="0.45" />
+  <rect x="108" y="152" width="40" height="6" rx="3" fill="#165DFF" opacity="0.45" />
+  <rect x="108" y="166" width="40" height="6" rx="3" fill="#165DFF" opacity="0.45" />
+  <!-- 内容区 -->
+  <rect x="168" y="90" width="120" height="10" rx="5" fill="#1D2129" opacity="0.85" />
+  <rect x="168" y="112" width="212" height="28" rx="6" fill="#F2F3F5" />
+  <rect x="168" y="148" width="100" height="28" rx="6" fill="#F2F3F5" />
+  <rect x="276" y="148" width="104" height="28" rx="6" fill="#F2F3F5" />
+  <rect x="168" y="188" width="212" height="6" rx="3" fill="#1D2129" opacity="0.25" />
+  <!-- 标题文字 -->
+  <text x="240" y="246" text-anchor="middle" font-family="-apple-system, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif" font-size="20" font-weight="700" fill="#ffffff">RuoYi Arco</text>
+</svg>

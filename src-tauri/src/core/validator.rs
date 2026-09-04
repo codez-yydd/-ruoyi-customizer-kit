@@ -223,15 +223,9 @@ pub fn validate(
     // 9. 替换后台 UI 产物校验（仅在开启时）
     if params.enable_replace_ui {
         let ui_dir = root.join(format!("{}-ui", params.new_module_prefix));
-        let required = [
-            "package.json",
-            "pnpm-workspace.yaml",
-            "apps/web-ele/.env",
-            "apps/web-ele/package.json",
-            "apps/web-ele/vite.config.mts",
-        ];
+        let spec = ui_template_spec(&params.ui_template);
         let mut missing = Vec::new();
-        for f in &required {
+        for f in spec.required_files {
             if !ui_dir.join(f).is_file() {
                 missing.push(*f);
             }
@@ -244,17 +238,12 @@ pub fn validate(
                 CheckResult::Fail
             },
             message: if missing.is_empty() {
-                format!("{}-ui 为 Vben monorepo 结构", params.new_module_prefix)
+                format!("{}-ui {}", params.new_module_prefix, spec.structure_desc)
             } else {
                 format!("缺少文件：{}", missing.join("、"))
             },
         });
         // 关键配置不得残留占位符
-        let check_files = [
-            "apps/web-ele/.env",
-            "apps/web-ele/vite.config.mts",
-            "apps/web-ele/src/preferences.ts",
-        ];
         let placeholders = [
             "{{FRONTEND_TITLE}}",
             "{{API_BASE_URL_DEV}}",
@@ -262,7 +251,7 @@ pub fn validate(
             "{{COPYRIGHT_YEAR}}",
         ];
         let mut residue = Vec::new();
-        for rel in &check_files {
+        for rel in spec.placeholder_check_files {
             let p = ui_dir.join(rel);
             if let Ok(content) = std::fs::read_to_string(&p) {
                 for ph in &placeholders {
@@ -288,6 +277,58 @@ pub fn validate(
     }
 
     items
+}
+
+/// 替换后台 UI 的校验规格：不同模板（vben monorepo / arco 单包）目录结构不同。
+struct UiTemplateSpec {
+    /// 结构描述（完整性校验通过时的 message 文案）
+    structure_desc: &'static str,
+    /// 产物必备文件（相对 {prefix}-ui/）
+    required_files: &'static [&'static str],
+    /// 占位符残留检查文件（相对 {prefix}-ui/）
+    placeholder_check_files: &'static [&'static str],
+}
+
+/// 按 ui_template 取校验规格。
+///
+/// 未知模板回退 vben 规格：与 executor 空值回退 vben-web-ele、前端 normalizeUiTemplateKey
+/// 回退默认模板的策略一致（未知值不轻易判 Fail，避免误报）。
+fn ui_template_spec(ui_template: &str) -> UiTemplateSpec {
+    match ui_template {
+        "arco" => UiTemplateSpec {
+            structure_desc: "为 Arco 单包工程结构",
+            required_files: &[
+                "package.json",
+                ".env",
+                ".env.production",
+                "vite.config.ts",
+                "index.html",
+                "src/main.ts",
+            ],
+            placeholder_check_files: &[
+                ".env",
+                "vite.config.ts",
+                "package.json",
+                "src/layouts/index.vue",
+            ],
+        },
+        // 默认（vben-web-ele 及未知值）：vben monorepo 规格
+        _ => UiTemplateSpec {
+            structure_desc: "为 Vben monorepo 结构",
+            required_files: &[
+                "package.json",
+                "pnpm-workspace.yaml",
+                "apps/web-ele/.env",
+                "apps/web-ele/package.json",
+                "apps/web-ele/vite.config.mts",
+            ],
+            placeholder_check_files: &[
+                "apps/web-ele/.env",
+                "apps/web-ele/vite.config.mts",
+                "apps/web-ele/src/preferences.ts",
+            ],
+        },
+    }
 }
 
 fn check_logback_path(root: &Path, engine: &ReplaceEngine) -> bool {
@@ -328,4 +369,163 @@ fn find_resources_dir(root: &Path, template: &Template) -> Option<std::path::Pat
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::template::{
+        ConfigRules, DetectRules, GeneratorRules, ModuleRules, ReplaceRules, Template,
+    };
+
+    /// 最小可用模板（validate 仅使用 replace/module/config 规则，此处全部留空）
+    fn empty_template() -> Template {
+        Template {
+            name: "RuoYi-Vue".into(),
+            detect: DetectRules {
+                name: "RuoYi-Vue".into(),
+                required_files: vec![],
+                optional_files: vec![],
+                config_files: vec![],
+                logback_files: vec![],
+                generator_template_files: vec![],
+            },
+            replace: ReplaceRules {
+                exclude_dirs: vec![],
+                text_extensions: vec![],
+                binary_extensions: vec![],
+            },
+            module: ModuleRules {
+                default_prefix: "ruoyi".into(),
+                modules: vec![],
+                frontend_modules: vec![],
+            },
+            config: ConfigRules {
+                target_files: vec![],
+                legacy_druid_files: vec![],
+                active_profile: String::new(),
+                log_path_value: String::new(),
+            },
+            generator: GeneratorRules::default(),
+        }
+    }
+
+    fn ui_params(ui_template: &str) -> crate::core::CustomizeParams {
+        let mut p = crate::core::CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        p.enable_replace_ui = true;
+        p.ui_template = ui_template.into();
+        p
+    }
+
+    /// 写出完整 arco 产物（占位符已替换）
+    fn write_arco_ui(root: &Path) {
+        let ui = root.join("demo-ui");
+        std::fs::create_dir_all(ui.join("src/layouts")).unwrap();
+        std::fs::write(ui.join("package.json"), "{\"name\":\"demo-ui\"}").unwrap();
+        std::fs::write(ui.join(".env"), "VITE_APP_TITLE=演示系统\n").unwrap();
+        std::fs::write(ui.join(".env.production"), "VITE_APP_BASE_API=/prod-api\n").unwrap();
+        std::fs::write(ui.join("vite.config.ts"), "target: 'http://localhost:9000'\n").unwrap();
+        std::fs::write(ui.join("index.html"), "<html></html>").unwrap();
+        std::fs::write(ui.join("src/main.ts"), "createApp()").unwrap();
+        std::fs::write(
+            ui.join("src/layouts/index.vue"),
+            "const COPYRIGHT_YEAR = '2026'\n",
+        )
+        .unwrap();
+    }
+
+    fn ui_check<'a>(items: &'a [CheckItem], keyword: &str) -> &'a CheckItem {
+        items
+            .iter()
+            .find(|c| c.item.contains(keyword))
+            .expect("应存在替换后台 UI 校验项")
+    }
+
+    #[test]
+    fn arco_ui_complete_passes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_arco_ui(tmp.path());
+        let items = validate(tmp.path(), &ui_params("arco"), &empty_template());
+        let integrity = ui_check(&items, "替换后台 UI 产物完整性");
+        assert!(
+            matches!(integrity.result, CheckResult::Pass),
+            "arco 完整产物应 PASS，实际: {} - {}",
+            integrity.message,
+            integrity.item
+        );
+        assert!(integrity.message.contains("Arco 单包工程"));
+        let residue = ui_check(&items, "替换后台 UI 占位符残留");
+        assert!(
+            matches!(residue.result, CheckResult::Pass),
+            "arco 无占位符残留应 PASS，实际: {}",
+            residue.message
+        );
+    }
+
+    #[test]
+    fn arco_ui_missing_vite_config_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_arco_ui(tmp.path());
+        std::fs::remove_file(tmp.path().join("demo-ui/vite.config.ts")).unwrap();
+        let items = validate(tmp.path(), &ui_params("arco"), &empty_template());
+        let integrity = ui_check(&items, "替换后台 UI 产物完整性");
+        assert!(
+            matches!(integrity.result, CheckResult::Fail),
+            "缺 vite.config.ts 应 FAIL，实际: {}",
+            integrity.message
+        );
+        assert!(integrity.message.contains("vite.config.ts"));
+    }
+
+    #[test]
+    fn arco_ui_placeholder_residue_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_arco_ui(tmp.path());
+        std::fs::write(
+            tmp.path().join("demo-ui/.env"),
+            "VITE_APP_TITLE={{FRONTEND_TITLE}}\n",
+        )
+        .unwrap();
+        let items = validate(tmp.path(), &ui_params("arco"), &empty_template());
+        let residue = ui_check(&items, "替换后台 UI 占位符残留");
+        assert!(
+            matches!(residue.result, CheckResult::Fail),
+            "占位符残留应 FAIL，实际: {}",
+            residue.message
+        );
+        assert!(residue.message.contains("{{FRONTEND_TITLE}}"));
+    }
+
+    /// 回归保护：arco 产物在 vben 规格下应 FAIL（按模板区分校验，而不是只认一套结构）。
+    #[test]
+    fn arco_ui_under_vben_spec_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_arco_ui(tmp.path());
+        let items = validate(tmp.path(), &ui_params("vben-web-ele"), &empty_template());
+        let integrity = ui_check(&items, "替换后台 UI 产物完整性");
+        assert!(
+            matches!(integrity.result, CheckResult::Fail),
+            "arco 结构不含 pnpm-workspace.yaml，vben 规格应 FAIL：{}",
+            integrity.message
+        );
+    }
+
+    /// 未知模板回退 vben 规格（与 executor / 前端 normalizeUiTemplateKey 的默认策略一致）。
+    #[test]
+    fn unknown_ui_template_falls_back_to_vben_spec() {
+        let spec = ui_template_spec("unknown-ui");
+        assert!(spec.required_files.contains(&"pnpm-workspace.yaml"));
+        assert!(spec.placeholder_check_files.contains(&"apps/web-ele/.env"));
+        assert_eq!(spec.structure_desc, "为 Vben monorepo 结构");
+    }
+
+    /// 空值与 vben-web-ele 取同一规格（executor 空值回退 vben-web-ele）。
+    #[test]
+    fn empty_ui_template_matches_vben_spec() {
+        assert_eq!(
+            ui_template_spec("").required_files,
+            ui_template_spec("vben-web-ele").required_files
+        );
+    }
 }

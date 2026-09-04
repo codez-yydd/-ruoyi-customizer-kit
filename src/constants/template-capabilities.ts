@@ -75,7 +75,8 @@ export function isFeatureDisabled(
 //
 // 目录约定：
 // - 工具运行时模板：src-tauri/templates/ruoyi-vue/ui/{key}/（打包进锻造台，replace_ui 从此复制）
-// - 适配开发区：dev/vben-ui/（仅本地联调适配，不直接给最终产物用；用 scripts/snapshot-vben-ui.ps1 快照进 templates）
+// - 适配开发区：dev/vben-ui/、dev/arco-ui/（仅本地联调适配，不直接给最终产物用；
+//   用 scripts/snapshot-vben-ui.ps1 / scripts/snapshot-arco-ui.sh|ps1 快照进 templates）
 //
 // UI 侧用本注册表渲染卡片预览与选择。
 
@@ -107,6 +108,15 @@ export const UI_TEMPLATES: UiTemplateMeta[] = [
     demoUrl: 'https://www.vben.pro',
     cover: 'img/ui-vben-01.png',
     screenshots: ['img/ui-vben-01.png', 'img/ui-vben-02.png', 'img/ui-vben-03.png']
+  },
+  {
+    key: 'arco',
+    label: 'Arco Design',
+    stack: 'Vue3 + TypeScript + Vite + Pinia + Arco Design Vue',
+    desc: '基于 Arco Design Vue 的完整若依后台：动态菜单 / 权限 / 字典 / 系统管理 / 监控 / 代码生成，npm 单包工程。',
+    demoUrl: 'https://arco.design/vue',
+    cover: 'img/ui-arco-cover.svg',
+    screenshots: ['img/ui-arco-cover.svg']
   }
 ]
 

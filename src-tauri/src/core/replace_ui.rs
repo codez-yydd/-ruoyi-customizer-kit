@@ -88,8 +88,13 @@ pub fn generate_ui_project(
     log: &dyn Fn(&str),
 ) -> Result<ReplaceUiResult, String> {
     if !template_dir.is_dir() {
+        // 按模板目录名提示对应快照脚本（vben 用 ps1，arco 用 sh/ps1 皆可）
+        let snapshot_script = match template_dir.file_name().map(|s| s.to_string_lossy().to_string()) {
+            Some(name) if name == "arco" => "scripts/snapshot-arco-ui.sh",
+            _ => "scripts/snapshot-vben-ui.ps1",
+        };
         return Err(format!(
-            "后台 UI 模板目录不存在：{}。请先运行 scripts/snapshot-vben-ui.ps1 快照模板",
+            "后台 UI 模板目录不存在：{}。请先运行 {snapshot_script} 快照模板",
             template_dir.display()
         ));
     }

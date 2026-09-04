@@ -372,10 +372,23 @@ pub fn plan(
         }
     }
 
-    // 13. 替换后台 UI（可选）：删除原 {prefix}-ui，复制预置工程（如 vben-web-ele）
+    // 13. 替换后台 UI（可选）：删除原 {prefix}-ui，复制预置工程（如 vben-web-ele / arco）
     // 标题 / 端口 / 版权通过模板占位符写入，与参数配置页「前端品牌」「部署端口」联动。
     if params.enable_replace_ui {
         let ui_dir = format!("{}-ui", params.new_module_prefix);
+        // 预览展示的关键产物文件随模板结构不同（vben 为 monorepo，arco 为 npm 单包）
+        let created_files = if params.ui_template == "arco" {
+            vec![
+                format!("{}/.env", ui_dir),
+                format!("{}/vite.config.ts", ui_dir),
+                format!("{}/src/", ui_dir),
+            ]
+        } else {
+            vec![
+                format!("{}/package.json", ui_dir),
+                format!("{}/apps/web-ele/.env", ui_dir),
+            ]
+        };
         tasks.push(Task {
             id: next_id(&tasks),
             name: format!(
@@ -386,10 +399,7 @@ pub fn plan(
             risk_level: RiskLevel::High,
             affected_files: vec![],
             affected_dirs: vec![ui_dir.clone()],
-            created_files: vec![
-                format!("{}/package.json", ui_dir),
-                format!("{}/apps/web-ele/.env", ui_dir),
-            ],
+            created_files,
             status: TaskStatus::Pending,
             error_message: String::new(),
         });
