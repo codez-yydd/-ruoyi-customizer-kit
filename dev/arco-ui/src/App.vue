@@ -5,7 +5,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import type { ArcoLang } from '@arco-design/web-vue/es/locale/interface'
 import zhCN from '@arco-design/web-vue/es/locale/lang/zh-cn'
 import enUS from '@arco-design/web-vue/es/locale/lang/en-us'
@@ -25,4 +25,12 @@ const ARCO_LOCALES: Record<LocaleType, ArcoLang> = {
 }
 
 const arcoLocale = computed<ArcoLang>(() => ARCO_LOCALES[appStore.language])
+
+watch(
+  () => appStore.displayTitle,
+  (title) => {
+    if (title) document.title = title
+  },
+  { immediate: true }
+)
 </script>

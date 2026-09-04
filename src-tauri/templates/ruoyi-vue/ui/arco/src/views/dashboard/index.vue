@@ -7,7 +7,7 @@
         <h2 class="dashboard__title">
           {{ t('dashboard.welcomeTitle', { greeting, name: userStore.nickName || userStore.name || t('dashboard.fallbackUser') }) }}
         </h2>
-        <p class="dashboard__meta">{{ todayText }} · {{ t('dashboard.welcomeUse', { title: appTitle }) }}</p>
+        <p class="dashboard__meta">{{ todayText }} · {{ t('dashboard.welcomeUse', { title: appStore.displayTitle }) }}</p>
         <p class="dashboard__motto">{{ t('dashboard.motto') }}</p>
       </div>
       <div class="dashboard__banner-side">
@@ -78,6 +78,7 @@ import { useI18n } from 'vue-i18n'
 import AppIcon from '@/components/AppIcon/index.vue'
 import { checkPermi } from '@/utils/permission'
 import { useUserStore } from '@/stores/user'
+import { useAppStore } from '@/stores/app'
 import type { MessageSchema } from '@/locales'
 
 // 组件名与路由 name 一致，供 keep-alive include 匹配缓存
@@ -87,8 +88,7 @@ defineOptions({ name: 'Dashboard' })
 const { t } = useI18n()
 const router = useRouter()
 const userStore = useUserStore()
-
-const appTitle = import.meta.env.VITE_APP_TITLE
+const appStore = useAppStore()
 
 /** 按当前时段问候 */
 const greeting = computed<string>(() => {

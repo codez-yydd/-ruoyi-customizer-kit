@@ -8,7 +8,7 @@
 
       <div class="auth-layout__brand-header">
         <AppLogo :size="30" />
-        <span class="auth-layout__brand-name">{{ appTitle }}</span>
+        <span class="auth-layout__brand-name">{{ appStore.displayTitle }}</span>
       </div>
 
       <div class="auth-layout__brand-body">
@@ -23,7 +23,7 @@
       </div>
 
       <div class="auth-layout__brand-footer">
-        Copyright © {{ COPYRIGHT_YEAR }} {{ COPYRIGHT_HOLDER }}
+        Copyright © {{ COPYRIGHT_YEAR }} {{ COPYRIGHT_HOLDER }}<span v-if="appStore.siteIcp"> · {{ appStore.siteIcp }}</span>
       </div>
     </div>
 
@@ -49,7 +49,7 @@
         <!-- 移动端品牌行：窄屏隐藏品牌区后补齐 App 识别（默认不显示） -->
         <div class="auth-layout__mobile-brand">
           <AppLogo :size="28" />
-          <span class="auth-layout__mobile-brand-name">{{ appTitle }}</span>
+          <span class="auth-layout__mobile-brand-name">{{ appStore.displayTitle }}</span>
         </div>
         <slot />
       </div>
@@ -75,8 +75,6 @@ import { COPYRIGHT_HOLDER, COPYRIGHT_YEAR } from '@/layouts/index.vue'
 /** 认证页（登录/注册）公共布局：左侧品牌区 + 右侧表单区（slot） */
 const { t } = useI18n()
 const appStore = useAppStore()
-
-const appTitle = import.meta.env.VITE_APP_TITLE
 
 /** 品牌区特性点（图标 + 短词），computed 保持语言切换联动 */
 interface FeatureItem {

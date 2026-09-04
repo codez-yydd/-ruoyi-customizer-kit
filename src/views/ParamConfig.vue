@@ -654,7 +654,7 @@ function generateRandomSecret(): string {
                   <span class="switch-item__label">后台设置页面</span>
                   <el-switch v-model="form.enable_site_settings" @change="onSwitchChange" />
                 </div>
-                <div class="switch-item__hint muted">一级目录「后台设置 → 站点设置」，运行时修改站点标题/后台 Logo/ICP 备案号，保存即时生效（存 sys_config，经典与 Vben 前端均支持）</div>
+                <div class="switch-item__hint muted">一级目录「后台设置 → 站点设置」，运行时修改站点标题/后台 Logo/ICP 备案号，保存即时生效（存 sys_config，经典、Vben 与 Arco 前端均支持）</div>
               </div>
               <div class="switch-item">
                 <div class="switch-item__head">

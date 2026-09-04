@@ -16,7 +16,7 @@
         </router-view>
       </a-layout-content>
       <a-layout-footer v-if="appStore.footerVisible" class="app-layout__footer">
-        Copyright © {{ COPYRIGHT_YEAR }} {{ COPYRIGHT_HOLDER }}
+        Copyright © {{ COPYRIGHT_YEAR }} {{ COPYRIGHT_HOLDER }}<span v-if="appStore.siteIcp"> · {{ appStore.siteIcp }}</span>
       </a-layout-footer>
     </a-layout>
   </a-layout>

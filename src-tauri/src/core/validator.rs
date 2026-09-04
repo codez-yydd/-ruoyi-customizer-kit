@@ -337,6 +337,8 @@ fn ui_template_spec(ui_template: &str) -> UiTemplateSpec {
                 "vite.config.ts",
                 "index.html",
                 "src/main.ts",
+                "src/views/site/settings/index.vue",
+                "src/api/site/settings.ts",
             ],
             placeholder_check_files: &[
                 ".env",
@@ -455,6 +457,8 @@ mod tests {
     fn write_arco_ui(root: &Path) {
         let ui = root.join("demo-ui");
         std::fs::create_dir_all(ui.join("src/layouts")).unwrap();
+        std::fs::create_dir_all(ui.join("src/views/site/settings")).unwrap();
+        std::fs::create_dir_all(ui.join("src/api/site")).unwrap();
         std::fs::write(ui.join("package.json"), "{\"name\":\"demo-ui\"}").unwrap();
         std::fs::write(ui.join(".env"), "VITE_APP_TITLE=演示系统\n").unwrap();
         std::fs::write(ui.join(".env.production"), "VITE_APP_BASE_API=/prod-api\n").unwrap();
@@ -466,6 +470,8 @@ mod tests {
             "const COPYRIGHT_YEAR = '2026'\n",
         )
         .unwrap();
+        std::fs::write(ui.join("src/views/site/settings/index.vue"), "<template></template>").unwrap();
+        std::fs::write(ui.join("src/api/site/settings.ts"), "export {}\n").unwrap();
     }
 
     fn ui_check<'a>(items: &'a [CheckItem], keyword: &str) -> &'a CheckItem {

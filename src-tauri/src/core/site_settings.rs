@@ -17,6 +17,7 @@
 //   permission.js（首个路由拉一次站点信息，登录页也生效）、Logo.vue / login.vue / register.vue
 //   （标题/Logo 改 computed 动态回退）、dynamicTitle.js（浏览器标签页标题动态）
 // - vben 替换 UI：模板自带（main.ts 启动同步 + views/site/settings 页面），无需逐项目补丁
+// - arco 替换 UI：模板自带 views/site/settings + api，无需逐项目补丁
 // - 幂等：文件/锚点已处理则跳过；未命中记警告不中断
 
 use crate::core::CustomizeParams;
@@ -77,6 +78,9 @@ pub fn customize_site_settings(
                 ui.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
             ));
         }
+    }
+    if params.enable_replace_ui && params.ui_template == "arco" {
+        summary.push("Arco 前端由模板自带站点设置页".into());
     }
 
     Ok(SiteSettingsOutcome {

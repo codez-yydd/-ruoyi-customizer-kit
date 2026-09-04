@@ -761,5 +761,20 @@ export default {
       codeTitle: '生成 Vue 代码',
       defaultOption: '选项{index}'
     }
+  },
+  /** 后台设置：站点设置 */
+  site: {
+    settings: {
+      title: '站点标题',
+      pageTitle: '站点设置',
+      logo: '后台 Logo',
+      icp: 'ICP 备案号',
+      titlePlaceholder: '留空使用打包时的默认标题',
+      icpPlaceholder: '如 浙ICP备2026000000号-1，留空则不显示',
+      titleTip: '侧边栏、登录页、浏览器标签页与页脚版权中的系统名称',
+      logoTip: '建议 PNG 格式；留空使用默认 Logo，保存后立即生效',
+      icpTip: '备案通过后在此填写即可，页脚同步显示（优先级高于 application.yaml 的 ruoyi.icp）',
+      saveSuccess: '保存成功'
+    }
   }
 }

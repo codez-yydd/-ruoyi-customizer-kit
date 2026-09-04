@@ -12,7 +12,7 @@
       <AppLogo :size="28" />
       <transition name="fade">
         <span v-show="!appStore.sidebarCollapsed" class="app-sider__logo-title">
-          {{ appTitle }}
+          {{ appStore.displayTitle }}
         </span>
       </transition>
     </div>
@@ -73,7 +73,6 @@ const appStore = useAppStore()
 const permissionStore = usePermissionStore()
 const { t } = useI18n()
 
-const appTitle = import.meta.env.VITE_APP_TITLE
 const SIDER_COLLAPSED_WIDTH = 48
 
 /** 宽度范围与默认值（与 stores/app.ts 偏好读取校验、DEFAULT_PREFERENCES 保持一致） */

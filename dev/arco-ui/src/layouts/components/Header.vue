@@ -4,7 +4,7 @@
     <div v-if="appStore.layoutMode === 'top'" class="app-header__left app-header__left--top">
       <div class="app-header__brand">
         <AppLogo :size="28" />
-        <span class="app-header__brand-title">{{ appTitle }}</span>
+        <span class="app-header__brand-title">{{ appStore.displayTitle }}</span>
       </div>
       <div ref="topMenuRef" class="app-header__top-menu" @wheel="onTopMenuWheel">
         <a-menu
@@ -149,8 +149,6 @@ const { t } = useI18n()
 const appStore = useAppStore()
 const userStore = useUserStore()
 const permissionStore = usePermissionStore()
-
-const appTitle = import.meta.env.VITE_APP_TITLE
 
 // 水平菜单导航（与 Sidebar 共享选中态与点击逻辑）
 const { selectedKeys: navSelectedKeys, onMenuClick: onNavMenuClick } = useMenuNav()

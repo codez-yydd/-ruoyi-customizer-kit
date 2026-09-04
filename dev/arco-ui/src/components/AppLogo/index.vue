@@ -1,5 +1,14 @@
 <template>
+  <img
+    v-if="appStore.siteLogo"
+    class="app-logo app-logo--img"
+    :src="appStore.displayLogo"
+    :width="size"
+    :height="size"
+    alt=""
+  />
   <svg
+    v-else
     class="app-logo"
     :width="size"
     :height="size"
@@ -37,14 +46,16 @@
 
 <script setup lang="ts">
 import { useId } from 'vue'
+import { useAppStore } from '@/stores/app'
 
 /**
- * 应用 Logo（纯内联 SVG，无图片资源）：
- * - 渐变圆角底板 + 高光小圆 + M 形笔画，登录页 / 侧边栏 / 认证布局共用
+ * 应用 Logo：
+ * - 后台设置上传了 Logo 时渲染图片；否则用内联 SVG（渐变圆角底板 + 高光小圆 + M 形笔画）
  * - 渐变 id 用 useId 生成，避免多实例渲染时 defs id 冲突
  */
 withDefaults(defineProps<{ size?: number }>(), { size: 26 })
 
+const appStore = useAppStore()
 const gradientId = `app-logo-gradient-${useId()}`
 </script>
 
@@ -52,5 +63,9 @@ const gradientId = `app-logo-gradient-${useId()}`
 .app-logo {
   display: block;
   flex-shrink: 0;
+}
+
+.app-logo--img {
+  object-fit: contain;
 }
 </style>

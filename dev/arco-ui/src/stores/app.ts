@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { applyPrimaryColor, DEFAULT_PRIMARY_COLOR, hexToHsl } from '@/utils/theme'
 import { applyThemeWithTransition } from '@/utils/theme-transition'
 import type { ThemeTransitionOrigin } from '@/utils/theme-transition'
+import { resolveFileUrl } from '@/utils/file'
 import { i18n } from '@/locales'
 import type { LocaleType } from '@/locales'
 
@@ -141,6 +142,19 @@ export const useAppStore = defineStore('app', () => {
   const footerVisible = ref<boolean>(initial.footerVisible)
   const language = ref<LocaleType>(initial.language)
   const device = ref<DeviceType>('desktop')
+
+  /** 运行时站点信息（不写入 Preferences；空串回退打包默认标题 / 内置 SVG Logo / 不显示 ICP） */
+  const siteTitle = ref('')
+  const siteLogo = ref('')
+  const siteIcp = ref('')
+  const displayTitle = computed(() => siteTitle.value || import.meta.env.VITE_APP_TITLE)
+  const displayLogo = computed(() => (siteLogo.value ? resolveFileUrl(siteLogo.value) : ''))
+
+  function setSite(payload: { title?: string; logo?: string; icp?: string }): void {
+    if (payload.title !== undefined) siteTitle.value = payload.title || ''
+    if (payload.logo !== undefined) siteLogo.value = payload.logo || ''
+    if (payload.icp !== undefined) siteIcp.value = payload.icp || ''
+  }
 
   // 系统深浅实时值（theme=system 时跟随；store 与应用同生命周期，监听器无需移除）
   const darkMedia = window.matchMedia('(prefers-color-scheme: dark)')
@@ -373,6 +387,11 @@ export const useAppStore = defineStore('app', () => {
     footerVisible,
     language,
     device,
+    siteTitle,
+    siteLogo,
+    siteIcp,
+    displayTitle,
+    displayLogo,
     resolvedTheme,
     toggleSidebar,
     toggleTheme,
@@ -384,6 +403,7 @@ export const useAppStore = defineStore('app', () => {
     setLanguage,
     setDevice,
     resetPreferences,
-    copyPreferences
+    copyPreferences,
+    setSite
   }
 })

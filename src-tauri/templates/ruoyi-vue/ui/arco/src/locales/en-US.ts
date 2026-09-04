@@ -757,6 +757,22 @@ const messages: MessageSchema = {
       codeTitle: 'Generate Vue Code',
       defaultOption: 'Option {index}'
     }
+  },
+  /** Site settings */
+  site: {
+    settings: {
+      title: 'Site Title',
+      pageTitle: 'Site Settings',
+      logo: 'Admin Logo',
+      icp: 'ICP Filing Number',
+      titlePlaceholder: 'Leave empty to use the packaged default title',
+      icpPlaceholder: 'e.g. 浙ICP备2026000000号-1; leave empty to hide',
+      titleTip: 'System name used in the sidebar, login page, browser tab and footer',
+      logoTip: 'PNG recommended; leave empty to use the default logo. Takes effect immediately after save',
+      icpTip:
+        'Fill in after filing is approved. Shown in the footer (takes priority over ruoyi.icp in application.yaml)',
+      saveSuccess: 'Saved successfully'
+    }
   }
 }
 
