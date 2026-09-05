@@ -12,8 +12,9 @@
 //   - start.bat / stop.bat（Windows）
 //
 // 生成清单（开发脚本，输出到根目录）：
-//   - run.sh / run.bat（后端：Vue/单体为一键 spring-boot:run；Cloud 为 mvn install + 提示）
-//   - Cloud 另按实际模块生成 run-<suffix>.sh / run-<suffix>.bat（gateway/auth/system/…）
+//   - run.sh / run.bat（后端：Vue/单体为一键 spring-boot:run；Cloud 为方向键勾选菜单，确认后再全仓 install）
+//   - Cloud 另生成 run.ps1（Windows TUI）；根 run 排除 run-ui；新增模块复制一份 run-<name>.sh/.bat 即可进菜单
+//   - Cloud 另按实际模块生成 run-<suffix>.sh / run-<suffix>.bat（官方 gateway/auth/system/…）
 //   - run-ui.sh / run-ui.bat（前端：npm install + npm run dev 一键启动）
 //
 // 生成清单（一键打包脚本，输出到根目录）：
@@ -122,13 +123,19 @@ pub fn generate_scripts(
 /// 生成开发脚本（run.sh / run.bat）到 output_dir 根目录（非 scripts/ 子目录）。
 ///
 /// 与部署脚本（start/stop，输出到 scripts/）互补：
-/// 部署脚本面向已打包的 jar，开发脚本面向 `mvn install + spring-boot:run` 的本地开发场景。
+/// 部署脚本面向已打包的 jar；开发脚本面向本地 `mvn install + spring-boot:run`。
+/// Cloud 根 run.sh / run.bat / run.ps1：先按 `run-*` 动态识别服务（排除 run-ui），
+/// 官方顺序优先、其余按文件名追加，方向键勾选菜单确认后再全仓 install，并在新窗口启动。
+/// 子窗口通过环境变量 SKIP_MVN_INSTALL=1 跳过二次 install（PowerShell 用 $env: 让子进程继承，
+/// 避免 Start-Process ArgumentList 引号把 `set SKIP=1&&` 截断）。模块脚本单独双击仍会 install，但不 clean。
+/// 新增模块只需复制一份 `run-<name>.bat/.sh`（改模块路径）即可进入菜单。
 ///
 /// 输出目录结构：
 /// ```text
 /// {output_dir}/
 ///   run.sh
 ///   run.bat
+///   run.ps1                            （仅 Cloud，Windows 方向键菜单）
 ///   run-gateway.sh / run-gateway.bat   （仅 Cloud，模块存在且未裁剪时）
 ///   run-auth.sh / run-auth.bat
 ///   …
@@ -148,6 +155,7 @@ pub fn generate_dev_scripts(
         &[
             ("run.cloud.sh.tmpl", "run.sh", true),
             ("run.cloud.bat.tmpl", "run.bat", false),
+            ("run.cloud.ps1.tmpl", "run.ps1", false),
         ]
     } else {
         &[
@@ -836,13 +844,14 @@ mod tests {
         let p = sample_params();
         let outcome = generate_dev_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
         assert_eq!(
-            outcome.created_files, 10,
-            "根 run.sh/bat + gateway/auth/system/job 各一对：{:?}",
+            outcome.created_files, 11,
+            "根 run.sh/bat/ps1 + gateway/auth/system/job 各一对：{:?}",
             outcome.summary
         );
 
         assert!(tmp.path().join("run.sh").is_file());
         assert!(tmp.path().join("run.bat").is_file());
+        assert!(tmp.path().join("run.ps1").is_file(), "应生成 run.ps1");
         for suffix in ["gateway", "auth", "system", "job"] {
             assert!(
                 tmp.path().join(format!("run-{suffix}.sh")).is_file(),
@@ -868,8 +877,12 @@ mod tests {
         assert!(gw_sh.contains("cd \"$APP_HOME/myapp-gateway\"") || gw_sh.contains("myapp-gateway"));
         assert!(gw_sh.contains("cd "), "run-gateway.sh 应 cd 到模块目录");
         assert!(
-            gw_sh.contains("mvn clean install -DskipTests"),
+            gw_sh.contains("mvn install -DskipTests"),
             "gateway sh 启动前应 install 本模块及依赖：{gw_sh}"
+        );
+        assert!(
+            !gw_sh.contains("mvn clean install"),
+            "模块 sh 不要 clean，避免并发互删 target：{gw_sh}"
         );
         assert!(
             gw_sh.contains("-pl \"myapp-gateway\""),
@@ -878,12 +891,16 @@ mod tests {
         assert!(gw_sh.contains("-am"), "gateway sh 应带 -am：{gw_sh}");
         assert!(gw_sh.contains("spring-boot:run"), "gateway sh 仍应 spring-boot:run");
         assert!(
+            gw_sh.contains("SKIP_MVN_INSTALL"),
+            "模块 sh 应判断 SKIP_MVN_INSTALL：{gw_sh}"
+        );
+        assert!(
             gw_sh.contains("--server.port=8080"),
             "gateway 应带端口参数：{gw_sh}"
         );
         let gw_install_line = gw_sh
             .lines()
-            .find(|l| l.contains("mvn clean install"))
+            .find(|l| l.contains("mvn install"))
             .unwrap_or("");
         assert!(
             !gw_install_line.contains("--server.port="),
@@ -897,8 +914,12 @@ mod tests {
             "system 应使用嵌套 POSIX 路径：{sys_sh}"
         );
         assert!(
-            sys_sh.contains("mvn clean install -DskipTests"),
+            sys_sh.contains("mvn install -DskipTests"),
             "system sh 启动前应 install：{sys_sh}"
+        );
+        assert!(
+            !sys_sh.contains("mvn clean install"),
+            "模块 sh 不要 clean：{sys_sh}"
         );
         assert!(
             sys_sh.contains("-pl \"myapp-modules/myapp-system\""),
@@ -914,8 +935,12 @@ mod tests {
 
         let gw_bat = std::fs::read_to_string(tmp.path().join("run-gateway.bat")).unwrap();
         assert!(
-            gw_bat.contains("mvn clean install -DskipTests"),
+            gw_bat.contains("mvn install -DskipTests"),
             "gateway bat 启动前应 install：{gw_bat}"
+        );
+        assert!(
+            !gw_bat.contains("mvn clean install"),
+            "模块 bat 不要 clean，避免并发互删 target：{gw_bat}"
         );
         assert!(
             gw_bat.contains("-pl \"myapp-gateway\""),
@@ -924,12 +949,16 @@ mod tests {
         assert!(gw_bat.contains("-am"), "gateway bat 应带 -am：{gw_bat}");
         assert!(gw_bat.contains("spring-boot:run"), "gateway bat 仍应 spring-boot:run");
         assert!(
+            gw_bat.contains("SKIP_MVN_INSTALL"),
+            "模块 bat 应判断 SKIP_MVN_INSTALL：{gw_bat}"
+        );
+        assert!(
             gw_bat.contains("--server.port=8080"),
             "gateway bat 应带端口参数：{gw_bat}"
         );
         let gw_bat_install = gw_bat
             .lines()
-            .find(|l| l.contains("mvn clean install"))
+            .find(|l| l.contains("mvn install"))
             .unwrap_or("");
         assert!(
             !gw_bat_install.contains("--server.port="),
@@ -942,8 +971,12 @@ mod tests {
             "system bat 应使用反斜杠路径：{sys_bat}"
         );
         assert!(
-            sys_bat.contains("mvn clean install -DskipTests"),
+            sys_bat.contains("mvn install -DskipTests"),
             "system bat 启动前应 install：{sys_bat}"
+        );
+        assert!(
+            !sys_bat.contains("mvn clean install"),
+            "模块 bat 不要 clean：{sys_bat}"
         );
         assert!(
             sys_bat.contains("-pl \"myapp-modules/myapp-system\""),
@@ -959,13 +992,80 @@ mod tests {
 
         let run_sh = std::fs::read_to_string(tmp.path().join("run.sh")).unwrap();
         assert!(
-            run_sh.contains("run-gateway"),
-            "根 run.sh 应提示使用独立脚本：{run_sh}"
+            run_sh.contains("run-*.sh") || run_sh.contains("run-$"),
+            "根 run.sh 应按 run-* 动态扫描：{run_sh}"
+        );
+        assert!(
+            run_sh.contains("run-ui"),
+            "根 run.sh 应排除 run-ui：{run_sh}"
+        );
+        assert!(
+            run_sh.contains("gateway") && run_sh.contains("auth") && run_sh.contains("system"),
+            "根 run.sh 官方顺序应含 gateway/auth/system：{run_sh}"
+        );
+        assert!(
+            run_sh.contains("read -rsn1") || run_sh.contains("[A"),
+            "根 run.sh 应含方向键 TUI：{run_sh}"
+        );
+        assert!(
+            !run_sh.contains("Enter numbers"),
+            "根 run.sh 不应再走数字编号主交互：{run_sh}"
+        );
+        assert!(
+            run_sh.contains("SKIP_MVN_INSTALL"),
+            "根 run.sh 拉起子进程时应设置 SKIP_MVN_INSTALL：{run_sh}"
         );
         assert!(!run_sh.contains("{{"));
 
+        let run_bat = std::fs::read_to_string(tmp.path().join("run.bat")).unwrap();
+        assert!(
+            run_bat.contains("run.ps1") && run_bat.contains("powershell"),
+            "根 run.bat 应作为 powershell 启动器调用 run.ps1：{run_bat}"
+        );
+        assert!(
+            run_bat.is_ascii(),
+            "根 run.bat 必须纯 ASCII：{run_bat}"
+        );
+        assert!(
+            !run_bat.contains("Enter numbers") && !run_bat.contains("set /p"),
+            "根 run.bat 不应再走数字编号或 set /p：{run_bat}"
+        );
+
+        let run_ps1 = std::fs::read_to_string(tmp.path().join("run.ps1")).unwrap();
+        assert!(
+            run_ps1.contains("run-*.bat") || run_ps1.contains("run-"),
+            "根 run.ps1 应按 run-* 动态扫描：{run_ps1}"
+        );
+        assert!(
+            run_ps1.contains("run-ui"),
+            "根 run.ps1 应排除 run-ui：{run_ps1}"
+        );
+        assert!(
+            run_ps1.contains("ReadKey"),
+            "根 run.ps1 应 ReadKey：{run_ps1}"
+        );
+        assert!(
+            run_ps1.contains("UpArrow") && run_ps1.contains("DownArrow"),
+            "根 run.ps1 应处理上下方向键：{run_ps1}"
+        );
+        assert!(
+            run_ps1.contains("Spacebar") || run_ps1.contains("Space"),
+            "根 run.ps1 应处理空格勾选：{run_ps1}"
+        );
+        assert!(
+            run_ps1.contains("$env:SKIP_MVN_INSTALL"),
+            "根 run.ps1 应通过环境变量把 SKIP 传给子 cmd：{run_ps1}"
+        );
+        assert!(
+            !run_ps1.contains("set SKIP_MVN_INSTALL=1&&"),
+            "根 run.ps1 不要再用易碎的 set SKIP&& call 命令行：{run_ps1}"
+        );
+        assert!(run_ps1.is_ascii(), "根 run.ps1 必须纯 ASCII");
+        assert!(!run_ps1.contains("{{"), "run.ps1 不应残留占位符");
+
         for name in [
             "run.bat",
+            "run.ps1",
             "run-gateway.bat",
             "run-auth.bat",
             "run-system.bat",
@@ -1035,6 +1135,7 @@ mod tests {
         let p = sample_params();
         let first = generate_dev_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
         assert!(first.created_files > 0);
+        assert!(tmp.path().join("run.ps1").is_file(), "Cloud 应生成 run.ps1");
         let second = generate_dev_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
         assert_eq!(second.created_files, 0, "Cloud 第二次应全部跳过");
     }

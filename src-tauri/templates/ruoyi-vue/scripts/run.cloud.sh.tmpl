@@ -1,12 +1,160 @@
 #!/bin/bash
-# {{PROJECT_NAME}} Cloud 开发脚本（构建 + 提示启动顺序）
+# {{PROJECT_NAME}} Cloud 开发脚本（方向键勾选菜单 + 全仓 install + 按 run-* 动态扫描）
+# 识别：项目根 run-*.sh，排除 run-ui.sh；官方顺序优先，其余按文件名追加。
+# 新增模块：复制一份 run-<name>.sh 即可进入菜单。
 # 用法：./run.sh
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8"
 
-echo "========== 请先确认 Nacos 可达：http://127.0.0.1:8848/nacos/ =========="
+APP_HOME="$(cd "$(dirname "$0")" && pwd)"
+cd "$APP_HOME" || {
+    echo "cd APP_HOME failed!"
+    exit 1
+}
+
+OFFICIAL=(gateway auth system gen job file monitor)
+NAMES=()
+
+add_if_new() {
+    local cand="$1"
+    [ -z "$cand" ] && return
+    local n
+    for n in "${NAMES[@]}"; do
+        if [ "$n" = "$cand" ]; then
+            return
+        fi
+    done
+    NAMES+=("$cand")
+}
+
+for s in "${OFFICIAL[@]}"; do
+    if [ -f "$APP_HOME/run-${s}.sh" ]; then
+        add_if_new "$s"
+    fi
+done
+
+for f in "$APP_HOME"/run-*.sh; do
+    [ -e "$f" ] || continue
+    bn=$(basename "$f" .sh)
+    if [ "$bn" = "run-ui" ]; then
+        continue
+    fi
+    svc="${bn#run-}"
+    add_if_new "$svc"
+done
+
+if [ ${#NAMES[@]} -eq 0 ]; then
+    echo "[WARN] 未扫描到任何 run-*.sh 服务脚本（已排除 run-ui.sh）"
+    exit 1
+fi
+
+CHECKED=()
+for i in "${!NAMES[@]}"; do
+    CHECKED[$i]=1
+done
+CURSOR=0
+HINT=""
+
+restore_cursor() {
+    printf '\033[?25h'
+}
+trap restore_cursor EXIT INT TERM
+
+draw_menu() {
+    clear 2>/dev/null || printf '\033[2J\033[H'
+    echo "========== 请先确认 Nacos 可达：http://127.0.0.1:8848/nacos/ =========="
+    echo "网关端口：{{GATEWAY_PORT}}"
+    echo "方向键移动  空格勾选  A全选  N全不选  回车启动  Q/ESC退出"
+    echo
+    local i mark
+    for i in "${!NAMES[@]}"; do
+        mark="[ ]"
+        if [ "${CHECKED[$i]}" = "1" ]; then
+            mark="[x]"
+        fi
+        if [ "$i" = "$CURSOR" ]; then
+            printf "\033[36m%s %s\033[0m\n" "$mark" "${NAMES[$i]}"
+        else
+            printf "%s %s\n" "$mark" "${NAMES[$i]}"
+        fi
+    done
+    if [ -n "$HINT" ]; then
+        echo
+        echo "$HINT"
+    fi
+}
+
+printf '\033[?25l'
+while true; do
+    draw_menu
+    key=""
+    IFS= read -rsn1 key
+    HINT=""
+    if [ "$key" = $'\x1b' ]; then
+        seq1=""
+        seq2=""
+        IFS= read -rsn1 -t 1 seq1 || true
+        if [ -n "$seq1" ]; then
+            IFS= read -rsn1 -t 1 seq2 || true
+        fi
+        rest="${seq1}${seq2}"
+        case "$rest" in
+            '[A'|'OA')
+                if [ "$CURSOR" -gt 0 ]; then
+                    CURSOR=$((CURSOR - 1))
+                fi
+                ;;
+            '[B'|'OB')
+                last=$((${#NAMES[@]} - 1))
+                if [ "$CURSOR" -lt "$last" ]; then
+                    CURSOR=$((CURSOR + 1))
+                fi
+                ;;
+            *)
+                exit 0
+                ;;
+        esac
+        continue
+    fi
+    case "$key" in
+        ' ')
+            if [ "${CHECKED[$CURSOR]}" = "1" ]; then
+                CHECKED[$CURSOR]=0
+            else
+                CHECKED[$CURSOR]=1
+            fi
+            ;;
+        a|A)
+            for i in "${!NAMES[@]}"; do CHECKED[$i]=1; done
+            ;;
+        n|N)
+            for i in "${!NAMES[@]}"; do CHECKED[$i]=0; done
+            ;;
+        q|Q)
+            exit 0
+            ;;
+        ''|$'\n'|$'\r')
+            any=0
+            for i in "${!NAMES[@]}"; do
+                if [ "${CHECKED[$i]}" = "1" ]; then
+                    any=1
+                    break
+                fi
+            done
+            if [ "$any" != "1" ]; then
+                HINT="请至少勾选一个服务"
+                continue
+            fi
+            break
+            ;;
+    esac
+done
+restore_cursor
+trap - EXIT INT TERM
+printf '\033[?25h'
+
 echo "========== Maven install =========="
 mvn clean install -DskipTests
 
@@ -15,10 +163,46 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo "========== Cloud 启动顺序：gateway → auth → system → 其余 =========="
-echo "请使用项目根目录的独立脚本启动各服务（每个服务开一个终端）："
-echo "  ./run-gateway.sh"
-echo "  ./run-auth.sh"
-echo "  ./run-system.sh"
-echo "其余可选：./run-gen.sh  ./run-job.sh  ./run-file.sh  ./run-monitor.sh（脚本已生成时才存在）"
-echo "网关端口：{{GATEWAY_PORT}}"
+launch_new_terminal() {
+    local name="$1"
+    local script="$2"
+    if command -v gnome-terminal >/dev/null 2>&1; then
+        gnome-terminal --title="RuoYi-${name}" -- bash -c "export SKIP_MVN_INSTALL=1; \"$script\"; exec bash" &
+    elif command -v konsole >/dev/null 2>&1; then
+        konsole --title "RuoYi-${name}" -e bash -c "export SKIP_MVN_INSTALL=1; \"$script\"; exec bash" &
+    elif command -v xterm >/dev/null 2>&1; then
+        xterm -T "RuoYi-${name}" -e bash -c "export SKIP_MVN_INSTALL=1; \"$script\"; exec bash" &
+    elif command -v osascript >/dev/null 2>&1; then
+        osascript -e "tell application \"Terminal\" to do script \"export SKIP_MVN_INSTALL=1; '$script'\""
+    else
+        mkdir -p "$APP_HOME/logs"
+        nohup env SKIP_MVN_INSTALL=1 bash "$script" > "$APP_HOME/logs/${name}.log" 2>&1 &
+        echo "[INFO] 未找到图形终端，已后台启动 ${name}，日志：$APP_HOME/logs/${name}.log"
+    fi
+}
+
+maybe_start() {
+    local selected="$1"
+    local name="$2"
+    local script="$3"
+    if [ "$selected" != "1" ]; then
+        return
+    fi
+    if [ ! -f "$script" ]; then
+        echo "[WARN] skip ${name}: $(basename "$script") 不存在"
+        return
+    fi
+    echo "[INFO] 启动 ${name}"
+    launch_new_terminal "$name" "$script"
+    sleep 5
+}
+
+export SKIP_MVN_INSTALL=1
+
+echo "========== Cloud 启动顺序（官方在前，自定义在后）=========="
+for i in "${!NAMES[@]}"; do
+    s="${NAMES[$i]}"
+    maybe_start "${CHECKED[$i]}" "$s" "$APP_HOME/run-${s}.sh"
+done
+
+echo "[OK] 启动命令已发出"

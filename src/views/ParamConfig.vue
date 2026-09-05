@@ -1084,7 +1084,7 @@ function generateRandomSecret(): string {
               </div>
               <div v-if="errors.cloud_ports" class="detail-tip" style="color: var(--el-color-danger)">{{ errors.cloud_ports }}</div>
               <div class="detail-tip muted">
-                没填新数据库名：业务库 ry-cloud、配置库 ry-config 都不改。填了：业务库用该名，配置库用 `{库名}-config`。业务库名在「安全 &amp; SQL」里。裁剪会删目录、根 pom、Nacos 条目、网关路由、相关菜单。
+                没填新数据库名：业务库 ry-cloud、配置库 ry-config 都不改。填了：业务库用该名，配置库用 `{库名}-config`。业务库名在「安全 &amp; SQL」里。裁剪会删目录、根 pom、Nacos 条目、网关路由、相关菜单。开发时双击 run.bat 后用方向键选择、空格勾选、回车启动；默认全选（与下方「启动脚本」生成的 jar start/stop 不是同一套）。菜单按项目根 `run-*.bat` / `run-*.sh` 自动识别，排除 `run-ui`；新模块复制一份 `run-xxx.bat`（改模块路径）再跑根脚本即可。
               </div>
             </div>
           </el-collapse-item>
@@ -1153,7 +1153,7 @@ function generateRandomSecret(): string {
                   <span class="switch-item__label">引入 OSS</span>
                   <el-switch v-model="form.enable_oss" @change="onSwitchChange" />
                 </div>
-                <div class="switch-item__hint muted">注入 SDK + 配置类 + 独立上传接口 /common/oss/upload</div>
+                <div class="switch-item__hint muted">注入 SDK + 配置类 + 独立上传接口（分离版 /common/oss/upload，Cloud /system/oss/upload）</div>
               </div>
             </div>
             <div v-if="form.enable_oss" class="detail-panel">
@@ -1183,7 +1183,7 @@ function generateRandomSecret(): string {
                 </el-form-item>
               </div>
               <div class="detail-tip muted">
-                将新增独立的 /common/oss/upload 上传接口，不改动若依原有本地上传逻辑。
+                将新增独立上传接口（分离版 /common/oss/upload，Cloud /system/oss/upload），不改动若依原有本地上传逻辑。
               </div>
             </div>
           </el-collapse-item>

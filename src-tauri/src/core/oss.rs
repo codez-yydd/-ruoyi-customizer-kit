@@ -4,7 +4,8 @@
 // - 幂等：依赖/配置类/Controller 已存在则跳过
 // - 依赖加到公共模块（common > framework > admin）
 // - 配置类放 admin 模块 framework/config 包下
-// - OssController 放 admin 模块 web/controller/common 包下，新增独立 /common/oss/upload 接口
+// - OssController：分离版放 admin web/controller/common，接口 POST /common/oss/upload；
+//   Cloud 放 system/controller，接口 POST /system/oss/upload（走网关已有 /system/**，需登录）
 // - yml 配置追加到 application.yaml（base），含中文注释
 //
 // 支持厂商：aliyun（阿里云 OSS）/ tencent（腾讯云 COS）/ minio / qiniu（七牛云）
@@ -204,7 +205,12 @@ fn add_oss_classes(
         std::fs::write(&ctrl_file, render_oss_controller(params, cloud))
             .map_err(|e| format!("写入 OssController.java 失败：{e}"))?;
         created += 1;
-        log("已生成 OssController.java（/common/oss/upload）");
+        let upload_path = if cloud {
+            "/system/oss/upload"
+        } else {
+            "/common/oss/upload"
+        };
+        log(&format!("已生成 OssController.java（{upload_path}）"));
     }
 
     Ok(created)
@@ -294,8 +300,8 @@ fn render_oss_client(params: &CustomizeParams, boot_major: Option<u32>) -> Strin
     )
 }
 
-/// 渲染 OssController.java（新增独立 /common/oss/upload 接口，不改若依原 CommonController）
-/// Vue 成功路径不变；Cloud 用官方 `system.controller` + `common.core.web.domain.AjaxResult`。
+/// 渲染 OssController.java（独立上传接口，不改若依原 CommonController / Cloud `/file/upload`）。
+/// 分离版：POST /common/oss/upload；Cloud：POST /system/oss/upload（网关 `/system/**` → system，需登录）。
 fn render_oss_controller(params: &CustomizeParams, cloud: bool) -> String {
     let pkg = &params.new_package;
     let (java_pkg, oss_import, ajax_import) = if cloud {
@@ -311,8 +317,18 @@ fn render_oss_controller(params: &CustomizeParams, cloud: bool) -> String {
             String::new(),
         )
     };
+    let (extra_import, class_ann, mapping, api_path) = if cloud {
+        (
+            "import org.springframework.web.bind.annotation.RequestMapping;\n",
+            "@RequestMapping(\"/system/oss\")\n",
+            "/upload",
+            "/system/oss/upload",
+        )
+    } else {
+        ("", "", "/common/oss/upload", "/common/oss/upload")
+    };
     format!(
-        "package {java_pkg};\n\nimport {oss_import};\n{ajax_import}import org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.multipart.MultipartFile;\n\nimport java.io.InputStream;\nimport java.util.UUID;\n\n/**\n * OSS 文件上传接口（独立于若依默认本地上传的 CommonController）。\n * 接口：POST /common/oss/upload\n */\n@RestController\npublic class OssController\n{{\n    @Autowired\n    private OssClient ossClient;\n\n    /**\n     * 上传文件到 OSS。\n     * 文件名使用 UUID + 原扩展名，避免冲突。\n     */\n    @PostMapping(\"/common/oss/upload\")\n    public AjaxResult upload(@RequestParam(\"file\") MultipartFile file) throws Exception\n    {{\n        if (file.isEmpty()) {{\n            return AjaxResult.error(\"上传文件不能为空\");\n        }}\n        String original = file.getOriginalFilename();\n        String ext = (original != null && original.contains(\".\"))\n                ? original.substring(original.lastIndexOf(\".\")) : \"\";\n        String objectKey = \"upload/\" + UUID.randomUUID().toString().replace(\"-\", \"\") + ext;\n        try (InputStream in = file.getInputStream()) {{\n            String url = ossClient.upload(objectKey, in);\n            AjaxResult ok = AjaxResult.success();\n            ok.put(\"url\", url);\n            ok.put(\"fileName\", objectKey);\n            return ok;\n        }}\n    }}\n}}\n"
+        "package {java_pkg};\n\nimport {oss_import};\n{ajax_import}import org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.web.bind.annotation.PostMapping;\n{extra_import}import org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.multipart.MultipartFile;\n\nimport java.io.InputStream;\nimport java.util.UUID;\n\n/**\n * OSS 文件上传接口（独立于若依默认本地上传的 CommonController）。\n * 接口：POST {api_path}\n */\n@RestController\n{class_ann}public class OssController\n{{\n    @Autowired\n    private OssClient ossClient;\n\n    /**\n     * 上传文件到 OSS。\n     * 文件名使用 UUID + 原扩展名，避免冲突。\n     */\n    @PostMapping(\"{mapping}\")\n    public AjaxResult upload(@RequestParam(\"file\") MultipartFile file) throws Exception\n    {{\n        if (file.isEmpty()) {{\n            return AjaxResult.error(\"上传文件不能为空\");\n        }}\n        String original = file.getOriginalFilename();\n        String ext = (original != null && original.contains(\".\"))\n                ? original.substring(original.lastIndexOf(\".\")) : \"\";\n        String objectKey = \"upload/\" + UUID.randomUUID().toString().replace(\"-\", \"\") + ext;\n        try (InputStream in = file.getInputStream()) {{\n            String url = ossClient.upload(objectKey, in);\n            AjaxResult ok = AjaxResult.success();\n            ok.put(\"url\", url);\n            ok.put(\"fileName\", objectKey);\n            return ok;\n        }}\n    }}\n}}\n"
     )
 }
 
@@ -491,5 +507,42 @@ mod tests {
         // major=2 即触发 javax 分支（detect_boot_major_version 返回 Some(2)）
         let src = render_oss_client(&params, Some(2));
         assert!(src.contains("@javax.annotation.PostConstruct"));
+    }
+
+    /// 分离版 OssController 仍走 /common/oss/upload（不经 Cloud 网关）
+    #[test]
+    fn render_oss_controller_vue_uses_common_path() {
+        let mut params = CustomizeParams::default();
+        params.new_package = "com.example".into();
+        let src = render_oss_controller(&params, false);
+        assert!(
+            src.contains("/common/oss/upload"),
+            "分离版应含 /common/oss/upload：\n{src}"
+        );
+        assert!(
+            !src.contains("/system/oss/upload"),
+            "分离版不应含 /system/oss/upload：\n{src}"
+        );
+        assert!(src.contains("package com.example.web.controller.common"));
+    }
+
+    /// Cloud OssController 走 /system/oss/upload，以便网关 /system/** 转发
+    #[test]
+    fn render_oss_controller_cloud_uses_system_path() {
+        let mut params = CustomizeParams::default();
+        params.new_package = "com.example".into();
+        let src = render_oss_controller(&params, true);
+        assert!(
+            src.contains("/system/oss/upload"),
+            "Cloud 应含 /system/oss/upload：\n{src}"
+        );
+        assert!(
+            !src.contains("/common/oss/upload"),
+            "Cloud 不应含 /common/oss/upload：\n{src}"
+        );
+        assert!(
+            src.contains("package com.example.system.controller"),
+            "Cloud package 应为 {{pkg}}.system.controller：\n{src}"
+        );
     }
 }

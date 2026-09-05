@@ -2,7 +2,7 @@
 //
 // 覆盖：
 // 1. 四种 OSS 厂商依赖注入 + 配置类生成（验证 SDK import/类名/版本正确）
-// 2. OssController 生成（含 /common/oss/upload）
+// 2. OssController 生成（分离版 /common/oss/upload；Cloud /system/oss/upload）
 // 3. yml OSS 配置块写入（含注释）
 // 4. JWT 随机 secret 生成（长度足够，每次不同）
 // 5. JWT yml secret/expireTime 替换

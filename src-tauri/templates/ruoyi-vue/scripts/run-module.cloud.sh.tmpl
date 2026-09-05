@@ -9,16 +9,20 @@ export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8 -Dstdou
 APP_HOME="$(cd "$(dirname "$0")" && pwd)"
 
 echo "========== 请先确认 Nacos 可达：http://127.0.0.1:8848/nacos/ =========="
-echo "========== Maven install {{SERVICE_NAME}} 及依赖模块 =========="
 cd "$APP_HOME" || {
     echo "cd APP_HOME failed!"
     exit 1
 }
-mvn clean install -DskipTests -pl "{{SERVICE_DIR}}" -am
 
-if [ $? -ne 0 ]; then
-    echo "Maven install failed!"
-    exit 1
+if [ "$SKIP_MVN_INSTALL" = "1" ]; then
+    echo "========== 跳过 Maven install（SKIP_MVN_INSTALL=1）=========="
+else
+    echo "========== Maven install {{SERVICE_NAME}} 及依赖模块 =========="
+    mvn install -DskipTests -pl "{{SERVICE_DIR}}" -am
+    if [ $? -ne 0 ]; then
+        echo "Maven install failed!"
+        exit 1
+    fi
 fi
 
 cd "$APP_HOME/{{SERVICE_DIR}}" || {

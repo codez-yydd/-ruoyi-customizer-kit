@@ -6,7 +6,6 @@ REM NOTE: keep this file ASCII-only.
 set JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8
 
 echo ========== Check Nacos http://127.0.0.1:8848/nacos/ ==========
-echo ========== Maven install {{SERVICE_NAME}} and dependencies ==========
 
 cd /d "%~dp0"
 if errorlevel 1 (
@@ -15,11 +14,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
-call mvn clean install -DskipTests -pl "{{SERVICE_DIR}}" -am
-if errorlevel 1 (
-    echo [ERROR] Maven install failed!
-    pause
-    exit /b 1
+if "%SKIP_MVN_INSTALL%"=="1" (
+    echo ========== Skip Maven install (SKIP_MVN_INSTALL=1) ==========
+) else (
+    echo ========== Maven install {{SERVICE_NAME}} and dependencies ==========
+    call mvn install -DskipTests -pl "{{SERVICE_DIR}}" -am
+    if errorlevel 1 (
+        echo [ERROR] Maven install failed!
+        pause
+        exit /b 1
+    )
 )
 
 cd /d "%~dp0{{SERVICE_DIR_WIN}}"

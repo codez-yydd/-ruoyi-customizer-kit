@@ -824,9 +824,9 @@ pub fn plan(
 
     // 开发脚本生成（始终，输出到 output_dir 根目录）：
     // Vue/单体：run.sh / run.bat 一键 spring-boot:run
-    // Cloud：根 run.sh / run.bat 负责 install + 提示；各可运行模块另生成 run-<suffix>.sh/.bat
+    // Cloud：根 run.sh / run.bat / run.ps1 方向键勾选菜单（排除 run-ui）；各可运行模块另生成 run-<suffix>.sh/.bat
     let (dev_script_name, dev_created_files) = if is_cloud {
-        let mut files = vec!["run.sh".into(), "run.bat".into()];
+        let mut files = vec!["run.sh".into(), "run.bat".into(), "run.ps1".into()];
         let removed: Vec<String> = params
             .remove_modules
             .iter()
@@ -841,7 +841,7 @@ pub fn plan(
             files.push(format!("run-{suffix}.bat"));
         }
         (
-            "生成开发脚本（根 run.sh/run.bat 以及各模块 run-<suffix>.sh/.bat，按模块端口）".into(),
+            "生成开发脚本（根 run.sh/run.bat/run.ps1 方向键勾选菜单，排除 run-ui；以及各模块 run-<suffix>.sh/.bat，按模块端口）".into(),
             files,
         )
     } else {
