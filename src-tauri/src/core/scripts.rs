@@ -12,7 +12,8 @@
 //   - start.bat / stop.bat（Windows）
 //
 // 生成清单（开发脚本，输出到根目录）：
-//   - run.sh / run.bat（后端：mvn install + spring-boot:run 一键启动）
+//   - run.sh / run.bat（后端：Vue/单体为一键 spring-boot:run；Cloud 为 mvn install + 提示）
+//   - Cloud 另按实际模块生成 run-<suffix>.sh / run-<suffix>.bat（gateway/auth/system/…）
 //   - run-ui.sh / run-ui.bat（前端：npm install + npm run dev 一键启动）
 //
 // 生成清单（一键打包脚本，输出到根目录）：
@@ -128,6 +129,9 @@ pub fn generate_scripts(
 /// {output_dir}/
 ///   run.sh
 ///   run.bat
+///   run-gateway.sh / run-gateway.bat   （仅 Cloud，模块存在且未裁剪时）
+///   run-auth.sh / run-auth.bat
+///   …
 /// ```
 pub fn generate_dev_scripts(
     output_dir: &Path,
@@ -186,7 +190,101 @@ pub fn generate_dev_scripts(
         log(&format!("已生成开发脚本：{}", out_path.display()));
     }
 
+    if is_cloud {
+        generate_cloud_module_run_scripts(
+            output_dir,
+            params,
+            &template_dir,
+            log,
+            &mut created,
+            &mut summary,
+        )?;
+    }
+
     Ok(ScriptsOutcome { created_files: created, summary })
+}
+
+/// Cloud：按磁盘上实际存在的可运行模块，在项目根生成 `run-<suffix>.sh/.bat`。
+///
+/// 规则：
+/// - 后缀来自 `cloud_runnable_leaf_suffixes`（gateway/auth/system/gen/job/file/monitor）
+/// - `params.remove_modules` 命中（trim + 小写）则跳过
+/// - `find_module_by_leaf_suffix` 找不到则跳过（模块不存在或仅为 api）
+/// - 目标已存在则跳过，不覆盖
+fn generate_cloud_module_run_scripts(
+    output_dir: &Path,
+    params: &CustomizeParams,
+    template_dir: &Path,
+    log: &dyn Fn(&str),
+    created: &mut usize,
+    summary: &mut Vec<String>,
+) -> Result<(), String> {
+    let sh_tmpl = template_dir.join("run-module.cloud.sh.tmpl");
+    let bat_tmpl = template_dir.join("run-module.cloud.bat.tmpl");
+    if !sh_tmpl.is_file() || !bat_tmpl.is_file() {
+        log("Cloud 模块启动模板不存在，跳过 run-<suffix> 脚本");
+        return Ok(());
+    }
+
+    let dirs = collect_pom_rel_dirs(output_dir);
+    let removed: Vec<String> = params
+        .remove_modules
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for suffix in crate::core::detector::cloud_runnable_leaf_suffixes() {
+        if removed.iter().any(|r| r == suffix) {
+            log(&format!("模块 {suffix} 已裁剪，跳过 run-{suffix} 脚本"));
+            continue;
+        }
+        let Some(service_dir) =
+            crate::core::detector::find_module_by_leaf_suffix(output_dir, &dirs, suffix)
+        else {
+            log(&format!("未找到 {suffix} 模块，跳过 run-{suffix} 脚本"));
+            continue;
+        };
+
+        let service_dir_win = service_dir.replace('/', "\\");
+        let port = crate::core::cloud_ports::cloud_port_of(params, suffix)
+            .unwrap_or(params.server_port);
+        let mvn_extra = format!(" -Dspring-boot.run.arguments=--server.port={port}");
+
+        let mut placeholders = build_placeholders(params);
+        placeholders.insert("{{SERVICE_NAME}}".into(), suffix.to_string());
+        placeholders.insert("{{SERVICE_DIR}}".into(), service_dir);
+        placeholders.insert("{{SERVICE_DIR_WIN}}".into(), service_dir_win);
+        placeholders.insert("{{MVN_EXTRA_ARGS}}".into(), mvn_extra);
+
+        let targets = [
+            (&sh_tmpl, format!("run-{suffix}.sh"), true),
+            (&bat_tmpl, format!("run-{suffix}.bat"), false),
+        ];
+        for (tmpl_path, out_name, is_shell) in targets {
+            let out_path = output_dir.join(&out_name);
+            if out_path.exists() {
+                log(&format!("{} 已存在，跳过", out_path.display()));
+                continue;
+            }
+            let content = std::fs::read_to_string(tmpl_path)
+                .map_err(|e| format!("读取 {} 失败：{e}", tmpl_path.display()))?;
+            let new_content = replace_placeholders(&content, &placeholders);
+            std::fs::write(&out_path, &new_content)
+                .map_err(|e| format!("写入 {} 失败：{e}", out_path.display()))?;
+            if is_shell {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+            *created += 1;
+            summary.push(out_name);
+            log(&format!("已生成开发脚本：{}", out_path.display()));
+        }
+    }
+    Ok(())
 }
 
 /// 生成前端开发脚本（run-ui.sh / run.bat）到 output_dir 根目录（非 scripts/ 子目录）。
@@ -553,6 +651,22 @@ fn build_placeholders(params: &CustomizeParams) -> HashMap<String, String> {
     map.insert("{{PROJECT_NAME}}".into(), params.new_project_name.clone());
     map.insert("{{MODULE_PREFIX}}".into(), params.new_module_prefix.clone());
     map.insert("{{SERVER_PORT}}".into(), params.server_port.to_string());
+    let ports = crate::core::cloud_ports::resolve_cloud_module_ports(params);
+    for (placeholder, suffix) in [
+        ("{{GATEWAY_PORT}}", "gateway"),
+        ("{{AUTH_PORT}}", "auth"),
+        ("{{SYSTEM_PORT}}", "system"),
+        ("{{GEN_PORT}}", "gen"),
+        ("{{JOB_PORT}}", "job"),
+        ("{{FILE_PORT}}", "file"),
+        ("{{MONITOR_PORT}}", "monitor"),
+    ] {
+        let value = ports
+            .get(suffix)
+            .map(|p| p.to_string())
+            .unwrap_or_default();
+        map.insert(placeholder.into(), value);
+    }
     map
 }
 
@@ -594,6 +708,13 @@ mod tests {
         assert_eq!(map.get("{{MODULE_PREFIX}}"), Some(&"myapp".to_string()));
         assert_eq!(map.get("{{SERVER_PORT}}"), Some(&"8080".to_string()));
         assert_eq!(map.get("{{PROJECT_NAME}}"), Some(&"myapp".to_string()));
+        assert_eq!(map.get("{{GATEWAY_PORT}}"), Some(&"8080".to_string()));
+        assert_eq!(map.get("{{AUTH_PORT}}"), Some(&"8081".to_string()));
+        assert_eq!(map.get("{{SYSTEM_PORT}}"), Some(&"8082".to_string()));
+        assert_eq!(map.get("{{GEN_PORT}}"), Some(&"8083".to_string()));
+        assert_eq!(map.get("{{JOB_PORT}}"), Some(&"8084".to_string()));
+        assert_eq!(map.get("{{FILE_PORT}}"), Some(&"8085".to_string()));
+        assert_eq!(map.get("{{MONITOR_PORT}}"), Some(&"8086".to_string()));
     }
 
     // ---------- finalName 注入 ----------
@@ -693,6 +814,229 @@ mod tests {
         assert_eq!(first.created_files, 2);
         let second = generate_dev_scripts(tmp.path(), &p, false, &|_| {}).unwrap();
         assert_eq!(second.created_files, 0, "已存在应跳过");
+    }
+
+    fn write_cloud_runnable_poms(root: &std::path::Path) {
+        for rel in [
+            "myapp-gateway",
+            "myapp-auth",
+            "myapp-modules/myapp-system",
+            "myapp-modules/myapp-job",
+        ] {
+            let dir = root.join(rel);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("pom.xml"), "<project/>\n").unwrap();
+        }
+    }
+
+    #[test]
+    fn generate_dev_scripts_cloud_writes_per_module_run_scripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_cloud_runnable_poms(tmp.path());
+        let p = sample_params();
+        let outcome = generate_dev_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
+        assert_eq!(
+            outcome.created_files, 10,
+            "根 run.sh/bat + gateway/auth/system/job 各一对：{:?}",
+            outcome.summary
+        );
+
+        assert!(tmp.path().join("run.sh").is_file());
+        assert!(tmp.path().join("run.bat").is_file());
+        for suffix in ["gateway", "auth", "system", "job"] {
+            assert!(
+                tmp.path().join(format!("run-{suffix}.sh")).is_file(),
+                "应生成 run-{suffix}.sh"
+            );
+            assert!(
+                tmp.path().join(format!("run-{suffix}.bat")).is_file(),
+                "应生成 run-{suffix}.bat"
+            );
+        }
+        for suffix in ["gen", "file", "monitor"] {
+            assert!(
+                !tmp.path().join(format!("run-{suffix}.sh")).exists(),
+                "目录不存在不应生成 run-{suffix}.sh"
+            );
+            assert!(
+                !tmp.path().join(format!("run-{suffix}.bat")).exists(),
+                "目录不存在不应生成 run-{suffix}.bat"
+            );
+        }
+
+        let gw_sh = std::fs::read_to_string(tmp.path().join("run-gateway.sh")).unwrap();
+        assert!(gw_sh.contains("cd \"$APP_HOME/myapp-gateway\"") || gw_sh.contains("myapp-gateway"));
+        assert!(gw_sh.contains("cd "), "run-gateway.sh 应 cd 到模块目录");
+        assert!(
+            gw_sh.contains("mvn clean install -DskipTests"),
+            "gateway sh 启动前应 install 本模块及依赖：{gw_sh}"
+        );
+        assert!(
+            gw_sh.contains("-pl \"myapp-gateway\""),
+            "gateway sh 应 -pl 当前服务：{gw_sh}"
+        );
+        assert!(gw_sh.contains("-am"), "gateway sh 应带 -am：{gw_sh}");
+        assert!(gw_sh.contains("spring-boot:run"), "gateway sh 仍应 spring-boot:run");
+        assert!(
+            gw_sh.contains("--server.port=8080"),
+            "gateway 应带端口参数：{gw_sh}"
+        );
+        let gw_install_line = gw_sh
+            .lines()
+            .find(|l| l.contains("mvn clean install"))
+            .unwrap_or("");
+        assert!(
+            !gw_install_line.contains("--server.port="),
+            "端口参数只加在 spring-boot:run，不要加到 install：{gw_install_line}"
+        );
+        assert!(!gw_sh.contains("{{"), "不应残留占位符");
+
+        let sys_sh = std::fs::read_to_string(tmp.path().join("run-system.sh")).unwrap();
+        assert!(
+            sys_sh.contains("myapp-modules/myapp-system"),
+            "system 应使用嵌套 POSIX 路径：{sys_sh}"
+        );
+        assert!(
+            sys_sh.contains("mvn clean install -DskipTests"),
+            "system sh 启动前应 install：{sys_sh}"
+        );
+        assert!(
+            sys_sh.contains("-pl \"myapp-modules/myapp-system\""),
+            "system sh 应 -pl 嵌套路径：{sys_sh}"
+        );
+        assert!(sys_sh.contains("-am"), "system sh 应带 -am：{sys_sh}");
+        assert!(sys_sh.contains("spring-boot:run"), "system sh 仍应 spring-boot:run");
+        assert!(
+            sys_sh.contains("--server.port=8082"),
+            "system 应按自动递增带端口：{sys_sh}"
+        );
+        assert!(!sys_sh.contains("{{"));
+
+        let gw_bat = std::fs::read_to_string(tmp.path().join("run-gateway.bat")).unwrap();
+        assert!(
+            gw_bat.contains("mvn clean install -DskipTests"),
+            "gateway bat 启动前应 install：{gw_bat}"
+        );
+        assert!(
+            gw_bat.contains("-pl \"myapp-gateway\""),
+            "gateway bat 应 -pl 正斜杠路径：{gw_bat}"
+        );
+        assert!(gw_bat.contains("-am"), "gateway bat 应带 -am：{gw_bat}");
+        assert!(gw_bat.contains("spring-boot:run"), "gateway bat 仍应 spring-boot:run");
+        assert!(
+            gw_bat.contains("--server.port=8080"),
+            "gateway bat 应带端口参数：{gw_bat}"
+        );
+        let gw_bat_install = gw_bat
+            .lines()
+            .find(|l| l.contains("mvn clean install"))
+            .unwrap_or("");
+        assert!(
+            !gw_bat_install.contains("--server.port="),
+            "端口参数只加在 spring-boot:run：{gw_bat_install}"
+        );
+
+        let sys_bat = std::fs::read_to_string(tmp.path().join("run-system.bat")).unwrap();
+        assert!(
+            sys_bat.contains("myapp-modules\\myapp-system"),
+            "system bat 应使用反斜杠路径：{sys_bat}"
+        );
+        assert!(
+            sys_bat.contains("mvn clean install -DskipTests"),
+            "system bat 启动前应 install：{sys_bat}"
+        );
+        assert!(
+            sys_bat.contains("-pl \"myapp-modules/myapp-system\""),
+            "system bat 应 -pl 正斜杠路径：{sys_bat}"
+        );
+        assert!(sys_bat.contains("-am"), "system bat 应带 -am：{sys_bat}");
+        assert!(sys_bat.contains("spring-boot:run"), "system bat 仍应 spring-boot:run");
+        assert!(
+            sys_bat.contains("--server.port=8082"),
+            "system bat 应按自动递增带端口：{sys_bat}"
+        );
+        assert!(!sys_bat.contains("{{"));
+
+        let run_sh = std::fs::read_to_string(tmp.path().join("run.sh")).unwrap();
+        assert!(
+            run_sh.contains("run-gateway"),
+            "根 run.sh 应提示使用独立脚本：{run_sh}"
+        );
+        assert!(!run_sh.contains("{{"));
+
+        for name in [
+            "run.bat",
+            "run-gateway.bat",
+            "run-auth.bat",
+            "run-system.bat",
+            "run-job.bat",
+        ] {
+            let bat = std::fs::read_to_string(tmp.path().join(name)).unwrap();
+            assert!(
+                bat.is_ascii(),
+                "{name} 必须纯 ASCII：UTF-8 中文在中文 Windows 的 cmd 下会按 GBK 误解析"
+            );
+            assert!(!bat.contains("{{"), "{name} 不应残留占位符");
+        }
+    }
+
+    #[test]
+    fn generate_dev_scripts_cloud_skips_removed_modules() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_cloud_runnable_poms(tmp.path());
+        let mut p = sample_params();
+        p.remove_modules = vec!["job".into()];
+        let outcome = generate_dev_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
+        assert!(
+            !outcome.summary.iter().any(|s| s.contains("run-job")),
+            "裁剪 job 后不应计入 run-job：{:?}",
+            outcome.summary
+        );
+        assert!(!tmp.path().join("run-job.sh").exists());
+        assert!(!tmp.path().join("run-job.bat").exists());
+        assert!(tmp.path().join("run-gateway.sh").is_file());
+        assert!(tmp.path().join("run-system.sh").is_file());
+    }
+
+    #[test]
+    fn generate_scripts_cloud_uses_per_module_ports() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = sample_params();
+        let outcome = generate_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
+        assert_eq!(outcome.created_files, 4, "应生成 Cloud start/stop sh+bat");
+
+        let start_sh = std::fs::read_to_string(tmp.path().join("scripts/start.sh")).unwrap();
+        assert!(start_sh.contains("\"{{GATEWAY_PORT}}\"") == false);
+        assert!(
+            start_sh.contains("\"8080\"") && start_sh.contains("\"8081\"") && start_sh.contains("\"8082\""),
+            "start.sh 应按模块传入端口：{start_sh}"
+        );
+        assert!(!start_sh.contains("{{"));
+
+        let stop_sh = std::fs::read_to_string(tmp.path().join("scripts/stop.sh")).unwrap();
+        assert!(stop_sh.contains("8080") && stop_sh.contains("8081") && stop_sh.contains("8086"));
+        assert!(!stop_sh.contains("{{"));
+
+        let start_bat = std::fs::read_to_string(tmp.path().join("scripts/start.bat")).unwrap();
+        assert!(start_bat.is_ascii(), "start.cloud.bat 必须纯 ASCII");
+        assert!(start_bat.contains("8081"), "bat 应传入 auth 端口：{start_bat}");
+        assert!(!start_bat.contains("{{"));
+
+        let stop_bat = std::fs::read_to_string(tmp.path().join("scripts/stop.bat")).unwrap();
+        assert!(stop_bat.is_ascii(), "stop.cloud.bat 必须纯 ASCII");
+        assert!(stop_bat.contains("8080") && stop_bat.contains("8086"));
+        assert!(!stop_bat.contains("{{"));
+    }
+
+    #[test]
+    fn generate_dev_scripts_cloud_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_cloud_runnable_poms(tmp.path());
+        let p = sample_params();
+        let first = generate_dev_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
+        assert!(first.created_files > 0);
+        let second = generate_dev_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
+        assert_eq!(second.created_files, 0, "Cloud 第二次应全部跳过");
     }
 
     // ---------- 前端开发脚本 ----------

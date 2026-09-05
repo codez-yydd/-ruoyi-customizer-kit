@@ -142,7 +142,7 @@ async function doPullOfficial() {
 </script>
 
 <template>
-  <div class="home">
+  <div class="home rf-page">
     <div class="page-header">
       <div class="page-header__icon">
         <el-icon :size="20"><HomeFilled /></el-icon>

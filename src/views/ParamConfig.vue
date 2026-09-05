@@ -139,8 +139,19 @@ const defaults = (): CustomizeParams => ({
   // SQL 定制
   enable_sql_customize: false,
   db_name: '',
+  db_host: '127.0.0.1',
+  db_port: 3306,
+  db_username: 'root',
+  db_password: '',
   config_db_name: '',
   remove_modules: [] as string[],
+  enable_cloud_custom_ports: false,
+  cloud_port_auth: 0,
+  cloud_port_system: 0,
+  cloud_port_gen: 0,
+  cloud_port_job: 0,
+  cloud_port_file: 0,
+  cloud_port_monitor: 0,
   db_type: 'mysql',
   admin_username: '',
   admin_nickname: '',
@@ -186,7 +197,20 @@ const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.va
 form.ui_template = normalizeUiTemplateKey(form.ui_template)
 if (!form.db_type) form.db_type = 'mysql'
 if (!form.config_db_name) form.config_db_name = ''
+if (!form.db_host) form.db_host = '127.0.0.1'
+if (typeof form.db_port !== 'number' || form.db_port === 0) {
+  form.db_port = form.db_type === 'postgresql' ? 5432 : 3306
+}
+if (!form.db_username) form.db_username = 'root'
+if (form.db_password == null) form.db_password = ''
 if (!Array.isArray(form.remove_modules)) form.remove_modules = []
+if (form.enable_cloud_custom_ports == null) form.enable_cloud_custom_ports = false
+if (typeof form.cloud_port_auth !== 'number') form.cloud_port_auth = 0
+if (typeof form.cloud_port_system !== 'number') form.cloud_port_system = 0
+if (typeof form.cloud_port_gen !== 'number') form.cloud_port_gen = 0
+if (typeof form.cloud_port_job !== 'number') form.cloud_port_job = 0
+if (typeof form.cloud_port_file !== 'number') form.cloud_port_file = 0
+if (typeof form.cloud_port_monitor !== 'number') form.cloud_port_monitor = 0
 
 // 识别结果变化时重置原值
 watch(
@@ -202,6 +226,59 @@ watch(
 // 合法性校验（前端镜像 Rust 端规则）
 const pkgRe = /^[a-zA-Z_$][\w$]*(\.[a-zA-Z_$][\w$]*)+$/
 const artifactRe = /^[a-zA-Z][\w\-.]*$/
+
+type CloudPortKey =
+  | 'cloud_port_auth'
+  | 'cloud_port_system'
+  | 'cloud_port_gen'
+  | 'cloud_port_job'
+  | 'cloud_port_file'
+  | 'cloud_port_monitor'
+
+const CLOUD_MODULE_ORDER: Array<{ suffix: string; label: string; key?: CloudPortKey }> = [
+  { suffix: 'gateway', label: 'gateway 网关' },
+  { suffix: 'auth', label: 'auth 认证', key: 'cloud_port_auth' },
+  { suffix: 'system', label: 'system 系统', key: 'cloud_port_system' },
+  { suffix: 'gen', label: 'gen 代码生成', key: 'cloud_port_gen' },
+  { suffix: 'job', label: 'job 定时任务', key: 'cloud_port_job' },
+  { suffix: 'file', label: 'file 文件', key: 'cloud_port_file' },
+  { suffix: 'monitor', label: 'monitor 监控', key: 'cloud_port_monitor' }
+]
+
+function isCloudModuleRemoved(suffix: string): boolean {
+  return form.remove_modules.some((m) => m.trim().toLowerCase() === suffix)
+}
+
+/** 与 Rust `resolve_cloud_module_ports` 一致：裁剪不占号，自定义 >0 覆盖，0 回退自动 */
+const cloudPortPreview = computed(() => {
+  const rows: Array<{ suffix: string; label: string; port: number; auto: boolean }> = []
+  let idx = 0
+  for (const mod of CLOUD_MODULE_ORDER) {
+    if (isCloudModuleRemoved(mod.suffix)) continue
+    let port = form.server_port + idx
+    let auto = true
+    if (mod.suffix === 'gateway') {
+      port = form.server_port
+    } else if (form.enable_cloud_custom_ports && mod.key) {
+      const custom = form[mod.key]
+      if (custom > 0) {
+        port = custom
+        auto = false
+      }
+    }
+    rows.push({ suffix: mod.suffix, label: mod.label, port, auto })
+    idx += 1
+  }
+  return rows
+})
+
+const cloudCustomPortFields = computed(() =>
+  CLOUD_MODULE_ORDER.filter(
+    (m): m is { suffix: string; label: string; key: CloudPortKey } =>
+      Boolean(m.key) && !isCloudModuleRemoved(m.suffix)
+  )
+)
+
 const errors = computed(() => {
   const e: Record<string, string> = {}
   if (!form.new_package) {
@@ -225,9 +302,35 @@ const errors = computed(() => {
     e.output_dir = '请选择输出目录'
   }
   // 部署相关校验（启用 Nginx / 启动脚本 / 替换后台 UI 时都需要合法端口）
-  if (form.enable_nginx_config || form.enable_startup_scripts || form.enable_replace_ui) {
+  // Cloud 网关端口始终需要合法（即使没开 Nginx/启动脚本）
+  if (isCloud.value || form.enable_nginx_config || form.enable_startup_scripts || form.enable_replace_ui) {
     if (!form.server_port || form.server_port < 1 || form.server_port > 65535) {
       e.server_port = '端口须在 1-65535 之间'
+    }
+  }
+  if (isCloud.value) {
+    const customFields: Array<[keyof CustomizeParams, string]> = [
+      ['cloud_port_auth', 'auth'],
+      ['cloud_port_system', 'system'],
+      ['cloud_port_gen', 'gen'],
+      ['cloud_port_job', 'job'],
+      ['cloud_port_file', 'file'],
+      ['cloud_port_monitor', 'monitor']
+    ]
+    for (const [key, label] of customFields) {
+      const v = form[key] as number
+      if (v && (v < 1 || v > 65535)) {
+        e[key] = `${label} 端口须在 1-65535 之间，或填 0 表示自动`
+      }
+    }
+    const seen = new Map<number, string>()
+    for (const row of cloudPortPreview.value) {
+      const prev = seen.get(row.port)
+      if (prev) {
+        e.cloud_ports = `模块端口重复：${prev} 与 ${row.suffix} 均为 ${row.port}`
+      } else {
+        seen.set(row.port, row.suffix)
+      }
     }
   }
   if (form.enable_nginx_config) {
@@ -251,6 +354,16 @@ const errors = computed(() => {
       } else if (/['\\]/.test(form.admin_nickname)) {
         e.admin_nickname = '昵称不能包含单引号或反斜杠'
       }
+    }
+    const host = (form.db_host || '').trim()
+    if (host && /[\s'\\]/.test(host)) {
+      e.db_host = '地址不能包含空白、单引号或反斜杠'
+    }
+    if (form.db_port !== 0 && (form.db_port < 1 || form.db_port > 65535)) {
+      e.db_port = '端口须为 1-65535'
+    }
+    if (/['\\]/.test(form.db_username || '')) {
+      e.db_username = '账号不能包含单引号或反斜杠'
     }
   }
   return e
@@ -279,7 +392,7 @@ const sectionCounts = computed(() => ({
     form.enable_uniapp
   ]),
   security: countTrue([form.enable_security, form.enable_sql_customize]),
-  cloud: form.remove_modules.length,
+  cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0),
   structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]),
   oss: countTrue([form.enable_oss]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
@@ -403,6 +516,14 @@ watch(
     sanitizeDisabledFeatures()
   },
   { immediate: true }
+)
+
+watch(
+  () => form.db_type,
+  (t) => {
+    if (t === 'postgresql' && form.db_port === 3306) form.db_port = 5432
+    else if (t === 'mysql' && form.db_port === 5432) form.db_port = 3306
+  }
 )
 
 // 首次进入（尚无已存参数）：拆仓 Vue/Cloud 且源仓无前端目录时，默认开启生成预置后台
@@ -541,6 +662,7 @@ function generateRandomSecret(): string {
 
 <template>
   <div class="param-config">
+    <div class="param-config__body">
     <div class="page-header">
       <div class="page-header__icon">
         <el-icon :size="20"><Setting /></el-icon>
@@ -821,7 +943,7 @@ function generateRandomSecret(): string {
                   <span class="switch-item__label">SQL 脚本定制</span>
                   <el-switch v-model="form.enable_sql_customize" @change="onSwitchChange" />
                 </div>
-                <div class="switch-item__hint muted">库名、admin 密码、清除演示/quartz 数据</div>
+                <div class="switch-item__hint muted">库名、连接、admin 密码、清除演示/quartz 数据</div>
               </div>
             </div>
 
@@ -842,6 +964,30 @@ function generateRandomSecret(): string {
                   />
                   <span v-if="form.db_type === 'postgresql'" class="inline-hint muted">同时用于 PG 连接 url</span>
                   <span v-else-if="isCloud" class="inline-hint muted">没填则业务库 ry-cloud、配置库 ry-config 都不改；填了则业务库用该名，配置库用 `{库名}-config`</span>
+                </el-form-item>
+                <el-form-item
+                  v-if="form.enable_sql_customize"
+                  label="数据库地址"
+                  :error="errors.db_host"
+                >
+                  <el-input v-model="form.db_host" placeholder="127.0.0.1" />
+                </el-form-item>
+                <el-form-item
+                  v-if="form.enable_sql_customize"
+                  label="端口"
+                  :error="errors.db_port"
+                >
+                  <el-input-number v-model="form.db_port" :min="1" :max="65535" />
+                </el-form-item>
+                <el-form-item
+                  v-if="form.enable_sql_customize"
+                  label="数据库账号"
+                  :error="errors.db_username"
+                >
+                  <el-input v-model="form.db_username" placeholder="root" />
+                </el-form-item>
+                <el-form-item v-if="form.enable_sql_customize" label="数据库密码">
+                  <el-input v-model="form.db_password" show-password placeholder="留空则写入空密码" />
                 </el-form-item>
                 <el-form-item
                   v-if="form.enable_sql_customize"
@@ -871,13 +1017,15 @@ function generateRandomSecret(): string {
               <div class="detail-tip muted">
                 <template v-if="form.enable_security && form.enable_sql_customize">
                   安全加固：自动关闭注册与 demo 模式，新密码明文回显到执行报告；SQL 定制：自动匹配 ry_*.sql
-                  脚本替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+                  脚本替换库名（ry-vue/ry-cloud）与 admin 密码哈希。Cloud 写入 Nacos 数据源；分离版写入
+                  application-dev/prod.yaml。需重导 ry_config*.sql / 重导业务库后才作用于已导入环境。
                 </template>
                 <template v-else-if="form.enable_security">
                   自动关闭注册与 demo 模式；执行后新密码会明文回显到执行报告，便于查看。
                 </template>
                 <template v-else>
-                  自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
+                  自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。Cloud 写入 Nacos
+                  数据源；分离版写入 application-dev/prod.yaml。需重导 ry_config*.sql / 重导业务库后才作用于已导入环境。
                 </template>
               </div>
             </div>
@@ -891,6 +1039,10 @@ function generateRandomSecret(): string {
             </template>
             <div class="detail-panel">
               <div class="detail-grid">
+                <el-form-item label="网关端口">
+                  <el-input-number v-model="form.server_port" :min="1" :max="65535" />
+                  <span class="inline-hint muted">即 server_port，Cloud 即使没开 Nginx/启动脚本也从此端口起排各服务</span>
+                </el-form-item>
                 <el-form-item label="裁剪微服务模块">
                   <el-select
                     v-model="form.remove_modules"
@@ -908,7 +1060,29 @@ function generateRandomSecret(): string {
                   </el-select>
                   <span class="inline-hint muted">不可裁 gateway / auth / system / common / api</span>
                 </el-form-item>
+                <el-form-item label="自定义模块端口">
+                  <el-switch v-model="form.enable_cloud_custom_ports" @change="onSwitchChange" />
+                  <span class="inline-hint muted">关闭时从网关端口起按 gateway → auth → system → gen → job → file → monitor 依次 +1，已裁剪模块不占号</span>
+                </el-form-item>
               </div>
+              <div v-if="!form.enable_cloud_custom_ports" class="cloud-port-preview">
+                <div v-for="row in cloudPortPreview" :key="row.suffix" class="cloud-port-preview__item">
+                  <span>{{ row.label }}</span>
+                  <code>{{ row.port }}</code>
+                </div>
+              </div>
+              <div v-else class="detail-grid">
+                <el-form-item
+                  v-for="mod in cloudCustomPortFields"
+                  :key="mod.suffix"
+                  :label="mod.label"
+                  :error="errors[mod.key]"
+                >
+                  <el-input-number v-model="form[mod.key]" :min="0" :max="65535" />
+                  <span class="inline-hint muted">0 / 空表示该模块仍自动</span>
+                </el-form-item>
+              </div>
+              <div v-if="errors.cloud_ports" class="detail-tip" style="color: var(--el-color-danger)">{{ errors.cloud_ports }}</div>
               <div class="detail-tip muted">
                 没填新数据库名：业务库 ry-cloud、配置库 ry-config 都不改。填了：业务库用该名，配置库用 `{库名}-config`。业务库名在「安全 &amp; SQL」里。裁剪会删目录、根 pom、Nacos 条目、网关路由、相关菜单。
               </div>
@@ -1103,9 +1277,9 @@ function generateRandomSecret(): string {
 
             <div v-if="form.enable_nginx_config || form.enable_startup_scripts" class="detail-panel">
               <div class="detail-grid">
-                <el-form-item label="后端端口">
+                <el-form-item :label="isCloud ? '网关端口' : '后端端口'">
                   <el-input-number v-model="form.server_port" :min="1" :max="65535" />
-                  <span class="inline-hint muted">jar 监听端口（Nginx 反代目标 + 脚本停止端口）</span>
+                  <span class="inline-hint muted">{{ isCloud ? '与上方微服务 Cloud 同一字段，网关监听端口（Nginx 反代目标）' : 'jar 监听端口（Nginx 反代目标 + 脚本停止端口）' }}</span>
                 </el-form-item>
                 <el-form-item label="对外域名">
                   <el-input v-model="form.server_name" placeholder="留空用 localhost，如 demo.example.com" />
@@ -1200,7 +1374,7 @@ function generateRandomSecret(): string {
 
       <!-- 历史记录对话框 -->
       <el-dialog v-model="historyDialogVisible" title="改造历史记录" width="560px">
-        <div v-if="profilesStore.profiles.length === 0" class="muted">暂无历史记录（每次执行成功后会自动保存）</div>
+        <div v-if="profilesStore.profiles.length === 0" class="muted">暂无历史记录（执行成功且配置有变化时才会新增一条）</div>
         <el-table v-else :data="profilesStore.profiles" size="small" max-height="360">
           <el-table-column prop="name" label="配置" min-width="220" />
           <el-table-column label="操作" width="160" fixed="right">
@@ -1216,16 +1390,30 @@ function generateRandomSecret(): string {
           </div>
         </template>
       </el-dialog>
+    </div>
+    </div>
 
-      <div class="actions">
-        <el-button @click="back">上一步</el-button>
-        <el-button type="primary" :disabled="!valid" @click="goPreview">下一步：预览</el-button>
-      </div>
+    <div class="actions">
+      <el-button @click="back">上一步</el-button>
+      <el-button type="primary" :disabled="!valid" @click="goPreview">下一步：预览</el-button>
     </div>
   </div>
 </template>
 
 <style scoped>
+.param-config {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.param-config__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 8px;
+}
 .toolbar {
   display: flex;
   gap: 8px;
@@ -1248,8 +1436,10 @@ function generateRandomSecret(): string {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
-  margin-top: 20px;
-  padding-top: 16px;
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 12px 0 0;
+  background: var(--rf-bg);
   border-top: 1px solid var(--rf-card-border);
 }
 
@@ -1415,6 +1605,31 @@ function generateRandomSecret(): string {
   border: 1px solid #e6e8eb;
   border-radius: 3px;
   font-size: 12px;
+}
+.cloud-port-preview {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 24px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #eef1f5;
+  border-radius: 6px;
+}
+.cloud-port-preview__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  color: #606266;
+}
+.cloud-port-preview__item code {
+  padding: 1px 6px;
+  background: #f5f7fa;
+  border: 1px solid #e6e8eb;
+  border-radius: 3px;
+  font-size: 13px;
+  color: #303133;
 }
 .detail-grid {
   display: grid;

@@ -24,12 +24,15 @@ for name in gateway auth system gen job file monitor; do
   stop_one "$name"
 done
 
-# 回退：按网关端口清理
-SERVER_PORT={{SERVER_PORT}}
-PIDS=$(lsof -ti :$SERVER_PORT -sTCP:LISTEN 2>/dev/null || true)
-if [ -n "$PIDS" ]; then
-  echo "⏹ 按端口 $SERVER_PORT 停止：$PIDS"
-  echo "$PIDS" | xargs kill 2>/dev/null || true
-fi
+# 回退：按已解析模块端口清理
+for port in {{GATEWAY_PORT}} {{AUTH_PORT}} {{SYSTEM_PORT}} {{GEN_PORT}} {{JOB_PORT}} {{FILE_PORT}} {{MONITOR_PORT}}; do
+  if [ -n "$port" ]; then
+    PIDS=$(lsof -ti :$port -sTCP:LISTEN 2>/dev/null || true)
+    if [ -n "$PIDS" ]; then
+      echo "⏹ 按端口 $port 停止：$PIDS"
+      echo "$PIDS" | xargs kill 2>/dev/null || true
+    fi
+  fi
+done
 
 echo "✅ Cloud 服务已停止"

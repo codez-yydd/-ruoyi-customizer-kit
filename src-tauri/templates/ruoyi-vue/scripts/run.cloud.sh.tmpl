@@ -16,9 +16,9 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "========== Cloud 启动顺序：gateway → auth → system → 其余 =========="
-echo "请分别在各模块目录执行 spring-boot:run，或使用 scripts/start.sh"
-echo "网关端口：{{SERVER_PORT}}"
-echo "示例："
-echo "  cd {{MODULE_PREFIX}}-gateway && mvn spring-boot:run"
-echo "  cd {{MODULE_PREFIX}}-auth && mvn spring-boot:run"
-echo "  cd {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system && mvn spring-boot:run"
+echo "请使用项目根目录的独立脚本启动各服务（每个服务开一个终端）："
+echo "  ./run-gateway.sh"
+echo "  ./run-auth.sh"
+echo "  ./run-system.sh"
+echo "其余可选：./run-gen.sh  ./run-job.sh  ./run-file.sh  ./run-monitor.sh（脚本已生成时才存在）"
+echo "网关端口：{{GATEWAY_PORT}}"

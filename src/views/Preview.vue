@@ -57,6 +57,7 @@ function goExecute() {
 
 <template>
   <div class="preview">
+    <div v-loading="loading" class="preview__body">
     <div class="page-header">
       <div class="page-header__icon">
         <el-icon :size="20"><View /></el-icon>
@@ -67,7 +68,6 @@ function goExecute() {
       </div>
     </div>
 
-    <div v-loading="loading" class="preview__body">
       <div v-if="preview" class="rf-card">
         <h3 class="section-title">输出目录</h3>
         <div class="output-info">
@@ -132,22 +132,33 @@ function goExecute() {
           </el-table-column>
         </el-table>
       </div>
+    </div>
 
-      <div v-if="preview" class="actions">
-        <el-button @click="back">上一步：修改参数</el-button>
-        <el-button type="primary" size="large" :disabled="!preview.success" @click="goExecute">
-          确认执行改造
-        </el-button>
-      </div>
+    <div v-if="preview" class="actions">
+      <el-button @click="back">上一步：修改参数</el-button>
+      <el-button type="primary" size="large" :disabled="!preview.success" @click="goExecute">
+        确认执行改造
+      </el-button>
     </div>
   </div>
 </template>
 
 <style scoped>
+.preview {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
 .preview__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding-bottom: 8px;
 }
 
 .output-info {
@@ -207,6 +218,10 @@ function goExecute() {
 .actions {
   display: flex;
   justify-content: space-between;
-  margin-top: 20px;
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 12px 0 0;
+  background: var(--rf-bg);
+  border-top: 1px solid var(--rf-card-border);
 }
 </style>

@@ -62,7 +62,7 @@ const generatedUiDirName = computed(
 </script>
 
 <template>
-  <div class="detect">
+  <div class="detect rf-page">
     <div class="page-header">
       <div class="page-header__icon">
         <el-icon :size="20"><Search /></el-icon>

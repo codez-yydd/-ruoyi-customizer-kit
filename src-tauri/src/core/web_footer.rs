@@ -225,48 +225,73 @@ fn customize_web_footer_cloud(
 // ---------- 模块/文件定位 ----------
 
 /// 定位后端模块目录：优先新前缀名（{new}-{suffix}），回退原前缀名，最后扫描 *-{suffix}。
+/// Cloud 业务服务（system/gen/job/file/monitor）与 [`crate::core::detector::find_module_by_leaf_suffix`]
+/// 共用评分：优先 `*-modules/*-system`，排除 Feign `*-api/*-api-system`。
 pub fn find_module_dir(root: &Path, params: &CustomizeParams, suffix: &str) -> Option<PathBuf> {
     let new_name = format!("{}-{}", params.new_module_prefix, suffix);
     let old_name = format!("{}-{}", params.original_module_prefix, suffix);
-    if root.join(&new_name).is_dir() {
+    let want = format!("-{suffix}");
+    let skip_api = crate::core::detector::is_cloud_service_leaf_suffix(suffix);
+    let accept_root = |name: &str, path: &Path| -> bool {
+        path.is_dir() && !(skip_api && crate::core::detector::is_cloud_api_module_rel(name))
+    };
+
+    if accept_root(&new_name, &root.join(&new_name)) {
         return Some(root.join(new_name));
     }
-    if root.join(&old_name).is_dir() {
+    if accept_root(&old_name, &root.join(&old_name)) {
         return Some(root.join(old_name));
     }
     if let Ok(entries) = std::fs::read_dir(root) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
-            if name.ends_with(&format!("-{suffix}")) && e.path().is_dir() {
+            if name.ends_with(&want) && accept_root(&name, &e.path()) {
                 return Some(e.path());
             }
         }
     }
-    // Cloud 嵌套：ruoyi-modules/ruoyi-system、ruoyi-common/ruoyi-common-core
+    // Cloud 嵌套：先扫 -modules，再扫 -common/-visual。
     // Vue 根下已命中 admin/common/framework，不会走到这里。
+    // 业务服务叶子不从 -api 取（Feign API 不是可运行服务）。
+    let mut modules_dirs = Vec::new();
+    let mut other_dirs = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !(name.ends_with("-modules")
-                || name.ends_with("-common")
-                || name.ends_with("-visual")
-                || name.ends_with("-api"))
-            {
+            if !e.path().is_dir() {
                 continue;
             }
-            if let Ok(children) = std::fs::read_dir(e.path()) {
-                for c in children.flatten() {
-                    let cn = c.file_name().to_string_lossy().to_string();
-                    if c.path().is_dir()
-                        && (cn == new_name || cn == old_name || cn.ends_with(&format!("-{suffix}")))
-                    {
-                        return Some(c.path());
-                    }
-                }
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with("-modules") {
+                modules_dirs.push(e.path());
+            } else if name.ends_with("-common") || name.ends_with("-visual") {
+                other_dirs.push(e.path());
+            } else if name.ends_with("-api") && !skip_api {
+                other_dirs.push(e.path());
             }
         }
     }
-    None
+    let mut candidates: Vec<String> = Vec::new();
+    for container in modules_dirs.into_iter().chain(other_dirs) {
+        let Ok(children) = std::fs::read_dir(&container) else {
+            continue;
+        };
+        for c in children.flatten() {
+            let cn = c.file_name().to_string_lossy().to_string();
+            if !c.path().is_dir() {
+                continue;
+            }
+            if !(cn == new_name || cn == old_name || cn.ends_with(&want) || cn == suffix) {
+                continue;
+            }
+            if skip_api && crate::core::detector::is_cloud_api_module_rel(&cn) {
+                continue;
+            }
+            if let Ok(rel) = c.path().strip_prefix(root) {
+                candidates.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    crate::core::detector::pick_best_module_rel(candidates).map(|rel| root.join(rel))
 }
 
 /// 根目录下的前端目录（*-ui，兼容已改名 {prefix}-ui 与未改名 ruoyi-ui）。

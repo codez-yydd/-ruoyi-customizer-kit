@@ -87,6 +87,7 @@ pub fn generate_ui_project(
     output_dir: &Path,
     params: &CustomizeParams,
     overlay: Option<&Path>,
+    is_cloud: bool,
     log: &dyn Fn(&str),
 ) -> Result<ReplaceUiResult, String> {
     if !template_dir.is_dir() {
@@ -122,7 +123,7 @@ pub fn generate_ui_project(
     }
 
     // 构建占位符映射
-    let placeholders = build_placeholders(params);
+    let placeholders = build_placeholders(params, is_cloud);
 
     // 递归复制模板目录
     let mut files_created = 0usize;
@@ -177,7 +178,8 @@ pub fn generate_ui_project(
 /// - {{API_BASE_URL_PROD}}：生产环境后端绝对地址（小程序等场景）
 /// - {{COPYRIGHT}} / {{COPYRIGHT_YEAR}} / {{COPYRIGHT_HOLDER}}：版权
 /// - {{SERVER_PORT}}：后端端口
-fn build_placeholders(params: &CustomizeParams) -> HashMap<String, String> {
+/// - {{BACKEND_STACK}}：首页「后端框架」文案（Cloud / Vue 不同）
+fn build_placeholders(params: &CustomizeParams, is_cloud: bool) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let year = if params.copyright_year.is_empty() {
         chrono::Local::now().format("%Y").to_string()
@@ -206,6 +208,14 @@ fn build_placeholders(params: &CustomizeParams) -> HashMap<String, String> {
     map.insert("{{COPYRIGHT_HOLDER}}".into(), holder.clone());
     map.insert("{{COPYRIGHT}}".into(), format!("{} {}", year, holder));
     map.insert("{{SERVER_PORT}}".into(), params.server_port.to_string());
+    map.insert(
+        "{{BACKEND_STACK}}".into(),
+        if is_cloud {
+            "RuoYi-Cloud（Spring Boot 3）".into()
+        } else {
+            "RuoYi-Vue（Spring Boot 3）".into()
+        },
+    );
     map
 }
 
@@ -316,7 +326,7 @@ mod tests {
 
     #[test]
     fn placeholders_include_title_port_copyright() {
-        let map = build_placeholders(&base_params());
+        let map = build_placeholders(&base_params(), false);
         assert_eq!(map.get("{{FRONTEND_TITLE}}").map(String::as_str), Some("演示系统"));
         assert_eq!(
             map.get("{{API_BASE_URL_DEV}}").map(String::as_str),
@@ -328,6 +338,15 @@ mod tests {
             Some("演示公司")
         );
         assert_eq!(map.get("{{SERVER_PORT}}").map(String::as_str), Some("9000"));
+        assert_eq!(
+            map.get("{{BACKEND_STACK}}").map(String::as_str),
+            Some("RuoYi-Vue（Spring Boot 3）")
+        );
+        let cloud_map = build_placeholders(&base_params(), true);
+        assert_eq!(
+            cloud_map.get("{{BACKEND_STACK}}").map(String::as_str),
+            Some("RuoYi-Cloud（Spring Boot 3）")
+        );
     }
 
     #[test]
@@ -353,7 +372,7 @@ mod tests {
 
         let params = base_params();
         let log = |_m: &str| {};
-        let result = generate_ui_project(&template, tmp.path(), &params, None, &log).unwrap();
+        let result = generate_ui_project(&template, tmp.path(), &params, None, false, &log).unwrap();
         assert!(result.output_dir.exists());
         assert!(!result.output_dir.join("old.txt").exists());
         let env = fs::read_to_string(result.output_dir.join("apps/web-ele/.env")).unwrap();

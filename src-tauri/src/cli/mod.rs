@@ -58,6 +58,10 @@ pub fn default_params() -> CustomizeParams {
         clean_demo_users: false,
         enable_sql_customize: false,
         db_name: String::new(),
+        db_host: "127.0.0.1".into(),
+        db_port: 3306,
+        db_username: "root".into(),
+        db_password: String::new(),
         db_type: "mysql".into(),
         admin_username: String::new(),
         admin_nickname: String::new(),
@@ -89,6 +93,13 @@ pub fn default_params() -> CustomizeParams {
         ui_template: "vben-web-ele".into(),
         config_db_name: String::new(),
         remove_modules: Vec::new(),
+        enable_cloud_custom_ports: false,
+        cloud_port_auth: 0,
+        cloud_port_system: 0,
+        cloud_port_gen: 0,
+        cloud_port_job: 0,
+        cloud_port_file: 0,
+        cloud_port_monitor: 0,
     }
 }
 

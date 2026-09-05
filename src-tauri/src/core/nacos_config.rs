@@ -21,7 +21,10 @@
 // {any}-gateway-{profile}.yml / {any}-system-{profile}.yml /
 // application-{profile}.yml / sentinel-{any}-gateway
 
-use crate::core::{CustomizeParams, resolve_cloud_biz_db_name};
+use crate::core::{
+    yaml_quote_scalar, CustomizeParams, resolve_cloud_biz_db_name, resolve_db_host, resolve_db_port,
+    resolve_db_username,
+};
 use md5::{Digest, Md5};
 use std::path::{Path, PathBuf};
 
@@ -622,14 +625,41 @@ fn rewrite_one_yaml(
     has_system: bool,
     log: &dyn Fn(&str),
 ) {
-    *yaml = replace_jdbc_db_name(yaml, biz_db);
+    if params.enable_sql_customize {
+        // seata-server.properties 等条目不得改业务库连接，避免误伤 ry-seata
+        if !data_id.to_ascii_lowercase().contains("seata") {
+            let host = resolve_db_host(params);
+            let port = resolve_db_port(params);
+            *yaml = replace_jdbc_mysql_connection(yaml, &host, port, biz_db);
+            *yaml = rewrite_datasource_credentials(yaml, &resolve_db_username(params), &params.db_password);
+        }
+    } else {
+        *yaml = replace_jdbc_db_name(yaml, biz_db);
+    }
+    // 开 MP 后仅 job 带 DynamicRoutingDataSource，扁平 url 必须收成 dynamic.master。
+    // gen 没有 common-datasource，走 Hikari 扁平 spring.datasource.url，不得 wrap。
+    // 放在 jdbc/账号改写之后，避免先包一层再改 url。与 SQL 定制无关。
+    let suffix = cloud_service_suffix_of(data_id);
+    if params.enable_mybatis_plus && suffix == Some("job") {
+        *yaml = wrap_flat_datasource_as_dynamic(yaml);
+    }
+    if suffix == Some("gen") {
+        *yaml = unwrap_simple_dynamic_master_to_flat(yaml);
+    }
     *yaml = rewrite_redis_in_place(yaml);
     if yaml.contains("token:") {
         *yaml = rewrite_token_yaml(yaml, params);
     }
-    if params.enable_mybatis_plus && has_top_level_key(yaml, "mybatis") {
+    if params.enable_mybatis_plus
+        && matches!(suffix, Some("system") | Some("job"))
+        && has_top_level_key(yaml, "mybatis")
+    {
         *yaml = rename_top_level_key(yaml, "mybatis", "mybatis-plus");
         log(&format!("{data_id}：mybatis → mybatis-plus（保留 typeAliasesPackage / mapperLocations）"));
+    }
+    if suffix == Some("gen") && has_top_level_key(yaml, "mybatis-plus") {
+        *yaml = rename_top_level_key(yaml, "mybatis-plus", "mybatis");
+        log(&format!("{data_id}：mybatis-plus → mybatis（gen 无动态数据源）"));
     }
     let is_system = is_system_yml(data_id);
     let is_app = is_application_yml(data_id);
@@ -657,11 +687,486 @@ fn rewrite_one_yaml(
     if is_gw && (params.enable_footer_icp || params.enable_site_settings) {
         *yaml = append_whitelist(yaml, "/system/webInfo");
     }
+    // 仅服务条目（gateway/auth/system/…）补写或改写 server.port；
+    // application-dev.yml、sentinel-* 不得插入 server.port。
+    if let Some(svc) = suffix {
+        if !data_id.to_ascii_lowercase().starts_with("sentinel-") {
+            if let Some(port) = crate::core::cloud_ports::cloud_port_of(params, svc) {
+                *yaml = crate::core::cloud_ports::upsert_yaml_server_port(yaml, port);
+            }
+        }
+    }
+    if let Some(gw_port) = crate::core::cloud_ports::cloud_port_of(params, "gateway") {
+        *yaml = rewrite_springdoc_gateway_url(yaml, gw_port);
+    }
+    // 当前服务 yml 里写死的官方对外 URL（如 file.domain:9300）跟解析端口走。
+    // gateway 的 8080 只由上面的 springdoc.gatewayUrl 处理，避免误伤其它 8080。
+    if let Some(svc) = suffix {
+        if let Some(port) = crate::core::cloud_ports::cloud_port_of(params, svc) {
+            *yaml = rewrite_module_public_urls(yaml, svc, port);
+        }
+    }
 }
 
 fn replace_jdbc_db_name(yaml: &str, new_db: &str) -> String {
     let re = regex::Regex::new(r"(jdbc:mysql://[^\s'\\]+/)(ry-cloud|ry_cloud)\b").unwrap();
     re.replace_all(yaml, format!("${{1}}{new_db}").as_str()).to_string()
+}
+
+/// 仅改写业务库 `jdbc:mysql://...`：替换 host/port/库名，保留 query string。
+/// 库名取 `?` 前最后一个 `/` 之后；仅 `ry-cloud` / `ry_cloud` 或等于本次业务库才改写。
+fn replace_jdbc_mysql_connection(yaml: &str, host: &str, port: u16, db: &str) -> String {
+    let re = regex::Regex::new(r#"jdbc:mysql://[^\s'"\\]+"#).unwrap();
+    re.replace_all(yaml, |caps: &regex::Captures| {
+        let orig = &caps[0];
+        if !jdbc_mysql_db_is_business(orig, db) {
+            return orig.to_string();
+        }
+        let after = orig.trim_start_matches("jdbc:mysql://");
+        let query = after.find('?').map(|i| &after[i..]).unwrap_or("");
+        format!("jdbc:mysql://{host}:{port}/{db}{query}")
+    })
+    .into_owned()
+}
+
+/// 从 `jdbc:mysql://...` 解析库名（`?` 前最后一个 `/` 之后）。
+fn jdbc_mysql_db_name(url: &str) -> &str {
+    let after = url.trim_start_matches("jdbc:mysql://");
+    let path = after.split('?').next().unwrap_or(after);
+    path.rsplit('/').next().unwrap_or("")
+}
+
+fn jdbc_mysql_db_is_business(url: &str, biz_db: &str) -> bool {
+    let name = jdbc_mysql_db_name(url);
+    name == "ry-cloud" || name == "ry_cloud" || (!biz_db.is_empty() && name == biz_db)
+}
+
+/// 在 `datasource:` 缩进作用域内改写恰好为 `username` / `password` 的行。
+/// 不改 `login-username` / `login-password`，不改 redis / nacos 账号。
+/// 若有 `url` 但缺账号或密码行，在首个 url 后补上。
+fn rewrite_datasource_credentials(yaml: &str, username: &str, password: &str) -> String {
+    let (has_url, has_user, has_pass) = scan_datasource_cred_keys(yaml);
+    let user_q = yaml_quote_scalar(username);
+    let pass_q = yaml_quote_scalar(password);
+    let mut out = String::with_capacity(yaml.len() + 64);
+    let mut in_ds = false;
+    let mut ds_indent = 0usize;
+    let mut inserted = false;
+    for line in yaml.lines() {
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if key == "datasource" {
+            in_ds = true;
+            ds_indent = indent;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_ds && !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= ds_indent {
+            in_ds = false;
+        }
+        if in_ds {
+            if key == "username" {
+                if let Some(nl) = replace_yaml_scalar_line(line, "username", username) {
+                    out.push_str(&nl);
+                    out.push('\n');
+                    continue;
+                }
+            }
+            if key == "password" {
+                if let Some(nl) = replace_yaml_scalar_line(line, "password", password) {
+                    out.push_str(&nl);
+                    out.push('\n');
+                    continue;
+                }
+            }
+            if key == "url" && has_url && (!has_user || !has_pass) && !inserted {
+                out.push_str(line);
+                out.push('\n');
+                let pad = " ".repeat(indent);
+                if !has_user {
+                    out.push_str(&format!("{pad}username: {user_q}\n"));
+                }
+                if !has_pass {
+                    out.push_str(&format!("{pad}password: {pass_q}\n"));
+                }
+                inserted = true;
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !yaml.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn scan_datasource_cred_keys(yaml: &str) -> (bool, bool, bool) {
+    let mut in_ds = false;
+    let mut ds_indent = 0usize;
+    let mut has_url = false;
+    let mut has_user = false;
+    let mut has_pass = false;
+    for line in yaml.lines() {
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if key == "datasource" {
+            in_ds = true;
+            ds_indent = indent;
+            continue;
+        }
+        if in_ds && !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= ds_indent {
+            in_ds = false;
+        }
+        if in_ds {
+            match key {
+                "url" => has_url = true,
+                "username" => has_user = true,
+                "password" => has_pass = true,
+                _ => {}
+            }
+        }
+    }
+    (has_url, has_user, has_pass)
+}
+
+/// 扁平 `spring.datasource.url` 收成 `spring.datasource.dynamic.datasource.master`。
+///
+/// 官方 Cloud：system 已是 dynamic；job 是扁平 url。开 MP 后 job 带上
+/// `DynamicRoutingDataSource`，扁平 url 找不到 primary。
+///
+/// 规则：已有子键 `dynamic` 或没有直连 `url` 则原样返回；只挪连接字段，不挪 `druid` 等块。
+/// 同级或更外层的注释（如 `# mybatis配置`）不算 datasource 子行，避免吞进 dynamic 块。
+fn wrap_flat_datasource_as_dynamic(yaml: &str) -> String {
+    rewrite_each_datasource_block(yaml, rewrite_flat_datasource_block)
+}
+
+/// 把误收成 `dynamic.datasource.master` 的扁平数据源拆回 `spring.datasource.url`。
+///
+/// 仅当 datasource 的直接子键只有 `dynamic`（没有 `druid` / `url` 等）才拆，
+/// 因此 system（druid+dynamic）不会被拆。已是扁平则原样。
+fn unwrap_simple_dynamic_master_to_flat(yaml: &str) -> String {
+    rewrite_each_datasource_block(yaml, |ds_indent, block| {
+        try_unwrap_simple_dynamic_master(ds_indent, block).unwrap_or_else(|| {
+            let mut s = String::new();
+            for line in block {
+                s.push_str(line);
+                s.push('\n');
+            }
+            s
+        })
+    })
+}
+
+fn rewrite_each_datasource_block(yaml: &str, rewrite_block: impl Fn(usize, &[&str]) -> String) -> String {
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut out = String::with_capacity(yaml.len() + 64);
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i];
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') && key == "datasource" {
+            let ds_indent = indent;
+            i += 1;
+            let (block, next) = take_indented_block(&lines, i, ds_indent);
+            i = next;
+            out.push_str(line);
+            out.push('\n');
+            out.push_str(&rewrite_block(ds_indent, &block));
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        i += 1;
+    }
+    if !yaml.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// 收集父键之后的缩进块：非空且缩进 <= parent_indent 的行（含同级注释）视为块外。
+fn take_indented_block<'a>(lines: &[&'a str], start: usize, parent_indent: usize) -> (Vec<&'a str>, usize) {
+    let mut i = start;
+    let mut block = Vec::new();
+    while i < lines.len() {
+        let nxt = lines[i];
+        let ni = indent_width(nxt);
+        let nt = nxt.trim_start();
+        if !nt.is_empty() && ni <= parent_indent {
+            break;
+        }
+        block.push(nxt);
+        i += 1;
+    }
+    (block, i)
+}
+
+/// 官方 Cloud 模块默认监听端口，仅用于识别「写死的模块对外 URL」。
+/// 不要用这些数字去盲替换 Redis/MySQL/Nacos/Sentinel/MinIO/FastDFS。
+fn official_module_listen_port(suffix: &str) -> Option<i32> {
+    match suffix {
+        "gateway" => Some(8080),
+        "auth" => Some(9200),
+        "system" => Some(9201),
+        "gen" => Some(9202),
+        "job" => Some(9203),
+        "file" => Some(9300),
+        "monitor" => Some(9100),
+        _ => None,
+    }
+}
+
+/// 把当前服务 Nacos yml 里写死的官方对外 URL 改成解析后的端口。
+///
+/// 只替换 `http://localhost:{官方端口}` / `http://127.0.0.1:{官方端口}`（含 `domain:` 行），
+/// 不盲替换数字（避免误伤超时毫秒）。host 统一为 `127.0.0.1`。
+/// gateway 的 8080 不在此处理（由 `rewrite_springdoc_gateway_url` 专改 `gatewayUrl`）。
+fn rewrite_module_public_urls(yaml: &str, suffix: &str, port: i32) -> String {
+    if suffix == "gateway" {
+        return yaml.to_string();
+    }
+    let Some(official) = official_module_listen_port(suffix) else {
+        return yaml.to_string();
+    };
+    let to = format!("http://127.0.0.1:{port}");
+    // regex crate 不支持 lookahead；用捕获组避免把 9300 误匹配成 93000。
+    let re = regex::Regex::new(&format!(
+        r"http://(?:localhost|127\.0\.0\.1):{official}([^0-9]|$)"
+    ))
+    .unwrap();
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.lines() {
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if key == "gatewayUrl" {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if key == "domain" || re.is_match(line) {
+            let replaced = re.replace_all(line, |caps: &regex::Captures| {
+                format!("{to}{}", &caps[1])
+            });
+            out.push_str(&replaced);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !yaml.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// 只改 `gatewayUrl:` 行里的官方默认 `http://localhost:8080` / `http://127.0.0.1:8080`。
+/// 不碰 Nacos 8848、Sentinel 8718，也不盲替换文件中其它 8080。
+fn rewrite_springdoc_gateway_url(yaml: &str, gateway_port: i32) -> String {
+    let to = format!("http://127.0.0.1:{gateway_port}");
+    let mut out = String::with_capacity(yaml.len());
+    for line in yaml.lines() {
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if key == "gatewayUrl" {
+            let replaced = line
+                .replace("http://localhost:8080", &to)
+                .replace("http://127.0.0.1:8080", &to);
+            out.push_str(&replaced);
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !yaml.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+fn is_flat_datasource_conn_key(key: &str) -> bool {
+    matches!(
+        key,
+        "url" | "username" | "password" | "driver-class-name" | "driverClassName" | "type"
+    )
+}
+
+enum DsBlockItem {
+    Loose(Vec<String>),
+    Child { key: String, lines: Vec<String> },
+}
+
+fn rewrite_flat_datasource_block(ds_indent: usize, block: &[&str]) -> String {
+    let mut child_indent: Option<usize> = None;
+    let mut has_dynamic = false;
+    let mut has_flat_url = false;
+    let mut items: Vec<DsBlockItem> = Vec::new();
+
+    for line in block {
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        let is_key_line = !trimmed.is_empty() && !trimmed.starts_with('#');
+        if is_key_line {
+            if child_indent.is_none() && indent > ds_indent {
+                child_indent = Some(indent);
+            }
+            if child_indent == Some(indent) {
+                if key == "dynamic" {
+                    has_dynamic = true;
+                }
+                if key == "url" {
+                    has_flat_url = true;
+                }
+                items.push(DsBlockItem::Child {
+                    key: key.to_string(),
+                    lines: vec![(*line).to_string()],
+                });
+                continue;
+            }
+        }
+        match items.last_mut() {
+            Some(DsBlockItem::Child { lines, .. } | DsBlockItem::Loose(lines)) => {
+                lines.push((*line).to_string());
+            }
+            None => items.push(DsBlockItem::Loose(vec![(*line).to_string()])),
+        }
+    }
+
+    if has_dynamic || !has_flat_url {
+        let mut s = String::new();
+        for line in block {
+            s.push_str(line);
+            s.push('\n');
+        }
+        return s;
+    }
+
+    let step = child_indent.unwrap_or(ds_indent + 2).saturating_sub(ds_indent);
+    let step = if step == 0 { 2 } else { step };
+    let extra = 3 * step;
+    let pad = " ".repeat(extra);
+
+    let mut moved: Vec<Vec<String>> = Vec::new();
+    let mut kept = String::new();
+    for item in items {
+        match item {
+            DsBlockItem::Loose(lines) => {
+                for l in lines {
+                    kept.push_str(&l);
+                    kept.push('\n');
+                }
+            }
+            DsBlockItem::Child { key, lines } if is_flat_datasource_conn_key(&key) => {
+                moved.push(lines);
+            }
+            DsBlockItem::Child { lines, .. } => {
+                for l in lines {
+                    kept.push_str(&l);
+                    kept.push('\n');
+                }
+            }
+        }
+    }
+
+    let mut s = kept;
+    s.push_str(&format!("{}dynamic:\n", " ".repeat(ds_indent + step)));
+    s.push_str(&format!("{}datasource:\n", " ".repeat(ds_indent + 2 * step)));
+    s.push_str(&format!("{}master:\n", " ".repeat(ds_indent + 3 * step)));
+    for group in moved {
+        for l in group {
+            if l.trim().is_empty() {
+                s.push('\n');
+            } else {
+                s.push_str(&pad);
+                s.push_str(&l);
+                s.push('\n');
+            }
+        }
+    }
+    s
+}
+
+fn try_unwrap_simple_dynamic_master(ds_indent: usize, block: &[&str]) -> Option<String> {
+    let mut child_indent: Option<usize> = None;
+    let mut direct_keys: Vec<String> = Vec::new();
+    for line in block {
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if child_indent.is_none() && indent > ds_indent {
+            child_indent = Some(indent);
+        }
+        if child_indent == Some(indent) {
+            direct_keys.push(key.to_string());
+        }
+    }
+    if direct_keys != ["dynamic"] {
+        return None;
+    }
+    let step = child_indent.unwrap_or(ds_indent + 2).saturating_sub(ds_indent);
+    let step = if step == 0 { 2 } else { step };
+    let master_indent = ds_indent + 3 * step;
+    let field_indent = ds_indent + 4 * step;
+
+    let mut lifted = String::new();
+    let mut found_url = false;
+    let mut i = 0usize;
+    while i < block.len() {
+        let line = block[i];
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if !trimmed.is_empty() && !trimmed.starts_with('#') && key == "master" && indent == master_indent {
+            i += 1;
+            while i < block.len() {
+                let nxt = block[i];
+                let ni = indent_width(nxt);
+                let nt = nxt.trim_start();
+                if !nt.is_empty() && ni <= master_indent {
+                    break;
+                }
+                if nt.is_empty() {
+                    lifted.push('\n');
+                    i += 1;
+                    continue;
+                }
+                if ni == field_indent {
+                    let field_key = nt.split(':').next().unwrap_or("").trim();
+                    if nt.starts_with('#') || is_flat_datasource_conn_key(field_key) {
+                        lifted.push_str(&" ".repeat(ni.saturating_sub(3 * step)));
+                        lifted.push_str(nt);
+                        lifted.push('\n');
+                        if is_flat_datasource_conn_key(field_key) && field_key == "url" {
+                            found_url = true;
+                        }
+                    }
+                    i += 1;
+                    continue;
+                }
+                if ni > field_indent {
+                    i += 1;
+                    continue;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        i += 1;
+    }
+    if !found_url {
+        return None;
+    }
+    Some(lifted)
 }
 
 fn rewrite_redis_in_place(yaml: &str) -> String {
@@ -771,7 +1276,10 @@ fn replace_yaml_scalar_line(line: &str, key: &str, new_val: &str) -> Option<Stri
     } else {
         format!(" {comment}")
     };
-    Some(format!("{indent}{key}: {new_val}{comment_part}"))
+    Some(format!(
+        "{indent}{key}: {}{comment_part}",
+        yaml_quote_scalar(new_val)
+    ))
 }
 
 fn indent_width(line: &str) -> usize {
@@ -963,6 +1471,15 @@ pub fn is_application_yml(data_id: &str) -> bool {
 pub fn is_sentinel_gateway(data_id: &str) -> bool {
     let n = data_id.to_ascii_lowercase();
     n.starts_with("sentinel-") && n.contains("gateway")
+}
+
+fn cloud_service_suffix_of(data_id: &str) -> Option<&'static str> {
+    for suffix in crate::core::detector::cloud_runnable_leaf_suffixes() {
+        if matches_service_profile(data_id, suffix) {
+            return Some(suffix);
+        }
+    }
+    None
 }
 
 fn matches_service_profile(data_id: &str, service: &str) -> bool {
@@ -1232,5 +1749,452 @@ mod tests {
         let mut i = 0usize;
         let r = parse_sql_value(s, &mut i);
         assert!(r.is_err(), "值以中文开头应报错而非 panic：{r:?}");
+    }
+
+    #[test]
+    fn sql_customize_rewrites_jdbc_host_and_datasource_credentials() {
+        let mut p = CustomizeParams::default();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_host = "127.0.0.1".into();
+        p.db_port = 3306;
+        p.db_username = "app".into();
+        p.db_password = "s3cret".into();
+        let yaml = "spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\n  redis:\n    host: 127.0.0.1\n    password: secret\n    database: 0\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "application-dev.yml", &p, "demo", false, &|_| {});
+        assert!(
+            out.contains("jdbc:mysql://127.0.0.1:3306/demo?useSSL=false"),
+            "应改写 host/port/库名：{out}"
+        );
+        assert!(out.contains("username: app"), "datasource 账号应写入：{out}");
+        assert!(out.contains("password: s3cret"), "datasource 密码应写入：{out}");
+        assert_eq!(out.matches("s3cret").count(), 1, "redis 密码不得改成数据库密码：{out}");
+        assert!(out.contains("host: localhost"), "redis host 仍由 redis 改写：{out}");
+    }
+
+    #[test]
+    fn sql_customize_inserts_credentials_when_missing() {
+        let mut p = CustomizeParams::default();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_username = "app".into();
+        p.db_password = "s3cret".into();
+        let yaml = "spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n  redis:\n    password: secret\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-system-dev.yml", &p, "demo", true, &|_| {});
+        assert!(out.contains("jdbc:mysql://127.0.0.1:3306/demo?useSSL=false"), "{out}");
+        assert!(out.contains("username: app"), "缺账号时应在 url 后补上：{out}");
+        assert!(out.contains("password: s3cret"), "缺密码时应在 url 后补上：{out}");
+        assert_eq!(out.matches("s3cret").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn sql_customize_does_not_touch_login_username() {
+        let mut p = CustomizeParams::default();
+        p.enable_sql_customize = true;
+        p.db_username = "app".into();
+        p.db_password = "s3cret".into();
+        let yaml = "spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\n    druid:\n      login-username: admin\n      login-password: keepme\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "application-dev.yml", &p, "ry-cloud", false, &|_| {});
+        assert!(out.contains("login-username: admin"), "{out}");
+        assert!(out.contains("login-password: keepme"), "{out}");
+        assert!(out.contains("username: app"), "{out}");
+    }
+
+    #[test]
+    fn without_sql_customize_keeps_official_localhost_host() {
+        let mut p = CustomizeParams::default();
+        p.enable_sql_customize = false;
+        p.db_name = "demo".into();
+        p.db_host = "192.168.1.10".into();
+        p.db_username = "app".into();
+        p.db_password = "s3cret".into();
+        let mut out = SAMPLE_YAML.to_string();
+        rewrite_one_yaml(&mut out, "application-dev.yml", &p, "demo", false, &|_| {});
+        assert!(
+            out.contains("jdbc:mysql://localhost:3306/demo"),
+            "未开 SQL 定制应只改库名、保持 localhost：{out}"
+        );
+        assert!(!out.contains("192.168.1.10"), "{out}");
+        assert!(!out.contains("username: app"), "未开 SQL 定制不应改账号：{out}");
+        assert!(!out.contains("s3cret"), "未开 SQL 定制不应写数据库密码：{out}");
+    }
+
+    #[test]
+    fn sql_customize_rewrites_biz_db_but_keeps_seata_url() {
+        let mut p = CustomizeParams::default();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_host = "192.168.1.10".into();
+        p.db_port = 3307;
+        let seata_url = "jdbc:mysql://127.0.0.1:3306/ry-seata?useUnicode=true&characterEncoding=utf8";
+        let yaml = format!(
+            "spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useUnicode=true&characterEncoding=utf8\nstore:\n  db:\n    url: {seata_url}\n"
+        );
+        let mut out = yaml;
+        rewrite_one_yaml(&mut out, "application-dev.yml", &p, "demo", false, &|_| {});
+        assert!(
+            out.contains("jdbc:mysql://192.168.1.10:3307/demo?useUnicode=true&characterEncoding=utf8"),
+            "业务库应改写 host/port/库名：{out}"
+        );
+        assert!(
+            out.contains(seata_url),
+            "ry-seata 整段 url 必须一字不改：{out}"
+        );
+        assert_eq!(
+            out.matches(seata_url).count(),
+            1,
+            "ry-seata url 不得被拆改：{out}"
+        );
+    }
+
+    #[test]
+    fn sql_customize_skips_seata_data_id() {
+        let mut p = CustomizeParams::default();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_host = "192.168.1.10".into();
+        p.db_port = 3307;
+        p.db_username = "app".into();
+        p.db_password = "s3cret".into();
+        let seata_url = "jdbc:mysql://127.0.0.1:3306/ry-seata?useSSL=false";
+        let props = format!("store.db.url={seata_url}\nstore.db.user=root\nstore.db.password=root\n");
+        let mut out = props;
+        rewrite_one_yaml(&mut out, "seata-server.properties", &p, "demo", false, &|_| {});
+        assert!(
+            out.contains(seata_url),
+            "seata data_id 不得改 jdbc：{out}"
+        );
+        assert!(
+            !out.contains("192.168.1.10"),
+            "seata data_id 不得改 host：{out}"
+        );
+        assert!(!out.contains("s3cret"), "seata data_id 不得改密码：{out}");
+        assert!(out.contains("store.db.user=root"), "{out}");
+    }
+
+    #[test]
+    fn service_yml_upserts_server_port_application_does_not() {
+        let mut p = CustomizeParams::default();
+        p.server_port = 5010;
+
+        let mut gw = "spring:\n  application:\n    name: ruoyi-gateway\n".to_string();
+        rewrite_one_yaml(&mut gw, "ruoyi-gateway-dev.yml", &p, "demo", false, &|_| {});
+        assert!(
+            gw.contains("port: 5010"),
+            "服务 yml 无 server.port 时应补写网关端口：{gw}"
+        );
+
+        let mut auth = "server:\n  port: 9200\nspring:\n  application:\n    name: ruoyi-auth\n".to_string();
+        rewrite_one_yaml(&mut auth, "ruoyi-auth-dev.yml", &p, "demo", false, &|_| {});
+        assert!(
+            auth.contains("port: 5011"),
+            "服务 yml 已有 port 应改成解析端口：{auth}"
+        );
+        assert!(!auth.contains("port: 9200"), "{auth}");
+
+        let mut app = "spring:\n  redis:\n    host: localhost\n    port: 6379\n".to_string();
+        rewrite_one_yaml(&mut app, "application-dev.yml", &p, "demo", false, &|_| {});
+        assert!(
+            !app.contains("server:"),
+            "application-dev.yml 不得乱插 server.port：{app}"
+        );
+        assert!(!app.contains("port: 5010"), "{app}");
+
+        let mut sentinel = "flow:\n  rules: []\n".to_string();
+        rewrite_one_yaml(&mut sentinel, "sentinel-ruoyi-gateway", &p, "demo", false, &|_| {});
+        assert!(
+            !sentinel.contains("server:"),
+            "sentinel-* 不得插入 server.port：{sentinel}"
+        );
+    }
+
+    const JOB_FLAT_DS: &str = "spring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://127.0.0.1:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\n# mybatis配置\n";
+
+    const SYSTEM_DYNAMIC_DS: &str = "spring:\n  datasource:\n    dynamic:\n      datasource:\n        master:\n          url: jdbc:mysql://127.0.0.1:3306/ry-cloud?useSSL=false\n          username: root\n          password: password\n";
+
+    const GEN_FLAT_DS: &str = "server:\n  port: 9202\nspring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\n# mybatis配置\nmybatis:\n  typeAliasesPackage: com.ruoyi.gen.domain\nspringdoc:\n  gatewayUrl: http://localhost:8080/${spring.application.name}\n";
+
+    const GEN_WRAPPED_DS: &str = "server:\n  port: 9202\nspring:\n  datasource:\n    dynamic:\n      datasource:\n        master:\n          url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n          username: root\n          password: password\nmybatis-plus:\n  typeAliasesPackage: com.ruoyi.gen.domain\nspringdoc:\n  gatewayUrl: http://localhost:8080/${spring.application.name}\n";
+
+    const SYSTEM_DRUID_DYNAMIC_DS: &str = "spring:\n  datasource:\n    druid:\n      stat-view-servlet:\n        enabled: true\n    dynamic:\n      datasource:\n        master:\n          url: jdbc:mysql://127.0.0.1:3306/ry-cloud?useSSL=false\n          username: root\n          password: password\nmybatis-plus:\n  typeAliasesPackage: com.ruoyi.system\nspringdoc:\n  gatewayUrl: http://localhost:8080/${spring.application.name}\n";
+
+    fn datasource_direct_child_keys(yaml: &str) -> Vec<String> {
+        let mut in_ds = false;
+        let mut ds_indent = 0usize;
+        let mut child_indent: Option<usize> = None;
+        let mut keys = Vec::new();
+        for line in yaml.lines() {
+            let indent = indent_width(line);
+            let trimmed = line.trim_start();
+            let key = trimmed.split(':').next().unwrap_or("").trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('#') && key == "datasource" && !in_ds {
+                in_ds = true;
+                ds_indent = indent;
+                continue;
+            }
+            if in_ds && !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= ds_indent {
+                break;
+            }
+            if in_ds && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                if child_indent.is_none() && indent > ds_indent {
+                    child_indent = Some(indent);
+                }
+                if child_indent == Some(indent) {
+                    keys.push(key.to_string());
+                }
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn mp_wraps_flat_job_datasource_as_dynamic_master() {
+        let mut p = CustomizeParams::default();
+        p.enable_mybatis_plus = true;
+        p.enable_sql_customize = false;
+        let mut out = JOB_FLAT_DS.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-job-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(out.contains("dynamic:"), "开 MP 应收成 dynamic：{out}");
+        assert!(out.contains("master:"), "开 MP 应收成 master：{out}");
+        assert!(
+            out.contains("jdbc:mysql://127.0.0.1:3306/ry-cloud?useSSL=false"),
+            "原 url 应保留：{out}"
+        );
+        assert_eq!(
+            datasource_direct_child_keys(&out),
+            vec!["dynamic".to_string()],
+            "url 不得残留在 datasource 下一层：{out}"
+        );
+        let again = wrap_flat_datasource_as_dynamic(&out);
+        assert_eq!(again, out, "wrap 必须幂等");
+        if let (Some(comment_pos), Some(dyn_pos)) = (out.find("# mybatis配置"), out.find("dynamic:")) {
+            assert!(
+                dyn_pos < comment_pos,
+                "wrap 不得把 # mybatis配置 吞进 dynamic 块：{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn mp_does_not_rewrap_existing_dynamic_datasource() {
+        let mut p = CustomizeParams::default();
+        p.enable_mybatis_plus = true;
+        p.enable_sql_customize = false;
+        let mut out = SYSTEM_DYNAMIC_DS.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert_eq!(
+            out.matches("dynamic:").count(),
+            SYSTEM_DYNAMIC_DS.matches("dynamic:").count(),
+            "已有 dynamic 不得再包一层：{out}"
+        );
+        assert_eq!(
+            datasource_direct_child_keys(&out),
+            vec!["dynamic".to_string()],
+            "{out}"
+        );
+        assert!(
+            out.contains("jdbc:mysql://127.0.0.1:3306/ry-cloud?useSSL=false"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn mp_skips_yaml_without_datasource_url() {
+        let mut p = CustomizeParams::default();
+        p.enable_mybatis_plus = true;
+        p.enable_sql_customize = false;
+        let yaml = "server:\n  port: 8080\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "application-dev.yml", &p, "demo", true, &|_| {});
+        assert_eq!(out, yaml, "无 url 的 yaml 应原样：{out}");
+        assert!(!out.contains("dynamic:"), "{out}");
+        assert!(!out.contains("datasource:"), "application-dev 不得乱插 datasource：{out}");
+    }
+
+    #[test]
+    fn mp_disabled_does_not_wrap_flat_datasource() {
+        let mut p = CustomizeParams::default();
+        p.enable_mybatis_plus = false;
+        p.enable_sql_customize = false;
+        let mut out = JOB_FLAT_DS.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-job-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(!out.contains("dynamic:"), "未开 MP 不应 wrap：{out}");
+        assert_eq!(
+            datasource_direct_child_keys(&out),
+            vec![
+                "driver-class-name".to_string(),
+                "url".to_string(),
+                "username".to_string(),
+                "password".to_string()
+            ],
+            "未开 MP 应保持扁平：{out}"
+        );
+    }
+
+    #[test]
+    fn mp_does_not_wrap_flat_gen_datasource() {
+        let mut p = CustomizeParams::default();
+        p.enable_mybatis_plus = true;
+        p.enable_sql_customize = false;
+        p.server_port = 5010;
+        let mut out = GEN_FLAT_DS.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-gen-dev.yml", &p, "ry-cloud", true, &|_| {});
+        let keys = datasource_direct_child_keys(&out);
+        assert!(keys.contains(&"url".to_string()), "gen 应保持扁平 url：{out}");
+        assert!(
+            !keys.contains(&"dynamic".to_string()),
+            "gen 不得 wrap 成 dynamic：{out}"
+        );
+        assert!(has_top_level_key(&out, "mybatis"), "gen 应保持 mybatis：{out}");
+        assert!(
+            !has_top_level_key(&out, "mybatis-plus"),
+            "gen 不得改成 mybatis-plus：{out}"
+        );
+        assert!(
+            out.contains("# mybatis配置"),
+            "mybatis 注释应留在 datasource 块外：{out}"
+        );
+        assert!(
+            out.contains("gatewayUrl: http://127.0.0.1:5010/${spring.application.name}"),
+            "springdoc.gatewayUrl 应改成网关端口：{out}"
+        );
+        assert!(
+            !out.contains("localhost:8080/${spring.application.name}"),
+            "不得残留 localhost:8080 gatewayUrl：{out}"
+        );
+    }
+
+    #[test]
+    fn mp_unwraps_miswrapped_gen_datasource_back_to_flat() {
+        let mut p = CustomizeParams::default();
+        p.enable_mybatis_plus = true;
+        p.enable_sql_customize = false;
+        p.server_port = 5010;
+        let mut out = GEN_WRAPPED_DS.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-gen-dev.yml", &p, "ry-cloud", true, &|_| {});
+        let keys = datasource_direct_child_keys(&out);
+        assert!(keys.contains(&"url".to_string()), "误 wrap 的 gen 应拆回扁平 url：{out}");
+        assert!(
+            !keys.contains(&"dynamic".to_string()),
+            "误 wrap 的 gen 不得再留 dynamic：{out}"
+        );
+        assert!(has_top_level_key(&out, "mybatis"), "gen 应改回 mybatis：{out}");
+        assert!(
+            !has_top_level_key(&out, "mybatis-plus"),
+            "gen 不得保留 mybatis-plus：{out}"
+        );
+        assert!(
+            out.contains("url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false"),
+            "拆回后应保留连接字段：{out}"
+        );
+        assert!(
+            out.contains("gatewayUrl: http://127.0.0.1:5010/${spring.application.name}"),
+            "springdoc.gatewayUrl 应改成网关端口：{out}"
+        );
+        let mut again = out.clone();
+        rewrite_one_yaml(&mut again, "ruoyi-gen-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert_eq!(again, out, "gen unwrap 必须幂等");
+    }
+
+    #[test]
+    fn mp_does_not_unwrap_system_druid_dynamic() {
+        let mut p = CustomizeParams::default();
+        p.enable_mybatis_plus = true;
+        p.enable_sql_customize = false;
+        p.server_port = 5010;
+        let mut out = SYSTEM_DRUID_DYNAMIC_DS.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        let keys = datasource_direct_child_keys(&out);
+        assert!(
+            keys.contains(&"druid".to_string()) && keys.contains(&"dynamic".to_string()),
+            "system 的 druid+dynamic 不得拆：{out}"
+        );
+        assert!(
+            !keys.contains(&"url".to_string()),
+            "system 不得把 master.url 提升到 datasource 下一层：{out}"
+        );
+        assert!(has_top_level_key(&out, "mybatis-plus"), "system 应保持 mybatis-plus：{out}");
+        assert!(
+            out.contains("gatewayUrl: http://127.0.0.1:5010/${spring.application.name}"),
+            "system springdoc.gatewayUrl 应改成网关端口：{out}"
+        );
+        assert!(
+            !out.contains("localhost:8080/${spring.application.name}"),
+            "不得残留 localhost:8080 gatewayUrl：{out}"
+        );
+    }
+
+    const FILE_YML: &str = "server:\n  port: 9300\n# 本地文件上传\nfile:\n  domain: http://127.0.0.1:9300\n  path: D:/ruoyi/uploadPath\n  prefix: /statics\n# FastDFS配置\nfdfs:\n  domain: http://127.0.0.1:9300\n  soTimeout: 3000\n  connectTimeout: 2000\n  trackerList: 127.0.0.1:22122\n# Minio配置\nminio:\n  url: http://localhost:9000\n  accessKey: minioadmin\n  secretKey: minioadmin\n  bucketName: ruoyi\n";
+
+    #[test]
+    fn file_domain_follows_resolved_module_port() {
+        let mut p = CustomizeParams::default();
+        p.server_port = 5010;
+        let mut out = FILE_YML.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-file-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(
+            out.contains("domain: http://127.0.0.1:5015"),
+            "file.domain 应为解析后的 file 端口 5015：{out}"
+        );
+        assert!(
+            !out.contains(":9300"),
+            "不得残留官方 file 端口 :9300：{out}"
+        );
+        assert!(
+            out.contains("url: http://localhost:9000"),
+            "不得改 minio 9000：{out}"
+        );
+        assert!(
+            out.contains("trackerList: 127.0.0.1:22122"),
+            "不得改 trackerList 22122：{out}"
+        );
+        assert!(out.contains("port: 5015"), "server.port 应为 file 端口：{out}");
+        let mut again = out.clone();
+        rewrite_one_yaml(&mut again, "ruoyi-file-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert_eq!(again, out, "file.domain 改写必须幂等");
+    }
+
+    #[test]
+    fn file_domain_rewrites_localhost_official_url() {
+        let mut p = CustomizeParams::default();
+        p.server_port = 5010;
+        let yaml = "file:\n  domain: http://localhost:9300\nminio:\n  url: http://localhost:9000\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-file-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(
+            out.contains("domain: http://127.0.0.1:5015"),
+            "localhost:9300 应改成 127.0.0.1:5015：{out}"
+        );
+        assert!(!out.contains("localhost:9300"), "{out}");
+        assert!(out.contains("url: http://localhost:9000"), "不得改 minio：{out}");
+    }
+
+    #[test]
+    fn file_public_url_does_not_rewrite_timeout_milliseconds() {
+        let mut p = CustomizeParams::default();
+        p.server_port = 5010;
+        let yaml = "file:\n  domain: http://127.0.0.1:9300\n  timeout: 9300\nminio:\n  url: http://localhost:9000\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-file-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(out.contains("domain: http://127.0.0.1:5015"), "{out}");
+        assert!(out.contains("timeout: 9300"), "不得把超时毫秒 9300 当端口改掉：{out}");
+        assert!(out.contains("url: http://localhost:9000"), "{out}");
+    }
+
+    #[test]
+    fn monitor_public_url_follows_resolved_port() {
+        let mut p = CustomizeParams::default();
+        p.server_port = 5010;
+        let yaml = "server:\n  port: 9100\nconsole:\n  url: http://localhost:9100/login\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-monitor-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(
+            out.contains("http://127.0.0.1:5016/login"),
+            "monitor 外链应跟解析端口：{out}"
+        );
+        assert!(!out.contains(":9100"), "不得残留官方 monitor 9100：{out}");
     }
 }

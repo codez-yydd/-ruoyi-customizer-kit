@@ -186,17 +186,72 @@ pub fn find_ry_config_sql(root: &Path) -> Option<PathBuf> {
     hits.into_iter().next()
 }
 
+/// Cloud 业务服务叶子（官方在 `*-modules` / `*-visual`，不是 Feign `*-api`）。
+/// `gateway` / `auth` 在仓库根目录，不走此判断。
+pub fn is_cloud_service_leaf_suffix(suffix: &str) -> bool {
+    matches!(suffix, "system" | "gen" | "job" | "file" | "monitor")
+}
+
+/// 相对路径或叶子名是否为 Feign API 模块（如 `acro-api/acro-api-system`）。
+pub fn is_cloud_api_module_rel(rel: &str) -> bool {
+    let n = rel.replace('\\', "/");
+    let leaf = n.rsplit('/').next().unwrap_or(n.as_str());
+    n.contains("-api/") || leaf.contains("-api-")
+}
+
+/// Cloud 模块查找分数：越小越优先。Feign API 返回 None（丢弃）。
+/// 路径含 `-modules/` 或父目录名以 `-modules` 结尾 → 0；其余 → 1。
+pub fn cloud_module_lookup_score(rel: &str) -> Option<u8> {
+    if is_cloud_api_module_rel(rel) {
+        return None;
+    }
+    let n = rel.replace('\\', "/");
+    let parent = n.rsplit_once('/').map(|(p, _)| p.rsplit('/').next().unwrap_or(p));
+    if n.contains("-modules/") || parent.is_some_and(|p| p.ends_with("-modules")) {
+        return Some(0);
+    }
+    Some(1)
+}
+
+fn module_leaf_name(rel: &str) -> String {
+    Path::new(rel)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| {
+            rel.replace('\\', "/")
+                .rsplit('/')
+                .next()
+                .unwrap_or(rel)
+                .to_string()
+        })
+}
+
+/// 多命中时按 [`cloud_module_lookup_score`] 取最优；同分保留先出现的。
+pub(crate) fn pick_best_module_rel(rels: impl IntoIterator<Item = String>) -> Option<String> {
+    let mut best: Option<(u8, String)> = None;
+    for rel in rels {
+        let Some(score) = cloud_module_lookup_score(&rel) else {
+            continue;
+        };
+        match &best {
+            None => best = Some((score, rel)),
+            Some((s, _)) if score < *s => best = Some((score, rel)),
+            _ => {}
+        }
+    }
+    best.map(|(_, m)| m)
+}
+
 /// 按叶子目录后缀定位模块（支持 Cloud 嵌套：`{prefix}-modules/{prefix}-system`）。
 /// `leaf_suffix` 如 `system` / `common-datasource` / `gateway`。
+/// 多命中时优先 `-modules/` 下的叶子，丢弃 Feign `*-api-*`（勿把 API 当可运行服务）。
 pub fn find_module_by_leaf_suffix(root: &Path, modules: &[String], leaf_suffix: &str) -> Option<String> {
     let want = format!("-{leaf_suffix}");
-    modules.iter().find(|m| {
-        let name = Path::new(m)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| m.replace('\\', "/").rsplit('/').next().unwrap_or(m).to_string());
+    let hits = modules.iter().filter(|m| {
+        let name = module_leaf_name(m);
         (name.ends_with(&want) || name == leaf_suffix) && root.join(m).join("pom.xml").is_file()
-    }).cloned()
+    }).cloned();
+    pick_best_module_rel(hits)
 }
 
 /// Cloud 可运行服务叶子后缀（gateway / auth / system / gen / job / file / monitor）。
@@ -484,13 +539,19 @@ fn is_excluded_dir_name(name: &std::ffi::OsStr) -> bool {
     let n = name.to_string_lossy();
     matches!(
         n.as_ref(),
-        "target" | "node_modules" | ".git" | ".idea" | ".vscode" | "dist" | "logs" | "log"
+        "target" | "node_modules" | ".git" | ".idea" | ".vscode" | "dist" | "logs"
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn excluded_dir_name_keeps_logs_not_log() {
+        assert!(is_excluded_dir_name(std::ffi::OsStr::new("logs")));
+        assert!(!is_excluded_dir_name(std::ffi::OsStr::new("log")));
+    }
 
     #[test]
     fn common_prefix_two_services() {
@@ -570,5 +631,81 @@ mod tests {
 
         std::fs::write(tpl.join("main.html"), "<!DOCTYPE html><html></html>").unwrap();
         assert!(looks_like_thymeleaf_monolith(root));
+    }
+
+    fn write_pom(dir: &Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("pom.xml"), "<project/>\n").unwrap();
+    }
+
+    /// Cloud：同时存在 Feign `*-api-system` 与 `*-modules/*-system` 时，必须指向服务模块。
+    #[test]
+    fn cloud_system_prefers_modules_over_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let p = "acro";
+        write_pom(&root.join(format!("{p}-api/{p}-api-system")));
+        write_pom(&root.join(format!("{p}-modules/{p}-system")));
+        write_pom(&root.join(format!("{p}-common/{p}-common-datasource")));
+        write_pom(&root.join(format!("{p}-common/{p}-common-core")));
+
+        // API 排在列表前面，模拟 read_dir / 扫描先命中 -api
+        let modules = vec![
+            format!("{p}-api/{p}-api-system"),
+            format!("{p}-modules/{p}-system"),
+            format!("{p}-common/{p}-common-datasource"),
+            format!("{p}-common/{p}-common-core"),
+        ];
+
+        let system = find_module_by_leaf_suffix(root, &modules, "system").unwrap();
+        assert_eq!(
+            system.replace('\\', "/"),
+            format!("{p}-modules/{p}-system"),
+            "find_module_by_leaf_suffix 不得命中 Feign API"
+        );
+
+        let ds = find_module_by_leaf_suffix(root, &modules, "common-datasource").unwrap();
+        assert_eq!(
+            ds.replace('\\', "/"),
+            format!("{p}-common/{p}-common-datasource"),
+            "common-datasource 仍应落在 -common/"
+        );
+
+        let mut params = crate::core::CustomizeParams::default();
+        params.new_module_prefix = p.into();
+        params.original_module_prefix = "ruoyi".into();
+        let system_dir = crate::core::web_footer::find_module_dir(root, &params, "system").unwrap();
+        let rel = system_dir
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert_eq!(rel, format!("{p}-modules/{p}-system"), "find_module_dir 不得命中 Feign API");
+
+        let core_dir = crate::core::web_footer::find_module_dir(root, &params, "common-core").unwrap();
+        let core_rel = core_dir
+            .strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert_eq!(
+            core_rel,
+            format!("{p}-common/{p}-common-core"),
+            "common-core 仍应落在 -common/"
+        );
+    }
+
+    #[test]
+    fn cloud_api_rel_and_score() {
+        assert!(is_cloud_api_module_rel("acro-api/acro-api-system"));
+        assert!(is_cloud_api_module_rel("acro-api-system"));
+        assert!(!is_cloud_api_module_rel("acro-modules/acro-system"));
+        assert!(!is_cloud_api_module_rel("acro-common/acro-common-datasource"));
+        assert_eq!(cloud_module_lookup_score("acro-api/acro-api-system"), None);
+        assert_eq!(cloud_module_lookup_score("acro-modules/acro-system"), Some(0));
+        assert_eq!(
+            cloud_module_lookup_score("acro-common/acro-common-core"),
+            Some(1)
+        );
     }
 }

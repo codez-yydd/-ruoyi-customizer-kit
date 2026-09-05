@@ -62,7 +62,7 @@
           Vue 3 / TypeScript / Vite / Pinia / Arco Design Vue
         </a-descriptions-item>
         <a-descriptions-item :label="t('dashboard.labelBackendStack')">
-          RuoYi-Vue（Spring Boot 3）
+          {{BACKEND_STACK}}
         </a-descriptions-item>
       </a-descriptions>
       <p class="dashboard__about-desc">{{ t('dashboard.aboutDesc') }}</p>

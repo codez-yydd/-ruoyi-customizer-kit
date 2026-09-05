@@ -9,7 +9,9 @@
 //    从 base 移除，放进 dev（明文 localhost）和 prod（环境变量占位）。
 //    base 只保留与环境无关的公共配置（server、token、mybatis-plus、ruoyi 业务配置等）。
 
-use crate::core::CustomizeParams;
+use crate::core::{
+    yaml_quote_scalar, CustomizeParams, resolve_db_host, resolve_db_port, resolve_db_username,
+};
 use regex::Regex;
 use std::path::{Path, PathBuf};
 
@@ -258,7 +260,7 @@ pub fn rewrite(
         }
     };
     let dialect = crate::core::db_dialect::from_params(params);
-    let std_block = build_standard_datasource_redis(dialect, &db_name, boot_major);
+    let std_block = build_standard_datasource_redis(dialect, &db_name, boot_major, params);
     let dev = std_block.clone();
     let prod = std_block;
 
@@ -694,15 +696,35 @@ fn db_name_from_url_line(line: &str) -> Option<String> {
 /// 官方文档：https://docs.spring.io/spring-boot/4.0/reference/data/nosql.html
 ///
 /// `db_name`：数据库名（写入 url 路径段）。
+/// 未开 SQL 定制：保持 `localhost` + 方言默认端口 + `root` / `123456`。
+/// 开了 SQL 定制：用 resolve 后的 host/port/username/password（密码可空）。
 pub(crate) fn build_standard_datasource_redis(
     dialect: &crate::core::db_dialect::DbDialect,
     db_name: &str,
     boot_major: Option<u32>,
+    params: &CustomizeParams,
 ) -> String {
+    let (host, port, username, password) = if params.enable_sql_customize {
+        (
+            resolve_db_host(params),
+            resolve_db_port(params),
+            resolve_db_username(params),
+            params.db_password.clone(),
+        )
+    } else {
+        (
+            "localhost".into(),
+            dialect.default_port,
+            "root".into(),
+            "123456".into(),
+        )
+    };
     let url = format!(
-        "{}://localhost:{}/{}?{}",
-        dialect.url_scheme, dialect.default_port, db_name, dialect.url_params
+        "{}://{}:{}/{}?{}",
+        dialect.url_scheme, host, port, db_name, dialect.url_params
     );
+    let username = yaml_quote_scalar(&username);
+    let password = yaml_quote_scalar(&password);
     let redis_block = if boot_major == Some(2) {
         r#"  # redis 配置
   redis:
@@ -763,8 +785,8 @@ spring:
       # 主库数据源
       master:
         url: {url}
-        username: root
-        password: 123456
+        username: {username}
+        password: {password}
       # 从库数据源
       slave:
         # 从数据源开关/默认关闭
@@ -818,6 +840,8 @@ spring:
 {redis_block}"#,
         driver = dialect.driver_class,
         url = url,
+        username = username,
+        password = password,
         validation = dialect.validation_query,
         redis_block = redis_block
     )
@@ -905,7 +929,7 @@ mod tests {
     #[test]
     fn redis_keys_boot2_uses_spring_redis() {
         let dialect = crate::core::db_dialect::from_params(&CustomizeParams::default());
-        let yaml = build_standard_datasource_redis(dialect, "ry", Some(2));
+        let yaml = build_standard_datasource_redis(dialect, "ry", Some(2), &CustomizeParams::default());
         assert!(yaml.contains("spring:"), "应含 spring 块");
         assert!(
             yaml.contains("\n  redis:\n"),
@@ -921,7 +945,7 @@ mod tests {
     fn redis_keys_boot3_boot4_none_use_spring_data_redis() {
         let dialect = crate::core::db_dialect::from_params(&CustomizeParams::default());
         for major in [Some(3), Some(4), None] {
-            let yaml = build_standard_datasource_redis(dialect, "ry", major);
+            let yaml = build_standard_datasource_redis(dialect, "ry", major, &CustomizeParams::default());
             assert!(
                 yaml.contains("\n  data:\n") && yaml.contains("\n    redis:\n"),
                 "Boot {major:?} 应含 spring.data.redis：{yaml}"

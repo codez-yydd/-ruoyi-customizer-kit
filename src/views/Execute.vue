@@ -61,7 +61,7 @@ async function run() {
     if (resp.success && extractRoot.value) {
       await cleanupTempDir()
     }
-    // 执行成功后保存配置到历史记录（store 内部会脱敏敏感字段）
+    // 执行成功后保存配置到历史记录（完整参数，含密码与密钥）
     if (resp.success && params.value) {
       profilesStore.addHistory(params.value)
     }
@@ -172,95 +172,97 @@ async function copyReportPath() {
 
 <template>
   <div class="execute">
-    <div class="page-header">
-      <div class="page-header__icon">
-        <el-icon :size="20"><Tools /></el-icon>
+    <div class="execute__body">
+      <div class="page-header">
+        <div class="page-header__icon">
+          <el-icon :size="20"><Tools /></el-icon>
+        </div>
+        <div>
+          <h2 class="page-header__title">执行改造</h2>
+          <div class="page-header__subtitle">执行定制任务并查看结果</div>
+        </div>
       </div>
-      <div>
-        <h2 class="page-header__title">执行改造</h2>
-        <div class="page-header__subtitle">执行定制任务并查看结果</div>
+
+      <div v-if="running" class="rf-card">
+        <el-alert type="info" :closable="false" title="正在执行改造，请勿关闭窗口..." show-icon />
       </div>
-    </div>
 
-    <div v-if="running" class="rf-card">
-      <el-alert type="info" :closable="false" title="正在执行改造，请勿关闭窗口..." show-icon />
-    </div>
-
-    <div v-if="result" class="rf-card">
-      <el-alert
-        :type="result.success ? 'success' : 'warning'"
-        :title="result.message"
-        :closable="false"
-        show-icon
-      />
-      <div class="stats">
-        <div class="stat"><div class="stat__num ok">{{ successCount() }}</div><div class="stat__label">成功</div></div>
-        <div class="stat"><div class="stat__num warn">{{ skippedCount() }}</div><div class="stat__label">跳过</div></div>
-        <div class="stat"><div class="stat__num err">{{ failedCount() }}</div><div class="stat__label">失败</div></div>
+      <div v-if="result" class="rf-card">
+        <el-alert
+          :type="result.success ? 'success' : 'warning'"
+          :title="result.message"
+          :closable="false"
+          show-icon
+        />
+        <div class="stats">
+          <div class="stat"><div class="stat__num ok">{{ successCount() }}</div><div class="stat__label">成功</div></div>
+          <div class="stat"><div class="stat__num warn">{{ skippedCount() }}</div><div class="stat__label">跳过</div></div>
+          <div class="stat"><div class="stat__num err">{{ failedCount() }}</div><div class="stat__label">失败</div></div>
+        </div>
       </div>
-    </div>
 
-    <div v-if="result" class="rf-card">
-      <h3 class="section-title">任务执行结果</h3>
-      <el-table :data="result.task_results" stripe size="default">
-        <el-table-column prop="task_id" label="序号" width="60" />
-        <el-table-column prop="task_name" label="任务" min-width="220" />
-        <el-table-column label="状态" width="90">
-          <template #default="{ row }">
-            <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column label="修改" width="70"><template #default="{ row }">{{ row.modified_files }}</template></el-table-column>
-        <el-table-column label="新增" width="70"><template #default="{ row }">{{ row.created_files }}</template></el-table-column>
-        <el-table-column label="重命名" width="80"><template #default="{ row }">{{ row.renamed_dirs }}</template></el-table-column>
-        <el-table-column prop="message" label="说明" min-width="160" />
-      </el-table>
-    </div>
-
-    <!-- 执行后校验：展示改造完成后的残留/合法性/产物完整性扫描，checks 为空时不渲染 -->
-    <div v-if="checkItems.length" class="rf-card">
-      <h3 class="section-title">执行后校验</h3>
-      <el-alert
-        v-if="checkFailCount"
-        class="check-alert"
-        type="error"
-        :title="`校验存在失败项：${checkFailCount} 失败 / ${checkWarnCount} 警告，请查看下方说明并在报告中确认处理方案`"
-        :closable="false"
-        show-icon
-      />
-      <el-alert
-        v-else-if="checkWarnCount"
-        class="check-alert"
-        type="warning"
-        :title="`校验存在警告项：${checkWarnCount} 警告，建议核对残留说明后按需处理`"
-        :closable="false"
-        show-icon
-      />
-      <el-alert v-else class="check-alert" type="success" title="全部校验项通过" :closable="false" show-icon />
-      <el-table :data="checkItems" stripe size="default">
-        <el-table-column prop="item" label="校验项" min-width="200" />
-        <el-table-column label="结果" width="110">
-          <template #default="{ row }">
-            <el-tag :type="checkTagType(row.result)" size="small">{{ checkLabel(row.result) }}</el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="message" label="说明" min-width="220" />
-      </el-table>
-    </div>
-
-    <!-- 改造报告路径：未生成报告（report_path 为空）时不渲染 -->
-    <div v-if="result?.report_path" class="rf-card report-card">
-      <div class="report-info">
-        <span class="report-label">改造报告</span>
-        <span class="report-path">{{ result.report_path }}</span>
+      <div v-if="result" class="rf-card">
+        <h3 class="section-title">任务执行结果</h3>
+        <el-table :data="result.task_results" stripe size="default">
+          <el-table-column prop="task_id" label="序号" width="60" />
+          <el-table-column prop="task_name" label="任务" min-width="220" />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">
+              <el-tag :type="statusTag(row.status)" size="small">{{ statusLabel(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="修改" width="70"><template #default="{ row }">{{ row.modified_files }}</template></el-table-column>
+          <el-table-column label="新增" width="70"><template #default="{ row }">{{ row.created_files }}</template></el-table-column>
+          <el-table-column label="重命名" width="80"><template #default="{ row }">{{ row.renamed_dirs }}</template></el-table-column>
+          <el-table-column prop="message" label="说明" min-width="160" />
+        </el-table>
       </div>
-      <div class="report-actions">
-        <el-button size="small" @click="openReportDir">打开报告目录</el-button>
-        <el-button size="small" @click="copyReportPath">复制路径</el-button>
-      </div>
-    </div>
 
-    <LogPanel />
+      <!-- 执行后校验：展示改造完成后的残留/合法性/产物完整性扫描，checks 为空时不渲染 -->
+      <div v-if="checkItems.length" class="rf-card">
+        <h3 class="section-title">执行后校验</h3>
+        <el-alert
+          v-if="checkFailCount"
+          class="check-alert"
+          type="error"
+          :title="`校验存在失败项：${checkFailCount} 失败 / ${checkWarnCount} 警告，请查看下方说明并在报告中确认处理方案`"
+          :closable="false"
+          show-icon
+        />
+        <el-alert
+          v-else-if="checkWarnCount"
+          class="check-alert"
+          type="warning"
+          :title="`校验存在警告项：${checkWarnCount} 警告，建议核对残留说明后按需处理`"
+          :closable="false"
+          show-icon
+        />
+        <el-alert v-else class="check-alert" type="success" title="全部校验项通过" :closable="false" show-icon />
+        <el-table :data="checkItems" stripe size="default">
+          <el-table-column prop="item" label="校验项" min-width="200" />
+          <el-table-column label="结果" width="110">
+            <template #default="{ row }">
+              <el-tag :type="checkTagType(row.result)" size="small">{{ checkLabel(row.result) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="message" label="说明" min-width="220" />
+        </el-table>
+      </div>
+
+      <!-- 改造报告路径：未生成报告（report_path 为空）时不渲染 -->
+      <div v-if="result?.report_path" class="rf-card report-card">
+        <div class="report-info">
+          <span class="report-label">改造报告</span>
+          <span class="report-path">{{ result.report_path }}</span>
+        </div>
+        <div class="report-actions">
+          <el-button size="small" @click="openReportDir">打开报告目录</el-button>
+          <el-button size="small" @click="copyReportPath">复制路径</el-button>
+        </div>
+      </div>
+
+      <LogPanel />
+    </div>
 
     <div v-if="result" class="actions">
       <el-button type="primary" @click="backHome">完成，返回首页</el-button>
@@ -269,6 +271,22 @@ async function copyReportPath() {
 </template>
 
 <style scoped>
+.execute {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.execute__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 8px;
+}
 .stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -328,7 +346,11 @@ async function copyReportPath() {
 }
 .actions {
   display: flex;
-  justify-content: space-between;
-  margin-top: 20px;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  margin-top: 0;
+  padding: 12px 0 0;
+  background: var(--rf-bg);
+  border-top: 1px solid var(--rf-card-border);
 }
 </style>

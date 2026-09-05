@@ -105,7 +105,7 @@ where
         TaskType::TrimCloudModules => do_trim_cloud_modules(root, params, &mut r, log),
         TaskType::RewriteLogbackPath => do_rewrite_logback(root, &engine, &mut r, log),
         TaskType::InjectColoredConsolePattern => do_inject_colored_console(root, &engine, &mut r, log),
-        TaskType::AddMybatisPlusDependency => do_add_mp_dependency(root, info, &mut r, log),
+        TaskType::AddMybatisPlusDependency => do_add_mp_dependency(root, info, params, &mut r, log),
         TaskType::AddMybatisPlusConfig => do_add_mp_config(root, params, info, &mut r, log),
         TaskType::UpdateGeneratorTemplatesForMybatisPlus => do_adapt_generator(root, params, info, &mut r, log),
         TaskType::AddLongIdJsonSerializeAnnotation => do_add_long_id(root, info, &mut r, log),
@@ -672,16 +672,28 @@ fn find_resources_dir(root: &Path, template: &Template) -> Option<PathBuf> {
 }
 
 /// 8. 添加 MyBatis-Plus 依赖 + 改造现有 Mapper/Service（幂等）
-fn do_add_mp_dependency<F>(root: &Path, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+fn do_add_mp_dependency<F>(
+    root: &Path,
+    info: &crate::core::ProjectInfo,
+    params: &CustomizeParams,
+    r: &mut TaskResult,
+    log: &F,
+) -> Result<(), String>
 where
     F: Fn(&str),
 {
     // 注意：执行到此步时模块可能已被重命名，扫描当前实际存在的模块目录，而非依赖 info.backend_modules
     let modules = current_backend_modules(root, info);
     let added = crate::core::mybatis_plus::add_dependency(root, &modules, info.spring_boot_major, log)?;
+    // Cloud：先给 system/job 补 common-datasource（传递 MP），再改源码，避免 job 编译失败
+    let ds_added = crate::core::mybatis_plus::ensure_cloud_mp_modules_have_datasource(
+        root, &modules, params, log,
+    )?;
     if added {
-        r.modified_files = 1;
-    } else {
+        r.modified_files += 1;
+    }
+    r.modified_files += ds_added;
+    if !added && ds_added == 0 {
         r.message = "依赖已存在，跳过".into();
     }
     // Cloud：仅扫 system + job；Vue：全树（成功语义不变）
@@ -1089,6 +1101,7 @@ where
         &output_dir,
         params,
         overlay.as_deref(),
+        crate::core::detector::is_cloud_project(root, &info.template_dir),
         &|msg| log(msg),
     )?;
     r.created_files = result.files_created;
@@ -1282,6 +1295,24 @@ where
         crate::core::nacos_config::NacosRewriteOutcome::Skipped(msg) => {
             r.status = TaskStatus::Skipped;
             r.message = msg;
+        }
+    }
+    if crate::core::detector::is_cloud_layout(root) {
+        let (bootstrap_n, sql_n) =
+            crate::core::cloud_ports::apply_cloud_ports(root, params, &|msg| log(msg))?;
+        if bootstrap_n + sql_n > 0 {
+            r.modified_files += bootstrap_n + sql_n;
+            if r.status == TaskStatus::Skipped {
+                r.status = TaskStatus::Success;
+            }
+            let extra = format!("；已同步模块端口（bootstrap {bootstrap_n}、控制台 SQL {sql_n}）");
+            if r.message.is_empty() {
+                r.message = extra.trim_start_matches('；').to_string();
+            } else {
+                r.message.push_str(&extra);
+            }
+        } else {
+            log("Cloud 模块端口：bootstrap / 控制台 SQL 无需改写或已是目标值");
         }
     }
     Ok(())
@@ -1496,6 +1527,9 @@ fn do_generate_dev_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut Tas
 where
     F: Fn(&str),
 {
+    if crate::core::detector::is_cloud_layout(root) {
+        crate::core::cloud_ports::apply_cloud_ports(root, params, &|msg| log(msg))?;
+    }
     let outcome = crate::core::scripts::generate_dev_scripts(
         root,
         params,

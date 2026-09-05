@@ -48,26 +48,29 @@ start_one() {
   echo $! > "logs/${name}.pid"
 }
 
-# 网关默认 {{SERVER_PORT}}
-start_one "gateway" "{{MODULE_PREFIX}}-gateway" "{{SERVER_PORT}}"
+start_one "gateway" "{{MODULE_PREFIX}}-gateway" "{{GATEWAY_PORT}}"
 sleep 2
-start_one "auth" "{{MODULE_PREFIX}}-auth" ""
+start_one "auth" "{{MODULE_PREFIX}}-auth" "{{AUTH_PORT}}"
 sleep 2
 if [ -d "./{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system" ]; then
-  start_one "system" "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system" ""
+  start_one "system" "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system" "{{SYSTEM_PORT}}"
 elif [ -d "./{{MODULE_PREFIX}}-system" ]; then
-  start_one "system" "{{MODULE_PREFIX}}-system" ""
+  start_one "system" "{{MODULE_PREFIX}}-system" "{{SYSTEM_PORT}}"
 fi
 sleep 2
 
-for dir in {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-gen \
-           {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-job \
-           {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-file \
-           {{MODULE_PREFIX}}-visual/{{MODULE_PREFIX}}-monitor; do
-  if [ -d "./$dir" ]; then
-    start_one "$(basename "$dir")" "$dir" ""
-  fi
-done
+if [ -d "./{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-gen" ]; then
+  start_one "gen" "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-gen" "{{GEN_PORT}}"
+fi
+if [ -d "./{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-job" ]; then
+  start_one "job" "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-job" "{{JOB_PORT}}"
+fi
+if [ -d "./{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-file" ]; then
+  start_one "file" "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-file" "{{FILE_PORT}}"
+fi
+if [ -d "./{{MODULE_PREFIX}}-visual/{{MODULE_PREFIX}}-monitor" ]; then
+  start_one "monitor" "{{MODULE_PREFIX}}-visual/{{MODULE_PREFIX}}-monitor" "{{MONITOR_PORT}}"
+fi
 
 echo "✅ Cloud 服务启动命令已发出，日志在 logs/"
 echo "   停止：./scripts/stop.sh"

@@ -113,7 +113,7 @@ fn build_cloud_fixture(boot2: bool) -> tempfile::TempDir {
 
     write(
         root.join("ruoyi-common/pom.xml"),
-        "<project><artifactId>ruoyi-common</artifactId><modules><module>ruoyi-common-core</module><module>ruoyi-common-datasource</module></modules></project>\n",
+        "<project><artifactId>ruoyi-common</artifactId><modules><module>ruoyi-common-core</module><module>ruoyi-common-datasource</module><module>ruoyi-common-log</module></modules></project>\n",
     );
     write(
         root.join("ruoyi-common/ruoyi-common-core/pom.xml"),
@@ -124,12 +124,24 @@ fn build_cloud_fixture(boot2: bool) -> tempfile::TempDir {
         "<project><artifactId>ruoyi-common-datasource</artifactId><dependencies></dependencies></project>\n",
     );
     write(
+        root.join("ruoyi-common/ruoyi-common-log/pom.xml"),
+        "<project><artifactId>ruoyi-common-log</artifactId><dependencies></dependencies></project>\n",
+    );
+    write(
+        root.join("ruoyi-common/ruoyi-common-log/src/main/java/com/ruoyi/common/log/aspect/LogAspect.java"),
+        "package com.ruoyi.common.log.aspect;\nimport com.ruoyi.common.core.text.Convert;\npublic class LogAspect {}\n",
+    );
+    write(
         root.join("ruoyi-common/ruoyi-common-core/src/main/java/com/ruoyi/common/core/constant/TokenConstants.java"),
         "package com.ruoyi.common.core.constant;\npublic class TokenConstants {\n    public static final String SECRET = \"abcdefghijklmnopqrstuvwxyz\";\n}\n",
     );
     write(
         root.join("ruoyi-common/ruoyi-common-core/src/main/java/com/ruoyi/common/core/constant/CacheConstants.java"),
         "package com.ruoyi.common.core.constant;\npublic class CacheConstants {\n    public static final long EXPIRATION = 720;\n}\n",
+    );
+    write(
+        root.join("ruoyi-common/ruoyi-common-core/src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports"),
+        "com.ruoyi.common.core.utils.SpringUtils\n",
     );
     // 官方 Cloud 全树无 RuoYiConfig.java（核实 2026-09-05），fixture 不再放置。
 
@@ -138,15 +150,31 @@ fn build_cloud_fixture(boot2: bool) -> tempfile::TempDir {
         "<project><artifactId>ruoyi-modules</artifactId><modules><module>ruoyi-system</module><module>ruoyi-gen</module><module>ruoyi-job</module></modules></project>\n",
     );
     for m in ["system", "gen", "job"] {
+        // 官方 Cloud：system 自带 common-datasource；job 没有（纯 MyBatis 接口，编译不需要 MP）
+        let extra = if m == "system" {
+            "        <dependency>\n            <groupId>com.ruoyi</groupId>\n            <artifactId>ruoyi-common-datasource</artifactId>\n        </dependency>\n"
+        } else {
+            ""
+        };
         write(
             root.join(format!("ruoyi-modules/ruoyi-{m}/pom.xml")),
-            format!("<project><artifactId>ruoyi-{m}</artifactId><dependencies></dependencies></project>\n"),
+            format!("<project><artifactId>ruoyi-{m}</artifactId><dependencies>\n{extra}</dependencies></project>\n"),
         );
         write(
             root.join(format!("ruoyi-modules/ruoyi-{m}/src/main/java/com/ruoyi/{m}/Service.java")),
             format!("package com.ruoyi.{m};\npublic class Service {{}}\n"),
         );
     }
+
+    // Feign API 与 modules/system 同时存在：改造不得把 Java 写进 api-system
+    write(
+        root.join("ruoyi-api/pom.xml"),
+        "<project><artifactId>ruoyi-api</artifactId><modules><module>ruoyi-api-system</module></modules></project>\n",
+    );
+    write(
+        root.join("ruoyi-api/ruoyi-api-system/pom.xml"),
+        "<project><artifactId>ruoyi-api-system</artifactId><dependencies></dependencies></project>\n",
+    );
 
     write(
         root.join("ruoyi-visual/pom.xml"),
@@ -158,9 +186,9 @@ fn build_cloud_fixture(boot2: bool) -> tempfile::TempDir {
     );
 
     let bootstrap = if boot2 {
-        "spring:\n  cloud:\n    nacos:\n      config:\n        server-addr: 127.0.0.1:8848\n        file-extension: yml\n        shared-configs:\n          - application-dev.yml\n"
+        "server:\n  port: 8080\nspring:\n  cloud:\n    nacos:\n      config:\n        server-addr: 127.0.0.1:8848\n        file-extension: yml\n        shared-configs:\n          - application-dev.yml\n"
     } else {
-        "spring:\n  config:\n    import: nacos:application-dev.yml\n  cloud:\n    nacos:\n      config:\n        server-addr: 127.0.0.1:8848\n        file-extension: yml\n"
+        "server:\n  port: 8080\nspring:\n  config:\n    import: nacos:application-dev.yml\n  cloud:\n    nacos:\n      config:\n        server-addr: 127.0.0.1:8848\n        file-extension: yml\n"
     };
     for p in [
         "ruoyi-gateway/src/main/resources/bootstrap.yml",
@@ -184,7 +212,7 @@ fn build_cloud_fixture(boot2: bool) -> tempfile::TempDir {
 
     write(
         root.join("sql/ry_20260905.sql"),
-        "CREATE DATABASE `ry-cloud`;\nUSE `ry-cloud`;\ninsert into sys_menu (menu_id, menu_name) values (116, '代码生成');\ninsert into sys_menu (menu_id, menu_name) values (105, '定时任务');\ninsert into sys_menu (menu_id, menu_name) values (1, '系统管理');\n",
+        "CREATE DATABASE `ry-cloud`;\nUSE `ry-cloud`;\ninsert into sys_menu (menu_id, menu_name) values (116, '代码生成');\ninsert into sys_menu (menu_id, menu_name) values (105, '定时任务');\ninsert into sys_menu (menu_id, menu_name) values (1, '系统管理');\ninsert into sys_menu (menu_id, menu_name, path) values (111, 'Sentinel控制台', 'http://localhost:8718');\ninsert into sys_menu (menu_id, menu_name, path) values (112, 'Nacos控制台', 'http://localhost:8848/nacos');\ninsert into sys_menu (menu_id, menu_name, path) values (113, 'Admin控制台', 'http://localhost:9100/login');\ninsert into sys_menu (menu_id, menu_name, path) values (114, '系统接口', 'http://localhost:8080/swagger-ui/index.html');\n",
     );
 
     let redis = if boot2 {
@@ -197,22 +225,25 @@ fn build_cloud_fixture(boot2: bool) -> tempfile::TempDir {
     } else {
         "spring:\n  cloud:\n    gateway:\n      server:\n        webflux:\n          routes:\n            - id: ruoyi-auth\n              uri: lb://ruoyi-auth\n              predicates:\n                - Path=/auth/**\n            - id: ruoyi-gen\n              uri: lb://ruoyi-gen\n              predicates:\n                - Path=/code/**\n            - id: ruoyi-job\n              uri: lb://ruoyi-job\n              predicates:\n                - Path=/schedule/**\n            - id: ruoyi-system\n              uri: lb://ruoyi-system\n              predicates:\n                - Path=/system/**\n"
     };
-    let app_yml = format!(
-        "{redis}spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n"
-    );
+    // 官方：application-dev 无业务库 url；system 已是 dynamic.master；job 是扁平 datasource。
+    let app_yml = redis.to_string();
     let system_yml = format!(
-        "{redis}spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\nmybatis:\n  typeAliasesPackage: com.ruoyi.system\n  mapperLocations: classpath*:mapper/**/*.xml\n"
+        "{redis}spring:\n  datasource:\n    dynamic:\n      datasource:\n        master:\n          url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n          username: root\n          password: password\nmybatis:\n  typeAliasesPackage: com.ruoyi.system\n  mapperLocations: classpath*:mapper/**/*.xml\nspringdoc:\n  gatewayUrl: http://localhost:8080/${{spring.application.name}}\n"
     );
     let gateway_yml = format!(
         "{routes}security:\n  ignore:\n    whites:\n      - /auth/login\n      - /auth/logout\n      - /auth/register\n"
     );
+    let job_yml = "server:\n  port: 9203\nspring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\n";
+    let gen_yml = "server:\n  port: 9202\nspring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\nmybatis:\n  typeAliasesPackage: com.ruoyi.gen.domain\nspringdoc:\n  gatewayUrl: http://localhost:8080/${spring.application.name}\n";
+    let file_yml = "server:\n  port: 9300\nfile:\n  domain: http://127.0.0.1:9300\n  path: D:/ruoyi/uploadPath\n  prefix: /statics\nfdfs:\n  domain: http://127.0.0.1:9300\n  soTimeout: 3000\n  connectTimeout: 2000\n  trackerList: 127.0.0.1:22122\nminio:\n  url: http://localhost:9000\n  accessKey: minioadmin\n  secretKey: minioadmin\n  bucketName: ruoyi\n";
 
     let rows = [
         ("application-dev.yml", app_yml.as_str()),
         ("ruoyi-system-dev.yml", system_yml.as_str()),
         ("ruoyi-gateway-dev.yml", gateway_yml.as_str()),
-        ("ruoyi-gen-dev.yml", "server:\n  port: 9202\n"),
-        ("ruoyi-job-dev.yml", "server:\n  port: 9203\n"),
+        ("ruoyi-gen-dev.yml", gen_yml),
+        ("ruoyi-job-dev.yml", job_yml),
+        ("ruoyi-file-dev.yml", file_yml),
     ];
     let mut values = Vec::new();
     for (i, (data_id, yaml)) in rows.iter().enumerate() {
@@ -272,11 +303,123 @@ fn run_cloud(boot2: bool, trim: bool) {
     assert!(cfg.contains("`demo-config`"), "配置库应替换：{cfg}");
     assert!(!cfg.contains("`ry-config`") || cfg.contains("demo-config"));
     assert!(
-        cfg.contains("jdbc:mysql://") && cfg.contains("/demo"),
-        "Nacos jdbc 应指向业务库：{cfg}"
+        cfg.contains("jdbc:mysql://127.0.0.1:3306/demo"),
+        "Nacos jdbc 应为 127.0.0.1:3306/demo：{cfg}"
+    );
+    assert!(
+        cfg.contains("username: root"),
+        "Nacos datasource 应写入账号：{cfg}"
     );
     assert!(cfg.contains("mybatis-plus:"), "system 配置应改为 mybatis-plus");
-    assert!(!cfg.contains("\nmybatis:"), "不应残留 mybatis: 块");
+    assert!(
+        !cfg.contains("localhost:8080/${spring.application.name}"),
+        "springdoc.gatewayUrl 不得残留 localhost:8080：{cfg}"
+    );
+    assert!(
+        cfg.contains("http://127.0.0.1:8080/${spring.application.name}"),
+        "springdoc.gatewayUrl 应为网关端口（params.server_port）：{cfg}"
+    );
+    if !trim {
+        let configs = ruoyi_forge_lib::core::nacos_config::parse_config_sql(
+            &root.join("sql/ry_config_20260905.sql"),
+        )
+        .expect("应能解析改写后的 ry_config SQL");
+        let job = configs
+            .iter()
+            .find(|c| c.data_id.to_ascii_lowercase().contains("-job-"))
+            .expect("应有 job Nacos 条目");
+        let gen = configs
+            .iter()
+            .find(|c| c.data_id.to_ascii_lowercase().contains("-gen-"))
+            .expect("应有 gen Nacos 条目");
+        let system = configs
+            .iter()
+            .find(|c| c.data_id.to_ascii_lowercase().contains("-system-"))
+            .expect("应有 system Nacos 条目");
+        assert!(
+            cfg.contains("driver-class-name: com.mysql.cj.jdbc.Driver"),
+            "job 应保留 driver-class-name：{cfg}"
+        );
+        assert!(
+            job.content.contains("dynamic:") && job.content.contains("master:"),
+            "开 MP 后 job 扁平数据源应收成 dynamic.master：{}",
+            job.content
+        );
+        assert!(
+            !job.content.contains("datasource:\n    driver-class-name:")
+                && !job.content.contains("datasource:\n    url:"),
+            "job 扁平连接字段不得留在 datasource 下一层：{}",
+            job.content
+        );
+        assert!(
+            gen.content.contains("url: jdbc:mysql://")
+                && !gen.content.contains("dynamic:")
+                && (gen.content.contains("datasource:\n    url:")
+                    || gen.content.contains("datasource:\n    driver-class-name:")),
+            "gen 应保持扁平 datasource.url：{}",
+            gen.content
+        );
+        assert!(
+            gen.content.contains("\nmybatis:") || gen.content.starts_with("mybatis:"),
+            "gen 应保持 mybatis：{}",
+            gen.content
+        );
+        assert!(
+            !gen.content.contains("\nmybatis-plus:") && !gen.content.starts_with("mybatis-plus:"),
+            "gen 不得改成 mybatis-plus：{}",
+            gen.content
+        );
+        assert!(
+            system.content.contains("mybatis-plus:"),
+            "system 应为 mybatis-plus：{}",
+            system.content
+        );
+        assert!(
+            gen.content.contains("http://127.0.0.1:8080/${spring.application.name}")
+                && system.content.contains("http://127.0.0.1:8080/${spring.application.name}"),
+            "gen/system 的 springdoc.gatewayUrl 应为网关端口：gen={} system={}",
+            gen.content,
+            system.content
+        );
+        let file = configs
+            .iter()
+            .find(|c| c.data_id.to_ascii_lowercase().contains("-file-"))
+            .expect("应有 file Nacos 条目");
+        assert!(
+            file.content.contains("domain: http://127.0.0.1:8085"),
+            "file.domain 应为解析后的 file 端口：{}",
+            file.content
+        );
+        assert!(
+            !file.content.contains(":9300"),
+            "file yml 不得残留官方 9300：{}",
+            file.content
+        );
+        assert!(
+            file.content.contains("url: http://localhost:9000"),
+            "不得改 minio 9000：{}",
+            file.content
+        );
+        assert!(
+            file.content.contains("trackerList: 127.0.0.1:22122"),
+            "不得改 trackerList 22122：{}",
+            file.content
+        );
+    }
+    let expected_file_port = if trim { 8083 } else { 8085 };
+    assert!(
+        cfg.contains(&format!("domain: http://127.0.0.1:{expected_file_port}")),
+        "file.domain 应跟解析后的 file 端口 {expected_file_port}：{cfg}"
+    );
+    assert!(
+        !cfg.contains("127.0.0.1:9300") && !cfg.contains("localhost:9300"),
+        "不得残留官方 file.domain 9300：{cfg}"
+    );
+    assert!(
+        cfg.contains("localhost:9000") || cfg.contains(":9000"),
+        "不得改 minio 9000：{cfg}"
+    );
+    assert!(cfg.contains("22122"), "不得改 trackerList 22122：{cfg}");
     assert!(cfg.contains("/system/webInfo"), "网关白名单应追加 /system/webInfo");
     if boot2 {
         assert!(cfg.contains("spring:\\n  redis:") || cfg.contains("  redis:"), "Boot2 应保留 spring.redis 键");
@@ -293,6 +436,31 @@ fn run_cloud(boot2: bool, trim: bool) {
         ds_pom.contains("mybatis-plus"),
         "starter 应落在 common-datasource：{ds_pom}"
     );
+
+    if !trim {
+        let job_pom = fs::read_to_string(root.join("demo-modules/demo-job/pom.xml")).unwrap();
+        assert!(
+            job_pom.contains("<artifactId>demo-common-datasource</artifactId>"),
+            "开启 MP 后 job 须依赖 common-datasource 才能编译 BaseMapper/IService：{job_pom}"
+        );
+        assert_eq!(
+            job_pom.matches("<artifactId>demo-common-datasource</artifactId>").count(),
+            1,
+            "job 不应重复插入 datasource：{job_pom}"
+        );
+        assert!(
+            !job_pom.contains("mybatis-plus-boot-starter")
+                && !job_pom.contains("mybatis-plus-spring-boot3-starter")
+                && !job_pom.contains("mybatis-plus-spring-boot4-starter"),
+            "不要把 MP starter 再写一份到 job：{job_pom}"
+        );
+        let sys_pom = fs::read_to_string(root.join("demo-modules/demo-system/pom.xml")).unwrap();
+        assert_eq!(
+            sys_pom.matches("<artifactId>demo-common-datasource</artifactId>").count(),
+            1,
+            "system 已有 datasource 不应重复：{sys_pom}"
+        );
+    }
 
     let mp = root.join(
         "demo-modules/demo-system/src/main/java/com/company/project/system/config/MybatisPlusConfig.java",
@@ -336,18 +504,101 @@ fn run_cloud(boot2: bool, trim: bool) {
     assert!(!site_src.contains("@PreAuthorize"), "{site_src}");
     assert!(!site_src.contains("common.core.domain.AjaxResult"), "{site_src}");
 
-    for p in [
-        "demo-gateway/src/main/resources/bootstrap.yml",
-        "demo-auth/src/main/resources/bootstrap.yml",
-        "demo-modules/demo-system/src/main/resources/bootstrap.yml",
+    let api_system_java = root.join("demo-api/demo-api-system/src/main/java");
+    assert!(
+        !api_system_java.exists(),
+        "不得把 Controller/MP 配置写进 Feign API：{}",
+        api_system_java.display()
+    );
+
+    let gw_boot = fs::read_to_string(root.join("demo-gateway/src/main/resources/bootstrap.yml")).unwrap();
+    let auth_boot = fs::read_to_string(root.join("demo-auth/src/main/resources/bootstrap.yml")).unwrap();
+    let sys_boot = fs::read_to_string(root.join("demo-modules/demo-system/src/main/resources/bootstrap.yml")).unwrap();
+    for (p, b) in [
+        ("demo-gateway", &gw_boot),
+        ("demo-auth", &auth_boot),
+        ("demo-system", &sys_boot),
     ] {
-        let b = fs::read_to_string(root.join(p)).unwrap();
         assert!(
             b.contains("shared-configs") || b.contains("nacos:"),
             "bootstrap 仍应含 nacos 锚点：{p}\n{b}"
         );
         assert!(b.contains("127.0.0.1:8848"), "不要改 nacos 地址");
     }
+    assert!(
+        gw_boot.contains("port: 8080"),
+        "gateway bootstrap 端口应为 params.server_port：{gw_boot}"
+    );
+    assert!(
+        auth_boot.contains("port: 8081"),
+        "auth bootstrap 端口应为网关 +1：{auth_boot}"
+    );
+    assert!(
+        sys_boot.contains("port: 8082"),
+        "system bootstrap 端口应为网关 +2：{sys_boot}"
+    );
+
+    assert!(
+        biz.contains("http://127.0.0.1:8848/nacos"),
+        "Nacos 控制台应为 127.0.0.1:8848/nacos：{biz}"
+    );
+    assert!(
+        !biz.contains("localhost:8848"),
+        "不应残留 localhost:8848：{biz}"
+    );
+    assert!(
+        biz.contains("http://127.0.0.1:8718"),
+        "Sentinel 控制台只改 host：{biz}"
+    );
+    let monitor_port = if trim { 8084 } else { 8086 };
+    assert!(
+        biz.contains(&format!("http://127.0.0.1:{monitor_port}/login")),
+        "Admin 控制台应跟 monitor 端口 {monitor_port}：{biz}"
+    );
+    assert!(
+        biz.contains("http://127.0.0.1:8080/swagger-ui/index.html"),
+        "系统接口应走网关端口：{biz}"
+    );
+    assert!(
+        !biz.contains("localhost:8080/swagger"),
+        "不应残留 localhost:8080 swagger：{biz}"
+    );
+
+    let log_aspect = root.join(
+        "demo-common/demo-common-log/src/main/java/com/company/project/common/log/aspect/LogAspect.java",
+    );
+    assert!(log_aspect.is_file(), "common-log 目录应随包名迁移：{}", log_aspect.display());
+    let log_aspect_src = fs::read_to_string(&log_aspect).unwrap();
+    assert!(
+        log_aspect_src.contains("package com.company.project.common.log.aspect;"),
+        "common-log Java 的 package 必须是新包名：{log_aspect_src}"
+    );
+    assert!(
+        log_aspect_src.contains("import com.company.project.common.core.text.Convert;"),
+        "common-log Java 的 import 必须是新包名：{log_aspect_src}"
+    );
+    assert!(
+        !log_aspect_src.contains("com.ruoyi"),
+        "common-log Java 不得残留 com.ruoyi：{log_aspect_src}"
+    );
+
+    let autoconfig_imports = root.join(
+        "demo-common/demo-common-core/src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports",
+    );
+    assert!(
+        autoconfig_imports.is_file(),
+        "AutoConfiguration.imports 应保留在 common-core：{}",
+        autoconfig_imports.display()
+    );
+    let autoconfig_imports_src = fs::read_to_string(&autoconfig_imports).unwrap();
+    assert!(
+        autoconfig_imports_src.contains("com.company.project.common.core.utils.SpringUtils"),
+        "AutoConfiguration.imports 必须替换为新包名：{autoconfig_imports_src}"
+    );
+    assert!(
+        !autoconfig_imports_src.contains("com.ruoyi"),
+        "AutoConfiguration.imports 不得残留 com.ruoyi：{autoconfig_imports_src}"
+    );
 
     let token_path = root.join(
         "demo-common/demo-common-core/src/main/java/com/company/project/common/core/constant/TokenConstants.java",

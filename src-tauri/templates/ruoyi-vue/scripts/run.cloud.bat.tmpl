@@ -16,6 +16,10 @@ if errorlevel 1 (
 )
 
 echo ========== Cloud start order: gateway - auth - system - others ==========
-echo Gateway port: {{SERVER_PORT}}
-echo Use scripts\start.bat or run spring-boot:run in each module
+echo Start each service with its own script in a new terminal:
+echo   run-gateway.bat
+echo   run-auth.bat
+echo   run-system.bat
+echo Optional if generated: run-gen.bat  run-job.bat  run-file.bat  run-monitor.bat
+echo Gateway port: {{GATEWAY_PORT}}
 pause

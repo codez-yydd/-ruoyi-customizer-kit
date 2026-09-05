@@ -265,6 +265,50 @@ fn postgresql_url_keeps_original_db_name() {
 }
 
 #[test]
+fn without_sql_customize_keeps_localhost_root_123456() {
+    let dir = build_resources();
+    let res = dir.path();
+    let mut params = params_with_config();
+    params.enable_sql_customize = false;
+    params.db_host = "192.168.1.10".into();
+    params.db_port = 3307;
+    params.db_username = "app".into();
+    params.db_password = "s3cret".into();
+    let outcome = config_rewrite::rewrite(res, &params, None, &|_| {}).expect("配置重构应成功");
+    let dev = fs::read_to_string(&outcome.dev_path).unwrap();
+    assert!(
+        dev.contains("jdbc:mysql://localhost:3306/"),
+        "未开 SQL 定制应仍写 localhost + 方言端口：{dev}"
+    );
+    assert!(dev.contains("username: root"), "未开 SQL 定制 username 应为 root：{dev}");
+    assert!(dev.contains("password: 123456"), "未开 SQL 定制 password 应为 123456：{dev}");
+    assert!(!dev.contains("192.168.1.10"), "{dev}");
+    assert!(!dev.contains("s3cret"), "{dev}");
+}
+
+#[test]
+fn sql_customize_writes_custom_datasource_connection() {
+    let dir = build_resources();
+    let res = dir.path();
+    let mut params = params_with_config();
+    params.enable_sql_customize = true;
+    params.db_host = "192.168.1.10".into();
+    params.db_port = 3307;
+    params.db_username = "app".into();
+    params.db_password = "s3cret".into();
+    let outcome = config_rewrite::rewrite(res, &params, None, &|_| {}).expect("配置重构应成功");
+    let dev = fs::read_to_string(&outcome.dev_path).unwrap();
+    assert!(
+        dev.contains("jdbc:mysql://192.168.1.10:3307/"),
+        "开 SQL 定制应写入自定义 host/port：{dev}"
+    );
+    assert!(dev.contains("username: app"), "开 SQL 定制 username 应为 app：{dev}");
+    assert!(dev.contains("password: s3cret"), "开 SQL 定制 password 应为 s3cret：{dev}");
+    assert!(!dev.contains("jdbc:mysql://localhost:3306/"), "{dev}");
+    assert!(!dev.contains("password: 123456"), "{dev}");
+}
+
+#[test]
 fn old_config_json_without_db_type_defaults_mysql() {
     let p = CustomizeParams::default();
     let mut v = serde_json::to_value(&p).unwrap();

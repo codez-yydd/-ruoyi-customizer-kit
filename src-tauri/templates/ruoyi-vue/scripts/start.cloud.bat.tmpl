@@ -11,20 +11,18 @@ echo [INFO] Check Nacos at http://127.0.0.1:8848/nacos/ before starting
 
 if not exist logs mkdir logs
 
-set GATEWAY_PORT={{SERVER_PORT}}
-
-call :start_one gateway "{{MODULE_PREFIX}}-gateway" %GATEWAY_PORT%
+call :start_one gateway "{{MODULE_PREFIX}}-gateway" {{GATEWAY_PORT}}
 timeout /t 2 /nobreak >nul
-call :start_one auth "{{MODULE_PREFIX}}-auth" 0
+call :start_one auth "{{MODULE_PREFIX}}-auth" {{AUTH_PORT}}
 timeout /t 2 /nobreak >nul
 if exist "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-system" (
-  call :start_one system "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-system" 0
+  call :start_one system "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-system" {{SYSTEM_PORT}}
 )
 timeout /t 2 /nobreak >nul
-if exist "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-gen" call :start_one gen "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-gen" 0
-if exist "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-job" call :start_one job "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-job" 0
-if exist "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-file" call :start_one file "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-file" 0
-if exist "{{MODULE_PREFIX}}-visual\{{MODULE_PREFIX}}-monitor" call :start_one monitor "{{MODULE_PREFIX}}-visual\{{MODULE_PREFIX}}-monitor" 0
+if exist "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-gen" call :start_one gen "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-gen" {{GEN_PORT}}
+if exist "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-job" call :start_one job "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-job" {{JOB_PORT}}
+if exist "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-file" call :start_one file "{{MODULE_PREFIX}}-modules\{{MODULE_PREFIX}}-file" {{FILE_PORT}}
+if exist "{{MODULE_PREFIX}}-visual\{{MODULE_PREFIX}}-monitor" call :start_one monitor "{{MODULE_PREFIX}}-visual\{{MODULE_PREFIX}}-monitor" {{MONITOR_PORT}}
 
 echo [OK] Cloud start commands issued, logs in logs\
 echo      Stop: scripts\stop.bat
@@ -46,7 +44,7 @@ if not defined JAR_PATH (
   goto :eof
 )
 set JAVA_OPTS=-Xms256m -Xmx512m -Dfile.encoding=UTF-8
-if not "%PORT%"=="0" set JAVA_OPTS=%JAVA_OPTS% -Dserver.port=%PORT%
+if not "%PORT%"=="" if not "%PORT%"=="0" set JAVA_OPTS=%JAVA_OPTS% -Dserver.port=%PORT%
 echo [INFO] Starting %NAME% !JAR_PATH!
 start "RuoYi-%NAME%" /B java %JAVA_OPTS% -jar "!JAR_PATH!" > logs\%NAME%.log 2>&1
 goto :eof

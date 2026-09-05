@@ -427,6 +427,52 @@ fn validate_cloud(
         message: cfg_msg,
     });
 
+    if params.enable_sql_customize {
+        let host = crate::core::resolve_db_host(params);
+        let port = crate::core::resolve_db_port(params);
+        let user = crate::core::resolve_db_username(params);
+        let jdbc = format!("jdbc:mysql://{host}:{port}/{biz_db}");
+        let (conn_ok, conn_msg) = match &cfg_sql {
+            None => (false, "未找到配置库脚本，无法核验数据源连接".into()),
+            Some(p) => {
+                let raw = read_text_plain(p).unwrap_or_default();
+                let mut jdbc_ok = raw.contains(&jdbc);
+                let mut user_ok = user.is_empty()
+                    || raw.contains(&format!("username: {user}"))
+                    || raw.contains(&format!("username: {user}\\n"));
+                if let Ok(configs) = crate::core::nacos_config::parse_config_sql(p) {
+                    jdbc_ok = jdbc_ok || configs.iter().any(|c| c.content.contains(&jdbc));
+                    if !user.is_empty() {
+                        user_ok = user_ok
+                            || configs.iter().any(|c| {
+                                c.content.lines().any(|l| {
+                                    let t = l.trim_start();
+                                    t.starts_with("username:")
+                                        && t[9..].trim().trim_matches('"') == user
+                                })
+                            });
+                    }
+                }
+                if !jdbc_ok {
+                    (false, format!("配置库脚本未见数据源 {jdbc}"))
+                } else if !user_ok {
+                    (false, format!("配置库脚本未见数据源账号 {user}"))
+                } else {
+                    (true, format!("配置库数据源已指向 {jdbc}"))
+                }
+            }
+        };
+        items.push(CheckItem {
+            item: "Cloud 数据源连接".into(),
+            result: if conn_ok {
+                CheckResult::Pass
+            } else {
+                CheckResult::Fail
+            },
+            message: conn_msg,
+        });
+    }
+
     // bootstrap：Boot2 shared-configs 或 Boot3/4 nacos: import（官方核实 2026-09-05）
     let mut missing_nacos = Vec::new();
     let mut checked = 0usize;
@@ -459,6 +505,31 @@ fn validate_cloud(
             format!("bootstrap 缺失 nacos 锚点：{}", missing_nacos.join("、"))
         },
     });
+
+    // Nacos 控制台菜单：官方种子 localhost:8848 → 127.0.0.1:8848（不改 8848）
+    if let Some(p) = &biz_sql {
+        let c = read_text_plain(p).unwrap_or_default();
+        if c.contains("localhost:8848") {
+            items.push(CheckItem {
+                item: "Cloud Nacos 控制台链接".into(),
+                result: CheckResult::Fail,
+                message: "业务库 SQL 菜单仍含 localhost:8848，应为 127.0.0.1:8848".into(),
+            });
+        } else if c.contains("127.0.0.1:8848") {
+            items.push(CheckItem {
+                item: "Cloud Nacos 控制台链接".into(),
+                result: CheckResult::Pass,
+                message: "Nacos 控制台链接已为 127.0.0.1:8848".into(),
+            });
+        }
+        if c.contains("localhost:8080/swagger") || c.contains("localhost:8080/doc.html") {
+            items.push(CheckItem {
+                item: "Cloud 系统接口链接".into(),
+                result: CheckResult::Fail,
+                message: "业务库 SQL 菜单仍含 localhost:8080 的 swagger/doc.html，应改为网关端口".into(),
+            });
+        }
+    }
 
     if !params.remove_modules.is_empty() {
         let mut leftover = Vec::new();

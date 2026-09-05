@@ -359,18 +359,12 @@ pub struct ConfigIoResponse {
 }
 
 /// 导出配置到 JSON 文件。
-/// 安全处理：导出前清空敏感字段（admin_password、微信支付各类密钥），避免明文落盘。
+/// 按传入 params 原样序列化（含密码与密钥）；本机文件，不做清空。
 #[tauri::command]
 pub fn save_config_json(path: String, params: crate::core::CustomizeParams) -> ConfigIoResponse {
     let dest = PathBuf::from(&path);
-    // 脱敏：克隆后清空敏感字段
-    let mut safe = params.clone();
-    safe.admin_password = String::new();
-    safe.wx_appsecret = String::new();
-    safe.pay_api_v3_key = String::new();
-    safe.pay_api_key = String::new();
 
-    let json = match serde_json::to_string_pretty(&safe) {
+    let json = match serde_json::to_string_pretty(&params) {
         Ok(j) => j,
         Err(e) => {
             return ConfigIoResponse {

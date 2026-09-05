@@ -156,10 +156,32 @@ export interface CustomizeParams {
   enable_sql_customize: boolean
   /** 新数据库名。Vue/单体留空则用 new_module_prefix；Cloud 留空则保持官方 ry-cloud */
   db_name: string
+  /** 数据库连接地址，默认 127.0.0.1；仅 SQL 定制开启时写入数据源 */
+  db_host: string
+  /** 数据库端口，默认 3306；PostgreSQL 且为 0 时回落 5432 */
+  db_port: number
+  /** 数据库账号，默认 root */
+  db_username: string
+  /** 数据库密码，可空（空则写入空密码）；历史与导出原样保存，输入框用 show-password 遮挡 */
+  db_password: string
   /** Cloud 配置库名（兼容 CLI/旧导入）。留空则：有 db_name 用 `{db_name}-config`，否则 ry-config */
   config_db_name: string
   /** Cloud 裁剪模块：仅 gen / job / file / monitor */
   remove_modules: string[]
+  /** 是否开启 Cloud 自定义模块端口（关闭则从网关端口起依次 +1） */
+  enable_cloud_custom_ports: boolean
+  /** Cloud auth 端口；0 = 走自动递增 */
+  cloud_port_auth: number
+  /** Cloud system 端口；0 = 走自动递增 */
+  cloud_port_system: number
+  /** Cloud gen 端口；0 = 走自动递增 */
+  cloud_port_gen: number
+  /** Cloud job 端口；0 = 走自动递增 */
+  cloud_port_job: number
+  /** Cloud file 端口；0 = 走自动递增 */
+  cloud_port_file: number
+  /** Cloud monitor 端口；0 = 走自动递增 */
+  cloud_port_monitor: number
   /** 数据库类型：mysql | postgresql */
   db_type: string
   /** 管理员登录账号（留空保持 admin；仅改 user_id=1 种子行，不动 role_key='admin' 权限体系） */

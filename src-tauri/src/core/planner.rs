@@ -166,36 +166,44 @@ pub fn plan(
 
     // 6. 配置文件重构（可选）
     // Cloud：走 Nacos config_info SQL，不规划分离版 application.yaml 三件套。
-    if params.enable_config_rewrite {
-        if is_cloud {
-            tasks.push(Task {
-                id: next_id(&tasks),
-                name: "Nacos 配置定制".into(),
-                task_type: TaskType::RewriteNacosConfig,
-                risk_level: RiskLevel::High,
-                affected_files: vec!["sql/ry_config*.sql".into()],
-                affected_dirs: vec![],
-                created_files: vec!["sql/ry_config*.sql".into()],
-                status: TaskStatus::Pending,
-                error_message: String::new(),
-            });
-        } else if !info.config_files.is_empty() {
-            tasks.push(Task {
-                id: next_id(&tasks),
-                name: "重构配置文件为 application.yaml + dev + prod 三件套".into(),
-                task_type: TaskType::RewriteApplicationProfiles,
-                risk_level: RiskLevel::High,
-                affected_files: info.config_files.clone(),
-                affected_dirs: vec![],
-                created_files: vec![
-                    "application.yaml".into(),
-                    "application-dev.yaml".into(),
-                    "application-prod.yaml".into(),
-                ],
-                status: TaskStatus::Pending,
-                error_message: String::new(),
-            });
-        }
+    // 只开 SQL 定制、关掉配置重构时也要规划 Nacos，否则连接写不进去。
+    if is_cloud && (params.enable_config_rewrite || params.enable_sql_customize) {
+        let name = if params.enable_sql_customize {
+            format!(
+                "Nacos 配置定制（连接 {}:{}）",
+                crate::core::resolve_db_host(params),
+                crate::core::resolve_db_port(params)
+            )
+        } else {
+            "Nacos 配置定制".into()
+        };
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name,
+            task_type: TaskType::RewriteNacosConfig,
+            risk_level: RiskLevel::High,
+            affected_files: vec!["sql/ry_config*.sql".into()],
+            affected_dirs: vec![],
+            created_files: vec!["sql/ry_config*.sql".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    } else if params.enable_config_rewrite && !info.config_files.is_empty() {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "重构配置文件为 application.yaml + dev + prod 三件套".into(),
+            task_type: TaskType::RewriteApplicationProfiles,
+            risk_level: RiskLevel::High,
+            affected_files: info.config_files.clone(),
+            affected_dirs: vec![],
+            created_files: vec![
+                "application.yaml".into(),
+                "application-dev.yaml".into(),
+                "application-prod.yaml".into(),
+            ],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
     }
 
     // 7. logback 日志路径修正（可选）
@@ -557,16 +565,20 @@ pub fn plan(
 
     // SQL 初始化脚本定制（可选）：库名、admin 密码、清除演示/quartz 数据
     if params.enable_sql_customize {
-        let db_name = if params.db_name.is_empty() {
-            params.new_module_prefix.as_str()
+        let db_name = if is_cloud {
+            crate::core::resolve_cloud_biz_db_name(params)
+        } else if params.db_name.is_empty() {
+            params.new_module_prefix.clone()
         } else {
-            params.db_name.as_str()
+            params.db_name.clone()
         };
         tasks.push(Task {
             id: next_id(&tasks),
             name: format!(
-                "定制 SQL 初始化脚本：库名 → {}{}{}",
+                "定制 SQL 初始化脚本：库名 → {}，连接 {}:{}{}{}",
                 db_name,
+                crate::core::resolve_db_host(params),
+                crate::core::resolve_db_port(params),
                 if params.admin_password.is_empty() { "" } else { "，admin 密码修改" },
                 if params.clean_quartz { "，清除 quartz" } else { "" }
             ),
@@ -768,7 +780,7 @@ pub fn plan(
     // 启动脚本生成（可选，输出到 output_dir/scripts/）
     if params.enable_startup_scripts {
         let startup_name = if is_cloud {
-            "生成启动/停止脚本（Cloud 多服务 start/stop：gateway→auth→system，先检查 Nacos 8848）"
+            "生成启动/停止脚本（Cloud 多服务 start/stop：按模块端口，gateway→auth→system，先检查 Nacos 8848）"
                 .into()
         } else {
             "生成启动/停止脚本（start/stop .sh + .bat）".into()
@@ -810,13 +822,35 @@ pub fn plan(
         });
     }
 
-    // 开发脚本生成（始终，输出到 output_dir 根目录）：mvn install + spring-boot:run 一键启动
-    let dev_script_name = if is_cloud {
-        "生成开发脚本（run.sh / run.bat，按 gateway → auth → system 顺序）".into()
+    // 开发脚本生成（始终，输出到 output_dir 根目录）：
+    // Vue/单体：run.sh / run.bat 一键 spring-boot:run
+    // Cloud：根 run.sh / run.bat 负责 install + 提示；各可运行模块另生成 run-<suffix>.sh/.bat
+    let (dev_script_name, dev_created_files) = if is_cloud {
+        let mut files = vec!["run.sh".into(), "run.bat".into()];
+        let removed: Vec<String> = params
+            .remove_modules
+            .iter()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        for suffix in crate::core::detector::cloud_runnable_leaf_suffixes() {
+            if removed.iter().any(|r| r == suffix) {
+                continue;
+            }
+            files.push(format!("run-{suffix}.sh"));
+            files.push(format!("run-{suffix}.bat"));
+        }
+        (
+            "生成开发脚本（根 run.sh/run.bat 以及各模块 run-<suffix>.sh/.bat，按模块端口）".into(),
+            files,
+        )
     } else {
-        format!(
-            "生成开发脚本（run.sh / run.bat，cd {}-admin）",
-            params.new_module_prefix
+        (
+            format!(
+                "生成开发脚本（run.sh / run.bat，cd {}-admin）",
+                params.new_module_prefix
+            ),
+            vec!["run.sh".into(), "run.bat".into()],
         )
     };
     tasks.push(Task {
@@ -826,7 +860,7 @@ pub fn plan(
         risk_level: RiskLevel::Low,
         affected_files: vec![],
         affected_dirs: vec![],
-        created_files: vec!["run.sh".into(), "run.bat".into()],
+        created_files: dev_created_files,
         status: TaskStatus::Pending,
         error_message: String::new(),
     });

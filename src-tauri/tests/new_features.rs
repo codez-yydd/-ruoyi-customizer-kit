@@ -1,4 +1,4 @@
-// 新功能集成测试：安全加固 / SQL 定制 / 前后端分离 / AI 规范 / 配置脱敏。
+// 新功能集成测试：安全加固 / SQL 定制 / 前后端分离 / AI 规范 / 配置导出。
 //
 // 覆盖：
 // 1. BCrypt 哈希格式（$2a$10$...，与 Spring Security 兼容）
@@ -8,7 +8,7 @@
 // 5. quartz 表块清理
 // 6. 前后端目录分离
 // 7. AI 规范文件生成 + 占位符替换 + 无 SQL 表结构段
-// 8. 配置导出脱敏（admin_password / 各类密钥清空）
+// 8. 配置导出原样保留密码与密钥
 
 use ruoyi_forge_lib::core::{admin_rename, ai_rules, frontend_split, security, sql_customize, CustomizeParams};
 use std::fs;
@@ -246,31 +246,27 @@ fn security_hardening_writes_bcrypt_to_sql() {
     assert!(outcome.modified_files >= 1);
 }
 
-// ---------- 配置脱敏（save_config_json 路径直接测脱敏逻辑）----------
+// ---------- 配置导出（save_config_json 按传入 params 原样序列化）----------
 
 #[test]
-fn sanitize_sensitive_fields_for_export() {
-    // 直接验证脱敏逻辑：克隆 params 后清空敏感字段（与命令实现一致）
+fn export_keeps_sensitive_fields() {
     let mut params = build_params();
     params.admin_password = "secret_pwd".into();
+    params.db_password = "db_secret".into();
     params.wx_appsecret = "wx_secret".into();
     params.pay_api_v3_key = "v3_key".into();
     params.pay_api_key = "v2_key".into();
 
-    // 模拟 save_config_json 的脱敏
-    let mut safe = params.clone();
-    safe.admin_password = String::new();
-    safe.wx_appsecret = String::new();
-    safe.pay_api_v3_key = String::new();
-    safe.pay_api_key = String::new();
+    let json = serde_json::to_string_pretty(&params).expect("序列化");
+    let back: CustomizeParams = serde_json::from_str(&json).expect("反序列化");
 
-    assert_eq!(safe.admin_password, "");
-    assert_eq!(safe.wx_appsecret, "");
-    assert_eq!(safe.pay_api_v3_key, "");
-    assert_eq!(safe.pay_api_key, "");
-    // 非敏感字段保留
-    assert_eq!(safe.new_package, "com.example.demo");
-    assert_eq!(safe.frontend_title, "示例管理系统");
+    assert_eq!(back.admin_password, "secret_pwd");
+    assert_eq!(back.db_password, "db_secret");
+    assert_eq!(back.wx_appsecret, "wx_secret");
+    assert_eq!(back.pay_api_v3_key, "v3_key");
+    assert_eq!(back.pay_api_key, "v2_key");
+    assert_eq!(back.new_package, "com.example.demo");
+    assert_eq!(back.frontend_title, "示例管理系统");
 }
 
 // ---------- 配置 JSON 往返（序列化 + 反序列化）----------

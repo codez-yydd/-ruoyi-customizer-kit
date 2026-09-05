@@ -120,6 +120,129 @@ pub fn add_dependency(
     Ok(added)
 }
 
+/// Cloud：给 `cloud_mp_scan_modules`（system / job）补 `*-common-datasource` 依赖，
+/// 以便源码改成 `BaseMapper` / `IService` / `ServiceImpl` 后能编译到 MyBatis-Plus。
+///
+/// - Vue / 非 Cloud：空操作
+/// - 模块 pom 已含该 artifactId 或已含任一 MP starter → 跳过（不把 starter 再写一份到 job）
+/// - groupId / artifactId 优先读 `*-common-datasource/pom.xml`（本模块或 parent）；
+///   读不到再用 `{new_module_prefix}-common-datasource` + `new_package`
+pub fn ensure_cloud_mp_modules_have_datasource(
+    root: &Path,
+    backend_modules: &[String],
+    params: &CustomizeParams,
+    log: &dyn Fn(&str),
+) -> Result<usize, String> {
+    if !crate::core::detector::is_cloud_layout(root) {
+        return Ok(0);
+    }
+    let Some((group_id, artifact_id)) = resolve_datasource_coords(root, backend_modules, params) else {
+        log("Cloud 无法解析 common-datasource 坐标，跳过为扫描模块补依赖");
+        return Ok(0);
+    };
+    let artifact_tag = artifact_id_tag(&artifact_id);
+    let starter_markers = [MP_STARTER_BOOT2, MP_STARTER_BOOT3, MP_STARTER_BOOT4];
+    let dep_block = datasource_dep_xml(&group_id, &artifact_id);
+    let mut added = 0usize;
+    for module in crate::core::detector::cloud_mp_scan_modules(root, backend_modules) {
+        let pom = root.join(&module).join("pom.xml");
+        let Some(content) = read_text(&pom) else {
+            continue;
+        };
+        if content.contains(&artifact_tag) {
+            log(&format!("{module}/pom.xml 已含 {artifact_id}，跳过"));
+            continue;
+        }
+        if starter_markers.iter().any(|s| content.contains(&artifact_id_tag(s))) {
+            log(&format!("{module}/pom.xml 已含 MyBatis-Plus starter，跳过"));
+            continue;
+        }
+        let new_content = insert_dep_block(&content, &dep_block);
+        if new_content == content {
+            continue;
+        }
+        std::fs::write(&pom, new_content).map_err(|e| format!("写入 {} 失败：{e}", pom.display()))?;
+        added += 1;
+        log(&format!(
+            "已在 {module}/pom.xml 添加 {artifact_id}（由 common-datasource 传递 MyBatis-Plus）"
+        ));
+    }
+    Ok(added)
+}
+
+/// 解析 common-datasource 的 Maven 坐标。
+fn resolve_datasource_coords(
+    root: &Path,
+    modules: &[String],
+    params: &CustomizeParams,
+) -> Option<(String, String)> {
+    let fallback_gid = params.new_package.trim();
+    let fallback_aid = if params.new_module_prefix.trim().is_empty() {
+        String::new()
+    } else {
+        format!("{}-common-datasource", params.new_module_prefix.trim())
+    };
+    let (pom_gid, pom_aid) = crate::core::detector::find_module_by_leaf_suffix(
+        root,
+        modules,
+        "common-datasource",
+    )
+    .and_then(|m| read_text(&root.join(&m).join("pom.xml")))
+    .map(|c| extract_pom_coords(&c))
+    .unwrap_or((None, None));
+    let group_id = pom_gid
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if fallback_gid.is_empty() {
+                None
+            } else {
+                Some(fallback_gid.to_string())
+            }
+        })?;
+    let artifact_id = pom_aid
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            if fallback_aid.is_empty() {
+                None
+            } else {
+                Some(fallback_aid)
+            }
+        })?;
+    Some((group_id, artifact_id))
+}
+
+/// 从 pom 取本模块 artifactId，以及本模块或 parent 的 groupId。
+/// 只看 parent 与 `<dependencies>` / `<dependencyManagement>` 之前的项目级坐标，
+/// 避免把依赖里的 `com.baomidou` 当成模块 groupId。
+fn extract_pom_coords(content: &str) -> (Option<String>, Option<String>) {
+    let parent_re = match regex::Regex::new(r"(?s)<parent>.*?</parent>") {
+        Ok(r) => r,
+        Err(_) => return (None, None),
+    };
+    let parent = parent_re.find(content).map(|m| m.as_str().to_string());
+    let rest = parent_re.replace(content, "").into_owned();
+    let cut = rest
+        .find("<dependencyManagement>")
+        .or_else(|| rest.find("<dependencies>"))
+        .or_else(|| rest.find("<build>"))
+        .unwrap_or(rest.len());
+    let project_level = &rest[..cut];
+    let tag = |s: &str, name: &str| -> Option<String> {
+        let re = regex::Regex::new(&format!(r"(?s)<{name}>\s*([^<\s]+)\s*</{name}>")).ok()?;
+        re.captures(s).map(|c| c[1].trim().to_string())
+    };
+    let artifact = tag(project_level, "artifactId");
+    let group = tag(project_level, "groupId").or_else(|| parent.as_deref().and_then(|p| tag(p, "groupId")));
+    (group, artifact)
+}
+
+/// 构造 common-datasource 依赖 XML（Cloud 模块 pom 官方 8 空格缩进）。
+fn datasource_dep_xml(group_id: &str, artifact_id: &str) -> String {
+    format!(
+        "\n        <dependency>\n            <groupId>{group_id}</groupId>\n            <artifactId>{artifact_id}</artifactId>\n        </dependency>\n"
+    )
+}
+
 /// 构造单条 MyBatis-Plus 依赖 XML。
 fn mp_dep_xml(artifact: &str) -> String {
     format!(
@@ -768,6 +891,45 @@ mod tests {
 </project>"#;
         let dir = mk_root(pom);
         assert_eq!(detect_boot_major_version(dir.path()), Some(4));
+    }
+
+    #[test]
+    fn extract_pom_coords_prefers_own_then_parent() {
+        let with_parent = r#"<project>
+  <parent>
+    <groupId>com.ruoyi</groupId>
+    <artifactId>ruoyi-common</artifactId>
+  </parent>
+  <artifactId>ruoyi-common-datasource</artifactId>
+</project>"#;
+        let (gid, aid) = extract_pom_coords(with_parent);
+        assert_eq!(gid.as_deref(), Some("com.ruoyi"));
+        assert_eq!(aid.as_deref(), Some("ruoyi-common-datasource"));
+
+        let own = r#"<project>
+  <groupId>com.company.project</groupId>
+  <artifactId>demo-common-datasource</artifactId>
+</project>"#;
+        let (gid, aid) = extract_pom_coords(own);
+        assert_eq!(gid.as_deref(), Some("com.company.project"));
+        assert_eq!(aid.as_deref(), Some("demo-common-datasource"));
+
+        let with_deps = r#"<project>
+  <parent>
+    <groupId>com.company.project</groupId>
+    <artifactId>demo-common</artifactId>
+  </parent>
+  <artifactId>demo-common-datasource</artifactId>
+  <dependencies>
+    <dependency>
+      <groupId>com.baomidou</groupId>
+      <artifactId>mybatis-plus-spring-boot4-starter</artifactId>
+    </dependency>
+  </dependencies>
+</project>"#;
+        let (gid, aid) = extract_pom_coords(with_deps);
+        assert_eq!(gid.as_deref(), Some("com.company.project"), "不得把依赖 groupId 当成模块坐标");
+        assert_eq!(aid.as_deref(), Some("demo-common-datasource"));
     }
 
     /// Boot 4 parent 继承形式

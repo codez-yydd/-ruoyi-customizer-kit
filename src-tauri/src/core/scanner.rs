@@ -80,3 +80,84 @@ pub fn scan(root: &Path, engine: &ReplaceEngine) -> ScanResult {
         skipped_dirs,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::template::TemplateSet;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn load_engine(tpl: &str) -> ReplaceEngine {
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates").join(tpl);
+        let template = TemplateSet::load_from_dir(&dir)
+            .unwrap()
+            .into_full_template()
+            .unwrap();
+        ReplaceEngine::new(template.replace)
+    }
+
+    fn write_scan_fixture(root: &std::path::Path) -> PathBuf {
+        let foo = root.join("src/main/java/com/ruoyi/common/log/Foo.java");
+        fs::create_dir_all(foo.parent().unwrap()).unwrap();
+        fs::write(
+            &foo,
+            "package com.ruoyi.common.log;\npublic class Foo {}\n",
+        )
+        .unwrap();
+        let logs = root.join("logs");
+        fs::create_dir_all(&logs).unwrap();
+        fs::write(logs.join("app.log"), "boot\n").unwrap();
+        let imports = root.join(
+            "src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports",
+        );
+        fs::create_dir_all(imports.parent().unwrap()).unwrap();
+        fs::write(&imports, "com.ruoyi.common.core.utils.SpringUtils\n").unwrap();
+        foo
+    }
+
+    fn assert_scans_common_log_java(engine: &ReplaceEngine) {
+        assert!(
+            !engine.is_excluded_dir("log"),
+            "精确名 log 不得排除，否则会跳过 com.ruoyi.common.log"
+        );
+        assert!(
+            engine.is_excluded_dir("logs"),
+            "运行日志目录 logs 仍应排除"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let foo = write_scan_fixture(dir.path());
+        let result = scan(dir.path(), engine);
+        let texts: Vec<String> = result
+            .text_files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let foo_norm = foo.to_string_lossy().replace('\\', "/");
+        assert!(
+            texts.iter().any(|p| p == &foo_norm),
+            "Foo.java 必须进入 text_files：{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|p| p.ends_with(
+                "src/main/resources/META-INF/spring/org.springframework.boot.autoconfigure.AutoConfiguration.imports"
+            )),
+            "AutoConfiguration.imports 必须进入 text_files：{texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|p| p.contains("/logs/")),
+            "不应扫描 logs 下的文件：{texts:?}"
+        );
+    }
+
+    #[test]
+    fn cloud_scan_includes_common_log_package() {
+        assert_scans_common_log_java(&load_engine("ruoyi-cloud"));
+    }
+
+    #[test]
+    fn vue_scan_includes_common_log_package() {
+        assert_scans_common_log_java(&load_engine("ruoyi-vue"));
+    }
+}

@@ -96,11 +96,24 @@ body,
 
 .rf-content {
   flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 24px;
+}
+
+.rf-content > * {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 长页面内部滚动，避免 rf-content overflow:hidden 裁切 */
+.rf-page {
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
 }
 
 /* 通用卡片 */

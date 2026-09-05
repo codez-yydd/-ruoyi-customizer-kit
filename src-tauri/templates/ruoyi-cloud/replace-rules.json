@@ -7,8 +7,7 @@
     "node_modules",
     "dist",
     "target",
-    "logs",
-    "log"
+    "logs"
   ],
   "text_extensions": [
     ".java",
@@ -25,7 +24,9 @@
     ".bat",
     ".sh",
     ".vm",
-    ".html"
+    ".html",
+    ".imports",
+    ".factories"
   ],
   "binary_extensions": [
     ".class",

@@ -25,6 +25,7 @@ pub mod web_footer;
 pub mod site_settings;
 pub mod db_dialect;
 pub mod nacos_config;
+pub mod cloud_ports;
 pub mod pipeline;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
@@ -84,6 +85,21 @@ fn default_ui_template() -> String {
 /// serde 默认值辅助：数据库类型默认 mysql（旧配置 JSON 无该字段时兜底）
 fn default_db_type() -> String {
     "mysql".into()
+}
+
+/// serde 默认值辅助：数据库地址默认 127.0.0.1
+fn default_db_host() -> String {
+    "127.0.0.1".into()
+}
+
+/// serde 默认值辅助：数据库端口默认 3306
+fn default_db_port() -> i32 {
+    3306
+}
+
+/// serde 默认值辅助：数据库账号默认 root
+fn default_db_username() -> String {
+    "root".into()
 }
 
 /// 用户改造参数
@@ -195,12 +211,45 @@ pub struct CustomizeParams {
     /// 新数据库名。Vue/单体留空则用 new_module_prefix；Cloud 留空则保持官方 ry-cloud
     #[serde(default)]
     pub db_name: String,
+    /// 数据库连接地址。空值回落 127.0.0.1；仅 enable_sql_customize 时写入数据源
+    #[serde(default = "default_db_host")]
+    pub db_host: String,
+    /// 数据库端口。0 表示用方言默认（mysql 3306 / postgresql 5432）；仅 enable_sql_customize 时写入
+    #[serde(default = "default_db_port")]
+    pub db_port: i32,
+    /// 数据库账号。空值回落 root；仅 enable_sql_customize 时写入数据源
+    #[serde(default = "default_db_username")]
+    pub db_username: String,
+    /// 数据库密码。可空（空则写入空密码）；不要写入任务 message / 报告明文
+    #[serde(default)]
+    pub db_password: String,
     /// Cloud 配置库名（兼容 CLI/旧导入）。留空则：有 db_name 用 `{db_name}-config`，否则 ry-config
     #[serde(default)]
     pub config_db_name: String,
     /// Cloud 裁剪微服务模块，合法值仅 gen / job / file / monitor
     #[serde(default)]
     pub remove_modules: Vec<String>,
+    /// 是否开启 Cloud 自定义模块端口（关闭则从网关端口起依次 +1）
+    #[serde(default)]
+    pub enable_cloud_custom_ports: bool,
+    /// Cloud auth 端口；0 = 走自动递增
+    #[serde(default)]
+    pub cloud_port_auth: i32,
+    /// Cloud system 端口；0 = 走自动递增
+    #[serde(default)]
+    pub cloud_port_system: i32,
+    /// Cloud gen 端口；0 = 走自动递增
+    #[serde(default)]
+    pub cloud_port_gen: i32,
+    /// Cloud job 端口；0 = 走自动递增
+    #[serde(default)]
+    pub cloud_port_job: i32,
+    /// Cloud file 端口；0 = 走自动递增
+    #[serde(default)]
+    pub cloud_port_file: i32,
+    /// Cloud monitor 端口；0 = 走自动递增
+    #[serde(default)]
+    pub cloud_port_monitor: i32,
     /// 数据库类型：mysql | postgresql。旧配置 JSON 无该字段时默认为 mysql。
     #[serde(default = "default_db_type")]
     pub db_type: String,
@@ -344,8 +393,19 @@ impl Default for CustomizeParams {
             clean_demo_users: false,
             enable_sql_customize: false,
             db_name: String::new(),
+            db_host: "127.0.0.1".into(),
+            db_port: 3306,
+            db_username: "root".into(),
+            db_password: String::new(),
             config_db_name: String::new(),
             remove_modules: Vec::new(),
+            enable_cloud_custom_ports: false,
+            cloud_port_auth: 0,
+            cloud_port_system: 0,
+            cloud_port_gen: 0,
+            cloud_port_job: 0,
+            cloud_port_file: 0,
+            cloud_port_monitor: 0,
             db_type: "mysql".into(),
             admin_username: String::new(),
             admin_nickname: String::new(),
@@ -441,6 +501,27 @@ impl CustomizeParams {
         if let Some(err) = validate_remove_modules(&self.remove_modules) {
             return Some(err);
         }
+        if let Some(err) = crate::core::cloud_ports::validate_cloud_ports(self) {
+            return Some(err);
+        }
+        if self.enable_sql_customize {
+            if self.db_port != 0 && !(1..=65535).contains(&self.db_port) {
+                return Some(format!(
+                    "数据库端口「{}」不合法：须为 1-65535（0 表示使用默认端口）",
+                    self.db_port
+                ));
+            }
+            let host = self.db_host.trim();
+            if host.is_empty() {
+                // 空值回落 127.0.0.1，不报错
+            } else if host.chars().any(|c| c.is_whitespace() || c == '\'' || c == '\\') {
+                return Some("数据库地址不能包含空白、单引号或反斜杠".into());
+            }
+            let user = self.db_username.trim();
+            if user.contains('\'') || user.contains('\\') {
+                return Some("数据库账号不能包含单引号或反斜杠".into());
+            }
+        }
         None
     }
 }
@@ -493,6 +574,73 @@ pub fn resolve_config_db_name(params: &CustomizeParams) -> String {
     } else {
         "ry-config".into()
     }
+}
+
+/// 数据库连接地址：去空白后为空则回落 `127.0.0.1`。
+pub fn resolve_db_host(params: &CustomizeParams) -> String {
+    let host = params.db_host.trim();
+    if host.is_empty() {
+        "127.0.0.1".into()
+    } else {
+        host.to_string()
+    }
+}
+
+/// 数据库端口：`db_port==0` 时 mysql=3306、postgresql=5432；否则用填写值。
+pub fn resolve_db_port(params: &CustomizeParams) -> u16 {
+    if params.db_port > 0 && params.db_port <= 65535 {
+        params.db_port as u16
+    } else if params.db_type.trim().eq_ignore_ascii_case("postgresql") {
+        5432
+    } else {
+        3306
+    }
+}
+
+/// 数据库账号：去空白后为空则回落 `root`。
+pub fn resolve_db_username(params: &CustomizeParams) -> String {
+    let user = params.db_username.trim();
+    if user.is_empty() {
+        "root".into()
+    } else {
+        user.to_string()
+    }
+}
+
+/// YAML 标量：空值保持空白（写成 `key:`）；含特殊字符时加双引号，避免破坏 YAML。
+pub(crate) fn yaml_quote_scalar(val: &str) -> String {
+    if val.is_empty() {
+        return String::new();
+    }
+    let needs_quote = val.chars().any(|c| {
+        matches!(
+            c,
+            ':' | '#' | '\'' | '"' | '\\' | '{' | '}' | '[' | ']' | ',' | '&' | '*' | '!'
+                | '|' | '>' | '%' | '@' | '`' | '\n' | '\r' | '\t'
+        )
+    }) || val.starts_with(' ')
+        || val.ends_with(' ')
+        || val.starts_with(['-', '?'])
+        || matches!(
+            val.to_ascii_lowercase().as_str(),
+            "true" | "false" | "null" | "yes" | "no" | "on" | "off"
+        );
+    if !needs_quote {
+        return val.to_string();
+    }
+    let mut out = String::from("\"");
+    for c in val.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// 管理员账号合法性：2-30 位字母/数字/下划线/点号/横线（登录账号语义 + SQL 注入防护）
@@ -665,6 +813,65 @@ mod tests {
         p.db_name = "demo".into();
         assert_eq!(resolve_cloud_biz_db_name(&p), "demo");
         assert_eq!(resolve_biz_db_name(&p), "demo");
+    }
+
+    #[test]
+    fn resolve_db_conn_defaults_and_fallback() {
+        let mut p = CustomizeParams::default();
+        assert_eq!(resolve_db_host(&p), "127.0.0.1");
+        assert_eq!(resolve_db_port(&p), 3306);
+        assert_eq!(resolve_db_username(&p), "root");
+        p.db_host = "  ".into();
+        p.db_username = String::new();
+        p.db_port = 0;
+        assert_eq!(resolve_db_host(&p), "127.0.0.1");
+        assert_eq!(resolve_db_username(&p), "root");
+        assert_eq!(resolve_db_port(&p), 3306);
+        p.db_type = "postgresql".into();
+        assert_eq!(resolve_db_port(&p), 5432);
+        p.db_host = "192.168.1.10".into();
+        p.db_port = 3307;
+        p.db_username = "app".into();
+        assert_eq!(resolve_db_host(&p), "192.168.1.10");
+        assert_eq!(resolve_db_port(&p), 3307);
+        assert_eq!(resolve_db_username(&p), "app");
+    }
+
+    #[test]
+    fn old_json_without_db_conn_fields_defaults() {
+        let p = CustomizeParams::default();
+        let mut v = serde_json::to_value(&p).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove("db_host");
+        obj.remove("db_port");
+        obj.remove("db_username");
+        obj.remove("db_password");
+        let loaded: CustomizeParams = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.db_host, "127.0.0.1");
+        assert_eq!(loaded.db_port, 3306);
+        assert_eq!(loaded.db_username, "root");
+        assert_eq!(loaded.db_password, "");
+    }
+
+    #[test]
+    fn validate_rejects_illegal_db_conn_when_sql_customize() {
+        let mut p = CustomizeParams::default();
+        p.original_package = "com.ruoyi".into();
+        p.new_package = "com.demo".into();
+        p.original_module_prefix = "ruoyi".into();
+        p.new_module_prefix = "demo".into();
+        p.frontend_title = "演示系统".into();
+        p.enable_sql_customize = true;
+        p.db_port = 70000;
+        assert!(p.validate().unwrap().contains("端口"));
+        p.db_port = 3306;
+        p.db_host = "127.0.0.1 bad".into();
+        assert!(p.validate().unwrap().contains("地址"));
+        p.db_host = "127.0.0.1".into();
+        p.db_username = "ro'ot".into();
+        assert!(p.validate().unwrap().contains("账号"));
+        p.db_username = "root".into();
+        assert!(p.validate().is_none());
     }
 
     #[test]
