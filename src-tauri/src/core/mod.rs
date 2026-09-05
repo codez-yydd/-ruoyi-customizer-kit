@@ -15,6 +15,11 @@ pub mod sql_customize;
 pub mod admin_rename;
 pub mod frontend_split;
 pub mod oss;
+pub mod enhance_util;
+pub mod wechat_login;
+pub mod sms_login;
+pub mod captcha_slider;
+pub mod api_encrypt;
 pub mod generator_config;
 pub mod nginx;
 pub mod scripts;
@@ -81,6 +86,21 @@ fn default_server_port() -> i32 {
 /// serde 默认值辅助：后台 UI 模板默认 vben-web-ele
 fn default_ui_template() -> String {
     "vben-web-ele".into()
+}
+
+/// serde 默认值辅助：短信厂商默认阿里云
+fn default_sms_provider() -> String {
+    "aliyun".into()
+}
+
+/// serde 默认值辅助：短信验证码有效期默认 5 分钟
+fn default_sms_expire_minutes() -> i32 {
+    5
+}
+
+/// serde 默认值辅助：同一手机号每日发码上限默认 10 次
+fn default_sms_daily_limit() -> i32 {
+    10
 }
 
 /// serde 默认值辅助：数据库类型默认 mysql（旧配置 JSON 无该字段时兜底）
@@ -351,6 +371,45 @@ pub struct CustomizeParams {
     /// 后台 UI 模板标识（对应 templates/ruoyi-vue/ui/{ui_template} 目录名），默认 vben-web-ele
     #[serde(default = "default_ui_template")]
     pub ui_template: String,
+    // ---- 增强件：短信登录 ----
+    /// 是否启用短信验证码登录（默认关，关闭时零侵入）
+    #[serde(default)]
+    pub enable_sms_login: bool,
+    /// 短信厂商：aliyun | tencent
+    #[serde(default = "default_sms_provider")]
+    pub sms_provider: String,
+    /// 短信签名
+    #[serde(default)]
+    pub sms_sign_name: String,
+    /// 短信 AccessKey
+    #[serde(default)]
+    pub sms_access_key: String,
+    /// 短信 SecretKey（禁止写入 CLI/报告明文）
+    #[serde(default)]
+    pub sms_secret_key: String,
+    /// 短信模板 CODE（阿里 TemplateCode / 腾讯 TemplateId）
+    #[serde(default)]
+    pub sms_template_code: String,
+    /// 腾讯云短信 SdkAppId
+    #[serde(default)]
+    pub sms_sdk_app_id: String,
+    /// 短信验证码有效期（分钟）
+    #[serde(default = "default_sms_expire_minutes")]
+    pub sms_code_expire_minutes: i32,
+    /// 同一手机号每日发码上限
+    #[serde(default = "default_sms_daily_limit")]
+    pub sms_daily_limit_per_phone: i32,
+    // ---- 增强件：滑块验证码 ----
+    /// 是否启用 AJ-Captcha 滑块验证码（默认关，保留原 CaptchaController）
+    #[serde(default)]
+    pub enable_captcha_slider: bool,
+    // ---- 增强件：接口 AES ----
+    /// 是否启用接口 AES 传输加密（默认关）
+    #[serde(default)]
+    pub enable_api_encrypt: bool,
+    /// AES-128 密钥（16 字节可打印字符；空则执行时随机生成）
+    #[serde(default)]
+    pub aes_secret: String,
 }
 
 impl Default for CustomizeParams {
@@ -441,6 +500,18 @@ impl Default for CustomizeParams {
             enable_startup_scripts: false,
             enable_replace_ui: false,
             ui_template: "vben-web-ele".into(),
+            enable_sms_login: false,
+            sms_provider: "aliyun".into(),
+            sms_sign_name: String::new(),
+            sms_access_key: String::new(),
+            sms_secret_key: String::new(),
+            sms_template_code: String::new(),
+            sms_sdk_app_id: String::new(),
+            sms_code_expire_minutes: 5,
+            sms_daily_limit_per_phone: 10,
+            enable_captcha_slider: false,
+            enable_api_encrypt: false,
+            aes_secret: String::new(),
         }
     }
 }

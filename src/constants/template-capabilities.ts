@@ -46,6 +46,9 @@ export const DISABLED_FEATURES: Record<string, (keyof CustomizeParams)[]> = {
     'enable_frontend_split', // 前后端分离（单体版前端内嵌，无独立目录可拆）
     'enable_uniapp', // UniApp 小程序（依赖独立前端作参考）
     'pay_included', // 微信支付（随 UniApp 一起禁用）
+    'enable_sms_login',
+    'enable_captcha_slider',
+    'enable_api_encrypt',
     'enable_nginx_config', // Nginx 反代（单体版通常内嵌 Tomcat 单体运行）
     'enable_replace_ui', // 替换后台 UI（单体版无独立前端目录，不适用）
     'db_type', // PostgreSQL 方言仅对 ruoyi-vue 开放

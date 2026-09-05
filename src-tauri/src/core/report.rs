@@ -71,6 +71,15 @@ pub fn generate_report(
     } else {
         md.push_str("- UniApp 小程序：未启用\n");
     }
+    if params.enable_sms_login {
+        md.push_str("- 短信登录：已启用（厂商与模板已写入 yml，密钥不写入报告）\n");
+    }
+    if params.enable_captcha_slider {
+        md.push_str("- 滑块验证码：已启用（/captcha/get /captcha/check）\n");
+    }
+    if params.enable_api_encrypt {
+        md.push_str("- 接口 AES：已启用（密钥长度与写入位置见任务说明，明文不写入报告）\n");
+    }
 
     // 安全加固 / SQL 定制结果（从相关任务的 message 中提取，集中展示）
     let security_msgs: Vec<&String> = task_results

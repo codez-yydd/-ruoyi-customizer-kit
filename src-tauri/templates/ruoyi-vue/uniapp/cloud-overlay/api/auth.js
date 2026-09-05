@@ -11,18 +11,17 @@ export function pickAccessToken(body) {
 /**
  * Cloud 账号登录：POST /auth/login
  * R.ok 包装，token 在 data 内。
- * 仓库没有 wechat-login Java Controller，不谎称已生成后端。
  */
 export function passwordLogin(data) {
   return request.post('/auth/login', data)
 }
 
 /**
- * 微信小程序登录（仅前端调用占位）。
- * Cloud 本期不生成 wechat-login 后端，失败请按重新登录处理。
+ * 微信小程序登录：POST /system/app/{{MODULE_PREFIX}}/auth/wechat-login
+ * 网关 /system/** StripPrefix=1 → system 模块 /app/{{MODULE_PREFIX}}/auth/wechat-login
  */
 export function wechatLogin(data) {
-  return request.post('/auth/wechat-login', data)
+  return request.post('/system/app/{{MODULE_PREFIX}}/auth/wechat-login', data)
 }
 
 /**

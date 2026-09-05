@@ -215,7 +215,7 @@ fn replace_placeholders(content: &str, placeholders: &HashMap<String, String>) -
 }
 
 /// Cloud UniApp overlay：登录走网关 `/auth/login`，token 取 `access_token`。
-/// 仓库没有 wechat-login Java Controller，不生成后端；仅覆盖前端调用。
+/// 微信登录走 system：POST /system/app/{prefix}/auth/wechat-login（B1 生成 AppAuthController）。
 pub fn apply_cloud_overlay(
     uniapp_dir: &Path,
     params: &CustomizeParams,

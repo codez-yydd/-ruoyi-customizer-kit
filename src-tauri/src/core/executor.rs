@@ -137,6 +137,10 @@ where
             do_generate_export_source_scripts(root, params, &mut r, log)
         }
         TaskType::UpdateAdminPomFinalName => do_update_admin_pom_final_name(root, params, &mut r, log),
+        TaskType::SetupWechatLogin => do_setup_wechat_login(root, params, info, &mut r, log),
+        TaskType::SetupSmsLogin => do_setup_sms_login(root, params, info, &mut r, log),
+        TaskType::SetupCaptchaSlider => do_setup_captcha_slider(root, params, info, &mut r, log),
+        TaskType::SetupApiEncrypt => do_setup_api_encrypt(root, params, info, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport => {
             r.status = TaskStatus::Skipped;
             r.message = "校验/报告在执行后单独触发".into();
@@ -1065,8 +1069,14 @@ where
     r.created_files = result.files_created;
     r.modified_files = result.files_modified;
     if crate::core::detector::is_cloud_layout(_root) {
-        if let Ok(n) = crate::core::uniapp::apply_cloud_overlay(&result.output_dir, params, &|msg| log(msg)) {
-            r.modified_files += n;
+        match crate::core::uniapp::apply_cloud_overlay(&result.output_dir, params, &|msg| log(msg)) {
+            Ok(n) => {
+                r.modified_files += n;
+            }
+            Err(e) => {
+                log(&format!("WARN: 应用 Cloud UniApp overlay 失败：{e}"));
+                return Err(format!("Cloud UniApp overlay 失败：{e}"));
+            }
         }
     }
     Ok(())
@@ -1688,6 +1698,62 @@ where
 {
     let modules = current_backend_modules(root, info);
     let outcome = crate::core::oss::setup_oss(root, params, &modules, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+fn do_setup_wechat_login<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let outcome = crate::core::wechat_login::setup_wechat_login(root, params, &modules, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+fn do_setup_sms_login<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let outcome = crate::core::sms_login::setup_sms_login(root, params, &modules, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+fn do_setup_captcha_slider<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let outcome = crate::core::captcha_slider::setup_captcha_slider(root, params, &modules, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+fn do_setup_api_encrypt<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let outcome = crate::core::api_encrypt::setup_api_encrypt(root, params, &modules, &|msg| log(msg))?;
     r.modified_files = outcome.modified_files;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {

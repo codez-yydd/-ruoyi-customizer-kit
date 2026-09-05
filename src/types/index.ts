@@ -250,6 +250,21 @@ export interface CustomizeParams {
   enable_replace_ui: boolean
   /** 后台 UI 模板标识（对应 templates/ruoyi-vue/ui/{ui_template}），默认 vben-web-ele */
   ui_template: string
+  // ---- 增强件：短信登录 ----
+  enable_sms_login: boolean
+  sms_provider: string
+  sms_sign_name: string
+  sms_access_key: string
+  sms_secret_key: string
+  sms_template_code: string
+  sms_sdk_app_id: string
+  sms_code_expire_minutes: number
+  sms_daily_limit_per_phone: number
+  // ---- 增强件：滑块验证码 ----
+  enable_captcha_slider: boolean
+  // ---- 增强件：接口 AES ----
+  enable_api_encrypt: boolean
+  aes_secret: string
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -294,6 +309,10 @@ export type TaskType =
   | 'GenerateBuildScripts'
   | 'GenerateExportSourceScripts'
   | 'UpdateAdminPomFinalName'
+  | 'SetupWechatLogin'
+  | 'SetupSmsLogin'
+  | 'SetupCaptchaSlider'
+  | 'SetupApiEncrypt'
   | 'ValidateProject'
   | 'GenerateReport'
 

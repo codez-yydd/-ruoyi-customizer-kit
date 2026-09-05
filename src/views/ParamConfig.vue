@@ -89,6 +89,7 @@ const SECTION = {
   cloud: 'cloud',
   structure: 'structure',
   oss: 'oss',
+  enhance: 'enhance',
   jwt: 'jwt',
   deploy: 'deploy',
   uniapp: 'uniapp',
@@ -193,7 +194,19 @@ const defaults = (): CustomizeParams => ({
   enable_startup_scripts: false,
   // 替换后台 UI
   enable_replace_ui: false,
-  ui_template: DEFAULT_UI_TEMPLATE_KEY
+  ui_template: DEFAULT_UI_TEMPLATE_KEY,
+  enable_sms_login: false,
+  sms_provider: 'aliyun',
+  sms_sign_name: '',
+  sms_access_key: '',
+  sms_secret_key: '',
+  sms_template_code: '',
+  sms_sdk_app_id: '',
+  sms_code_expire_minutes: 5,
+  sms_daily_limit_per_phone: 10,
+  enable_captcha_slider: false,
+  enable_api_encrypt: false,
+  aes_secret: ''
 })
 
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
@@ -216,6 +229,18 @@ if (typeof form.cloud_port_gen !== 'number') form.cloud_port_gen = 0
 if (typeof form.cloud_port_job !== 'number') form.cloud_port_job = 0
 if (typeof form.cloud_port_file !== 'number') form.cloud_port_file = 0
 if (typeof form.cloud_port_monitor !== 'number') form.cloud_port_monitor = 0
+if (form.enable_sms_login == null) form.enable_sms_login = false
+if (!form.sms_provider) form.sms_provider = 'aliyun'
+if (form.sms_sign_name == null) form.sms_sign_name = ''
+if (form.sms_access_key == null) form.sms_access_key = ''
+if (form.sms_secret_key == null) form.sms_secret_key = ''
+if (form.sms_template_code == null) form.sms_template_code = ''
+if (form.sms_sdk_app_id == null) form.sms_sdk_app_id = ''
+if (typeof form.sms_code_expire_minutes !== 'number') form.sms_code_expire_minutes = 5
+if (typeof form.sms_daily_limit_per_phone !== 'number') form.sms_daily_limit_per_phone = 10
+if (form.enable_captcha_slider == null) form.enable_captcha_slider = false
+if (form.enable_api_encrypt == null) form.enable_api_encrypt = false
+if (form.aes_secret == null) form.aes_secret = ''
 
 // 识别结果变化时重置原值
 watch(
@@ -413,6 +438,7 @@ const sectionCounts = computed(() => ({
   cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0) + (Array.isArray(form.new_modules) ? form.new_modules.length : 0),
   structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]) + (isVue.value && Array.isArray(form.new_modules) ? form.new_modules.length : 0),
   oss: countTrue([form.enable_oss]),
+  enhance: countTrue([form.enable_sms_login, form.enable_captcha_slider, form.enable_api_encrypt]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
   deploy: countTrue([form.enable_nginx_config, form.enable_startup_scripts]),
   uniapp: countTrue([form.pay_included]),
@@ -498,6 +524,9 @@ function onSwitchChange() {
 /** 智能展开：开关被打开时（含预设/导入触发）自动展开所属分区 */
 const TRIGGERS: ReadonlyArray<readonly [() => boolean, string]> = [
   [() => form.enable_oss, SECTION.oss],
+  [() => form.enable_sms_login, SECTION.enhance],
+  [() => form.enable_captcha_slider, SECTION.enhance],
+  [() => form.enable_api_encrypt, SECTION.enhance],
   [() => form.enable_security, SECTION.security],
   [() => form.enable_sql_customize, SECTION.security],
   [() => form.enable_jwt, SECTION.jwt],
@@ -673,6 +702,18 @@ function generateRandomSecret(): string {
   crypto.getRandomValues(arr)
   for (let i = 0; i < arr.length; i++) {
     s += chars[(arr[i] >> 4) & 0xf] + chars[arr[i] & 0xf]
+  }
+  return s
+}
+
+/** AES-128：16 字节可打印密钥（不要用 JWT 的 64 位 hex） */
+function generateAesSecret(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const arr = new Uint8Array(16)
+  crypto.getRandomValues(arr)
+  let s = ''
+  for (let i = 0; i < arr.length; i++) {
+    s += chars[arr[i] % chars.length]
   }
   return s
 }
@@ -1236,6 +1277,89 @@ function generateRandomSecret(): string {
               <div class="detail-tip muted">
                 将新增独立上传接口（分离版 /common/oss/upload，Cloud /system/oss/upload），不改动若依原有本地上传逻辑。
               </div>
+            </div>
+          </el-collapse-item>
+
+          <!-- 增强件：微信登录后端 / 短信 / 滑块 / AES -->
+          <el-collapse-item v-if="!isDisabled('enable_sms_login')" :name="SECTION.enhance">
+            <template #title>
+              <span class="section-title">增强件</span>
+              <el-badge v-if="sectionCounts.enhance > 0" :value="`已启用 ${sectionCounts.enhance}`" class="section-badge" type="primary" />
+            </template>
+            <div
+              v-if="!isDisabled('enable_uniapp') && form.enable_uniapp"
+              class="detail-tip muted"
+              style="margin-bottom: 8px"
+            >
+              微信小程序登录后端跟随「生成 UniApp」：生成 AppAuthController（jscode2session + Token），分离版放行 /app/{前缀}/auth/wechat-login，Cloud 为 /system/app/{前缀}/auth/wechat-login。
+            </div>
+            <div class="switch-grid">
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">短信登录</span>
+                  <el-switch v-model="form.enable_sms_login" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">
+                  POST /smsCode、/smsLogin；发码前须过图形验证码<span v-if="form.enable_captcha_slider">（当前为滑块 /captcha/check）</span>
+                </div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">滑块验证码</span>
+                  <el-switch v-model="form.enable_captcha_slider" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">AJ-Captcha /captcha/get、/captcha/check；保留原图形验证码接口</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">接口 AES 加密</span>
+                  <el-switch v-model="form.enable_api_encrypt" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">AES/ECB/PKCS5Padding 传输加密</div>
+              </div>
+            </div>
+            <div v-if="form.enable_sms_login" class="detail-panel">
+              <div v-if="form.enable_api_encrypt" class="detail-panel__bar">短信登录</div>
+              <el-form-item label="短信厂商">
+                <el-radio-group v-model="form.sms_provider">
+                  <el-radio value="aliyun">阿里云</el-radio>
+                  <el-radio value="tencent">腾讯云</el-radio>
+                </el-radio-group>
+              </el-form-item>
+              <div class="detail-grid">
+                <el-form-item label="短信签名">
+                  <el-input v-model="form.sms_sign_name" placeholder="签名" />
+                </el-form-item>
+                <el-form-item label="AccessKey">
+                  <el-input v-model="form.sms_access_key" placeholder="AK" />
+                </el-form-item>
+                <el-form-item label="SecretKey">
+                  <el-input v-model="form.sms_secret_key" show-password placeholder="SK，不会写入报告明文" />
+                </el-form-item>
+                <el-form-item label="模板 CODE">
+                  <el-input v-model="form.sms_template_code" placeholder="阿里 TemplateCode / 腾讯 TemplateId" />
+                </el-form-item>
+                <el-form-item v-if="form.sms_provider === 'tencent'" label="SdkAppId">
+                  <el-input v-model="form.sms_sdk_app_id" placeholder="腾讯云短信 SdkAppId" />
+                </el-form-item>
+                <el-form-item label="有效期(分钟)">
+                  <el-input-number v-model="form.sms_code_expire_minutes" :min="1" :max="30" />
+                </el-form-item>
+                <el-form-item label="日限额/号">
+                  <el-input-number v-model="form.sms_daily_limit_per_phone" :min="1" :max="100" />
+                </el-form-item>
+              </div>
+            </div>
+            <div v-if="form.enable_api_encrypt" class="detail-panel">
+              <div v-if="form.enable_sms_login" class="detail-panel__bar">接口 AES 加密</div>
+              <el-form-item label="AES 密钥">
+                <el-input v-model="form.aes_secret" show-password placeholder="16 字符，留空则执行时随机生成">
+                  <template #append>
+                    <el-button @click="form.aes_secret = generateAesSecret()">随机生成</el-button>
+                  </template>
+                </el-input>
+              </el-form-item>
+              <div class="detail-tip muted">须为 16 字节可打印字符（AES-128）。不要使用 JWT 那种超长 Base64。登录、验证码、短信、微信登录等公开接口不加密。前端密钥随包分发，属传输混淆级，不能替代 HTTPS。</div>
             </div>
           </el-collapse-item>
 

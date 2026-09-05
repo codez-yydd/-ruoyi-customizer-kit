@@ -667,6 +667,7 @@ fn rewrite_one_yaml(
     let is_system = is_system_yml(data_id);
     let is_app = is_application_yml(data_id);
     let is_gw = is_gateway_yml(data_id);
+    let is_auth = is_auth_yml(data_id);
     // 优先 system；若用户包没有 system 条目则回退 application-{profile}
     let write_shared = is_system || (is_app && !has_system);
     if write_shared {
@@ -686,9 +687,70 @@ fn rewrite_one_yaml(
         if params.enable_jwt {
             *yaml = rewrite_token_yaml(yaml, params);
         }
+        if params.enable_api_encrypt {
+            let secret = crate::core::api_encrypt::resolve_aes_secret(params);
+            *yaml = crate::core::enhance_util::upsert_prefix_child(
+                yaml,
+                &params.new_module_prefix,
+                "api-encrypt",
+                &crate::core::api_encrypt::api_encrypt_yaml_child(&secret),
+            );
+        }
+        if params.enable_sms_login {
+            // 同时写 system 便于查阅，但 auth 必须有（见下方 is_auth）
+            *yaml = crate::core::enhance_util::upsert_prefix_child(
+                yaml,
+                &params.new_module_prefix,
+                "sms",
+                &crate::core::sms_login::sms_yaml_child_block(params),
+            );
+        }
+    }
+    // 短信在 auth 模块消费，Nacos 必须写入 auth 的 *-dev.yml（2026-09-06）。
+    // write_shared 只写 system 不够。
+    if params.enable_sms_login && is_auth {
+        *yaml = crate::core::enhance_util::upsert_prefix_child(
+            yaml,
+            &params.new_module_prefix,
+            "sms",
+            &crate::core::sms_login::sms_yaml_child_block(params),
+        );
+    }
+    if params.enable_captcha_slider && is_auth {
+        *yaml = crate::core::enhance_util::append_marked_block(
+            yaml,
+            "# ===== AJ-Captcha",
+            &crate::core::captcha_slider::aj_captcha_yaml_block(),
+        );
+    }
+    if params.enable_api_encrypt && is_auth {
+        let secret = crate::core::api_encrypt::resolve_aes_secret(params);
+        *yaml = crate::core::enhance_util::upsert_prefix_child(
+            yaml,
+            &params.new_module_prefix,
+            "api-encrypt",
+            &crate::core::api_encrypt::api_encrypt_yaml_child(&secret),
+        );
     }
     if is_gw && (params.enable_footer_icp || params.enable_site_settings) {
         *yaml = append_whitelist(yaml, "/system/webInfo");
+    }
+    if is_gw && params.enable_uniapp {
+        *yaml = append_whitelist(
+            yaml,
+            &format!(
+                "/system/app/{}/auth/wechat-login",
+                params.new_module_prefix
+            ),
+        );
+    }
+    if is_gw && params.enable_sms_login {
+        *yaml = append_whitelist(yaml, "/auth/smsCode");
+        *yaml = append_whitelist(yaml, "/auth/smsLogin");
+    }
+    if is_gw && params.enable_captcha_slider {
+        *yaml = append_whitelist(yaml, "/auth/captcha/get");
+        *yaml = append_whitelist(yaml, "/auth/captcha/check");
     }
     // 仅服务条目（gateway/auth/system/…）补写或改写 server.port；
     // application-dev.yml、sentinel-* 不得插入 server.port。
@@ -1464,6 +1526,10 @@ pub fn is_gateway_yml(data_id: &str) -> bool {
 
 pub fn is_system_yml(data_id: &str) -> bool {
     matches_service_profile(data_id, "system")
+}
+
+pub fn is_auth_yml(data_id: &str) -> bool {
+    matches_service_profile(data_id, "auth")
 }
 
 pub fn is_application_yml(data_id: &str) -> bool {
@@ -2793,6 +2859,33 @@ mod tests {
             !sentinel.contains("server:"),
             "sentinel-* 不得插入 server.port：{sentinel}"
         );
+    }
+
+    #[test]
+    fn enhance_sms_writes_auth_yml_and_gateway_whitelist() {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        p.enable_sms_login = true;
+        p.enable_uniapp = true;
+        p.enable_captcha_slider = true;
+        p.sms_secret_key = "should-not-matter-for-whitelist".into();
+
+        let mut auth = "spring:\n  application:\n    name: ruoyi-auth\n".to_string();
+        rewrite_one_yaml(&mut auth, "ruoyi-auth-dev.yml", &p, "demo", true, &|_| {});
+        assert!(auth.contains("  sms:"), "auth 条目必须含短信块：{auth}");
+        assert!(auth.contains("demo:"), "{auth}");
+
+        let mut system = "spring:\n  application:\n    name: ruoyi-system\n".to_string();
+        rewrite_one_yaml(&mut system, "ruoyi-system-dev.yml", &p, "demo", true, &|_| {});
+        assert!(system.contains("  wx:") || system.contains("demo:"), "{system}");
+
+        let mut gw = "spring:\n  cloud:\n    gateway:\n      routes: []\nsecurity:\n  ignore:\n    whites:\n      - /auth/login\n".to_string();
+        rewrite_one_yaml(&mut gw, "ruoyi-gateway-dev.yml", &p, "demo", true, &|_| {});
+        assert!(gw.contains("/auth/smsCode"), "{gw}");
+        assert!(gw.contains("/auth/smsLogin"), "{gw}");
+        assert!(gw.contains("/system/app/demo/auth/wechat-login"), "{gw}");
+        assert!(gw.contains("/auth/captcha/get"), "{gw}");
+        assert!(!gw.contains("should-not-matter-for-whitelist") || gw.contains("sms:"));
     }
 
     const JOB_FLAT_DS: &str = "spring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://127.0.0.1:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\n# mybatis配置\n";

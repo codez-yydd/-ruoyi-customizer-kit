@@ -91,6 +91,18 @@ pub fn default_params() -> CustomizeParams {
         enable_startup_scripts: false,
         enable_replace_ui: false,
         ui_template: "vben-web-ele".into(),
+        enable_sms_login: false,
+        sms_provider: "aliyun".into(),
+        sms_sign_name: String::new(),
+        sms_access_key: String::new(),
+        sms_secret_key: String::new(),
+        sms_template_code: String::new(),
+        sms_sdk_app_id: String::new(),
+        sms_code_expire_minutes: 5,
+        sms_daily_limit_per_phone: 10,
+        enable_captcha_slider: false,
+        enable_api_encrypt: false,
+        aes_secret: String::new(),
         config_db_name: String::new(),
         remove_modules: Vec::new(),
         new_modules: Vec::new(),
@@ -427,7 +439,7 @@ fn emit_log(ev: &LogEvent, as_json: bool, quiet: bool) {
     }
 }
 
-/// 脱敏 CLI 可见的 JWT secret 明文（任务/校验 message）。
+/// 脱敏 CLI 可见的密钥明文（任务/校验 message）。
 pub fn redact_cli_secrets(text: &str) -> String {
     let generated = regex::Regex::new(r"(?i)JWT secret 已随机生成（[^）]*）").unwrap();
     let assigned = regex::Regex::new(r"(?i)JWT secret 已设置为「[^」]*」").unwrap();
@@ -437,6 +449,12 @@ pub fn redact_cli_secrets(text: &str) -> String {
     out = assigned
         .replace_all(&out, "JWT secret 已设置为「***」")
         .into_owned();
+    let sms_sk = regex::Regex::new(r"(?i)sms_secret_key[=:：]\s*\S+").unwrap();
+    out = sms_sk.replace_all(&out, "sms_secret_key=***").into_owned();
+    let aes = regex::Regex::new(r"(?i)aes_secret[=:：]\s*\S+").unwrap();
+    out = aes.replace_all(&out, "aes_secret=***").into_owned();
+    let wx = regex::Regex::new(r"(?i)wx_appsecret[=:：]\s*\S+").unwrap();
+    out = wx.replace_all(&out, "wx_appsecret=***").into_owned();
     out
 }
 
@@ -701,6 +719,23 @@ mod tests {
         let out2 = redact_cli_secrets(&assigned);
         assert!(!out2.contains(secret), "脱敏后不应含明文：{out2}");
         assert!(out2.contains("***"), "{out2}");
+    }
+
+    #[test]
+    fn redact_sms_and_aes_and_wx_secrets() {
+        let sms = redact_cli_secrets("sms_secret_key=abcSecretKey999");
+        assert!(!sms.contains("abcSecretKey999"), "{sms}");
+        let aes = redact_cli_secrets("aes_secret=0123456789abcdef");
+        assert!(!aes.contains("0123456789abcdef"), "{aes}");
+        let wx = redact_cli_secrets("wx_appsecret=wxsecretvalue");
+        assert!(!wx.contains("wxsecretvalue"), "{wx}");
+    }
+
+    #[test]
+    fn redact_jwt_execute_response() {
+        let secret = "super-secret-jwt-token-value-123456";
+        let generated = format!("JWT secret 已随机生成（{secret}），请妥善保管");
+        let assigned = format!("其它说明；JWT secret 已设置为「{secret}」");
 
         let mut resp = ExecuteResponse {
             success: true,

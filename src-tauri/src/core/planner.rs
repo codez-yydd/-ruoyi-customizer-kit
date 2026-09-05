@@ -359,6 +359,17 @@ pub fn plan(
             status: TaskStatus::Pending,
             error_message: String::new(),
         });
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "生成微信小程序登录后端（AppAuthController + 放行）".into(),
+            task_type: TaskType::SetupWechatLogin,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec!["SecurityConfig.java".into()],
+            affected_dirs: vec![],
+            created_files: vec!["AppAuthController.java".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
 
         // 引入微信支付：注入官方 SDK 依赖 + 生成配置类 + 创建证书目录
         if params.pay_included {
@@ -508,6 +519,50 @@ pub fn plan(
                 format!("{config_pkg}/OssClient.java"),
                 oss_ctrl,
             ],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    if params.enable_sms_login {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!(
+                "短信登录（{}）：发码/登录接口 + SysLoginService.smsLogin",
+                params.sms_provider
+            ),
+            task_type: TaskType::SetupSmsLogin,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec!["SysLoginService.java".into(), "SecurityConfig.java".into()],
+            affected_dirs: vec![],
+            created_files: vec!["SmsAuthController.java".into(), "SmsCodeService.java".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+    if params.enable_captcha_slider {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "滑块验证码（AJ-Captcha）：/captcha/get /captcha/check，保留原 CaptchaController"
+                .into(),
+            task_type: TaskType::SetupCaptchaSlider,
+            risk_level: RiskLevel::Medium,
+            affected_files: vec!["SecurityConfig.java".into()],
+            affected_dirs: vec![],
+            created_files: vec!["CaptchaSliderController.java".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+    if params.enable_api_encrypt {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "接口 AES 加密：前端密钥随包分发，属传输混淆级防护，不能替代 HTTPS".into(),
+            task_type: TaskType::SetupApiEncrypt,
+            risk_level: RiskLevel::High,
+            affected_files: vec!["request".into()],
+            affected_dirs: vec![],
+            created_files: vec!["ApiEncryptAdvice.java".into()],
             status: TaskStatus::Pending,
             error_message: String::new(),
         });

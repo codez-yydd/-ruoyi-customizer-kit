@@ -47,6 +47,10 @@ pub enum TaskType {
     GenerateBuildScripts,
     GenerateExportSourceScripts,
     UpdateAdminPomFinalName,
+    SetupWechatLogin,
+    SetupSmsLogin,
+    SetupCaptchaSlider,
+    SetupApiEncrypt,
     ValidateProject,
     GenerateReport,
 }
