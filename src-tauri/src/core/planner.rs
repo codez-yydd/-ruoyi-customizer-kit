@@ -162,23 +162,40 @@ pub fn plan(
         });
     }
 
+    let is_cloud = crate::core::detector::is_cloud_project(root, &info.template_dir);
+
     // 6. 配置文件重构（可选）
-    if params.enable_config_rewrite && !info.config_files.is_empty() {
-        tasks.push(Task {
-            id: next_id(&tasks),
-            name: "重构配置文件为 application.yaml + dev + prod 三件套".into(),
-            task_type: TaskType::RewriteApplicationProfiles,
-            risk_level: RiskLevel::High,
-            affected_files: info.config_files.clone(),
-            affected_dirs: vec![],
-            created_files: vec![
-                "application.yaml".into(),
-                "application-dev.yaml".into(),
-                "application-prod.yaml".into(),
-            ],
-            status: TaskStatus::Pending,
-            error_message: String::new(),
-        });
+    // Cloud：走 Nacos config_info SQL，不规划分离版 application.yaml 三件套。
+    if params.enable_config_rewrite {
+        if is_cloud {
+            tasks.push(Task {
+                id: next_id(&tasks),
+                name: "Nacos 配置定制".into(),
+                task_type: TaskType::RewriteNacosConfig,
+                risk_level: RiskLevel::High,
+                affected_files: vec!["sql/ry_config*.sql".into()],
+                affected_dirs: vec![],
+                created_files: vec!["sql/ry_config*.sql".into()],
+                status: TaskStatus::Pending,
+                error_message: String::new(),
+            });
+        } else if !info.config_files.is_empty() {
+            tasks.push(Task {
+                id: next_id(&tasks),
+                name: "重构配置文件为 application.yaml + dev + prod 三件套".into(),
+                task_type: TaskType::RewriteApplicationProfiles,
+                risk_level: RiskLevel::High,
+                affected_files: info.config_files.clone(),
+                affected_dirs: vec![],
+                created_files: vec![
+                    "application.yaml".into(),
+                    "application-dev.yaml".into(),
+                    "application-prod.yaml".into(),
+                ],
+                status: TaskStatus::Pending,
+                error_message: String::new(),
+            });
+        }
     }
 
     // 7. logback 日志路径修正（可选）
@@ -225,6 +242,17 @@ pub fn plan(
             status: TaskStatus::Pending,
             error_message: String::new(),
         });
+        let mp_config_rel = if is_cloud {
+            format!(
+                "{}/system/config/MybatisPlusConfig.java",
+                package_to_path(&params.new_package).to_string_lossy()
+            )
+        } else {
+            format!(
+                "{new_pkg_path}/framework/config/MybatisPlusConfig.java",
+                new_pkg_path = package_to_path(&params.new_package).join("framework/config").to_string_lossy()
+            )
+        };
         tasks.push(Task {
             id: next_id(&tasks),
             name: "生成 MyBatis-Plus 配置类".into(),
@@ -232,10 +260,7 @@ pub fn plan(
             risk_level: RiskLevel::Medium,
             affected_files: vec![],
             affected_dirs: vec![],
-            created_files: vec![format!(
-                "{new_pkg_path}/framework/config/MybatisPlusConfig.java",
-                new_pkg_path = package_to_path(&params.new_package).join("framework/config").to_string_lossy()
-            )],
+            created_files: vec![mp_config_rel],
             status: TaskStatus::Pending,
             error_message: String::new(),
         });
@@ -330,14 +355,22 @@ pub fn plan(
         // 引入微信支付：注入官方 SDK 依赖 + 生成配置类 + 创建证书目录
         if params.pay_included {
             let new_pkg_path = package_to_path(&params.new_package);
-            let config_pkg = new_pkg_path.join("framework/config").to_string_lossy().to_string();
-            let admin_module = info
-                .backend_modules
-                .iter()
-                .find(|m| m.ends_with("-admin"))
-                .or_else(|| info.backend_modules.first())
-                .cloned()
-                .unwrap_or_default();
+            let config_pkg = if is_cloud {
+                new_pkg_path.join("system/config").to_string_lossy().to_string()
+            } else {
+                new_pkg_path.join("framework/config").to_string_lossy().to_string()
+            };
+            let admin_module = if is_cloud {
+                crate::core::detector::find_module_by_leaf_suffix(root, &info.backend_modules, "system")
+                    .unwrap_or_else(|| "ruoyi-modules/ruoyi-system".into())
+            } else {
+                info.backend_modules
+                    .iter()
+                    .find(|m| m.ends_with("-admin"))
+                    .or_else(|| info.backend_modules.first())
+                    .cloned()
+                    .unwrap_or_default()
+            };
             tasks.push(Task {
                 id: next_id(&tasks),
                 name: format!(
@@ -397,12 +430,20 @@ pub fn plan(
                 format!("{}/apps/web-ele/.env", ui_dir),
             ]
         };
-        tasks.push(Task {
-            id: next_id(&tasks),
-            name: format!(
+        let task_name = if info.frontend_dirs.is_empty() {
+            format!(
+                "生成后台 UI：写入模板 {} 到 {}（源仓无前端目录）",
+                params.ui_template, ui_dir
+            )
+        } else {
+            format!(
                 "替换后台 UI：删除原 {} 并生成模板 {}（标题/端口/版权同步写入）",
                 ui_dir, params.ui_template
-            ),
+            )
+        };
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: task_name,
             task_type: TaskType::ReplaceUI,
             risk_level: RiskLevel::High,
             affected_files: vec![],
@@ -423,14 +464,30 @@ pub fn plan(
             _ => "OSS",
         };
         let new_pkg_path = package_to_path(&params.new_package);
-        let config_pkg = new_pkg_path.join("framework/config").to_string_lossy().to_string();
-        let admin_module = info
-            .backend_modules
-            .iter()
-            .find(|m| m.ends_with("-admin"))
-            .or_else(|| info.backend_modules.first())
-            .cloned()
-            .unwrap_or_default();
+        let config_pkg = if is_cloud {
+            new_pkg_path.join("system/config").to_string_lossy().to_string()
+        } else {
+            new_pkg_path.join("framework/config").to_string_lossy().to_string()
+        };
+        let oss_ctrl = if is_cloud {
+            new_pkg_path
+                .join("system/controller/OssController.java")
+                .to_string_lossy()
+                .to_string()
+        } else {
+            format!("{config_pkg}/../web/controller/common/OssController.java")
+        };
+        let admin_module = if is_cloud {
+            crate::core::detector::find_module_by_leaf_suffix(root, &info.backend_modules, "system")
+                .unwrap_or_else(|| "ruoyi-modules/ruoyi-system".into())
+        } else {
+            info.backend_modules
+                .iter()
+                .find(|m| m.ends_with("-admin"))
+                .or_else(|| info.backend_modules.first())
+                .cloned()
+                .unwrap_or_default()
+        };
         tasks.push(Task {
             id: next_id(&tasks),
             name: format!("OSS 集成：{provider_cn}（依赖 + 配置类 + 上传接口）"),
@@ -441,7 +498,7 @@ pub fn plan(
             created_files: vec![
                 format!("{config_pkg}/OssProperties.java"),
                 format!("{config_pkg}/OssClient.java"),
-                format!("{config_pkg}/../web/controller/common/OssController.java"),
+                oss_ctrl,
             ],
             status: TaskStatus::Pending,
             error_message: String::new(),
@@ -517,6 +574,26 @@ pub fn plan(
             risk_level: RiskLevel::Medium,
             affected_files: vec![],
             affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // Cloud 模块裁剪（仅 cloud 且 remove_modules 非空）
+    if is_cloud && !params.remove_modules.is_empty() {
+        let list = params.remove_modules.join("、");
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!("裁剪微服务模块：{list}"),
+            task_type: TaskType::TrimCloudModules,
+            risk_level: RiskLevel::High,
+            affected_files: vec!["pom.xml".into(), "sql/ry_config*.sql".into()],
+            affected_dirs: params
+                .remove_modules
+                .iter()
+                .map(|m| format!("ruoyi-modules/ruoyi-{m}"))
+                .collect(),
             created_files: vec![],
             status: TaskStatus::Pending,
             error_message: String::new(),
@@ -690,9 +767,15 @@ pub fn plan(
 
     // 启动脚本生成（可选，输出到 output_dir/scripts/）
     if params.enable_startup_scripts {
+        let startup_name = if is_cloud {
+            "生成启动/停止脚本（Cloud 多服务 start/stop：gateway→auth→system，先检查 Nacos 8848）"
+                .into()
+        } else {
+            "生成启动/停止脚本（start/stop .sh + .bat）".into()
+        };
         tasks.push(Task {
             id: next_id(&tasks),
-            name: "生成启动/停止脚本（start/stop .sh + .bat）".into(),
+            name: startup_name,
             task_type: TaskType::GenerateStartupScripts,
             risk_level: RiskLevel::Low,
             affected_files: vec![],
@@ -708,10 +791,15 @@ pub fn plan(
         });
 
         // 一键打包脚本生成（与 start/stop 同开关，输出到 output_dir 根目录）：
-        // 后端 mvn package + 前端 npm run build:prod，产物汇总到 build/（jar + dist）。
+        // Vue：admin.jar；Cloud：多服务 jar（gateway/auth/system/…），不是 *-admin.jar。
+        let build_name = if is_cloud {
+            "生成一键打包脚本（build.sh / build.bat，Cloud 多服务 jar，产物输出到 build/）".into()
+        } else {
+            "生成一键打包脚本（build.sh / build.bat，产物输出到 build/）".into()
+        };
         tasks.push(Task {
             id: next_id(&tasks),
-            name: "生成一键打包脚本（build.sh / build.bat，产物输出到 build/）".into(),
+            name: build_name,
             task_type: TaskType::GenerateBuildScripts,
             risk_level: RiskLevel::Low,
             affected_files: vec![],
@@ -723,12 +811,17 @@ pub fn plan(
     }
 
     // 开发脚本生成（始终，输出到 output_dir 根目录）：mvn install + spring-boot:run 一键启动
-    tasks.push(Task {
-        id: next_id(&tasks),
-        name: format!(
+    let dev_script_name = if is_cloud {
+        "生成开发脚本（run.sh / run.bat，按 gateway → auth → system 顺序）".into()
+    } else {
+        format!(
             "生成开发脚本（run.sh / run.bat，cd {}-admin）",
             params.new_module_prefix
-        ),
+        )
+    };
+    tasks.push(Task {
+        id: next_id(&tasks),
+        name: dev_script_name,
         task_type: TaskType::GenerateDevScripts,
         risk_level: RiskLevel::Low,
         affected_files: vec![],
@@ -771,16 +864,24 @@ pub fn plan(
         error_message: String::new(),
     });
 
-    // admin pom 打包名改造（始终）：finalName → {prefix}-admin（产出 {prefix}-admin.jar）
+    // admin pom 打包名改造：Vue 固定 {prefix}-admin.jar；Cloud 改各可运行服务 finalName
+    let final_name_task = if is_cloud {
+        (
+            "设置 Cloud 可运行服务打包名（gateway/auth/system/…）".to_string(),
+            vec!["*-gateway/pom.xml".into(), "*-auth/pom.xml".into(), "*-modules/*-system/pom.xml".into()],
+        )
+    } else {
+        (
+            format!("设置 admin 打包名 → {}-admin.jar", params.new_module_prefix),
+            vec![format!("{}-admin/pom.xml", params.new_module_prefix)],
+        )
+    };
     tasks.push(Task {
         id: next_id(&tasks),
-        name: format!(
-            "设置 admin 打包名 → {}-admin.jar",
-            params.new_module_prefix
-        ),
+        name: final_name_task.0,
         task_type: TaskType::UpdateAdminPomFinalName,
         risk_level: RiskLevel::Low,
-        affected_files: vec![format!("{}-admin/pom.xml", params.new_module_prefix)],
+        affected_files: final_name_task.1,
         affected_dirs: vec![],
         created_files: vec![],
         status: TaskStatus::Pending,
@@ -1011,6 +1112,40 @@ mod tests {
                 .iter()
                 .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
             "ruoyi-vue 应规划 PG 方言任务"
+        );
+    }
+
+    #[test]
+    fn replace_ui_task_name_depends_on_frontend_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = load_vue_template();
+        let mut params = CustomizeParams::default();
+        params.enable_replace_ui = true;
+        params.ui_template = "vben-web-ele".into();
+        params.new_module_prefix = "demo".into();
+
+        let mut info = dummy_info(dir.path(), "ruoyi-vue");
+        let tasks = plan(&info, &params, &template);
+        let name = tasks
+            .iter()
+            .find(|t| t.task_type == TaskType::ReplaceUI)
+            .map(|t| t.name.as_str())
+            .expect("应规划 ReplaceUI");
+        assert!(
+            name.contains("源仓无前端目录") && name.contains("demo-ui"),
+            "无前端目录时应写生成语义，实际：{name}"
+        );
+
+        info.frontend_dirs = vec!["ruoyi-ui".into()];
+        let tasks = plan(&info, &params, &template);
+        let name = tasks
+            .iter()
+            .find(|t| t.task_type == TaskType::ReplaceUI)
+            .map(|t| t.name.as_str())
+            .expect("应规划 ReplaceUI");
+        assert!(
+            name.contains("删除原") && name.contains("demo-ui"),
+            "有前端目录时应写删除语义，实际：{name}"
         );
     }
 }

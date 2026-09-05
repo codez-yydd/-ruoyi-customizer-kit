@@ -27,6 +27,7 @@ pub struct NginxOutcome {
 pub fn generate_nginx_config(
     output_dir: &Path,
     params: &CustomizeParams,
+    is_cloud: bool,
     log: &dyn Fn(&str),
 ) -> Result<NginxOutcome, String> {
     let template_dir = crate::core::paths::require_dir("templates/ruoyi-vue/nginx", "Nginx")?;
@@ -38,8 +39,13 @@ pub fn generate_nginx_config(
     let placeholders = build_placeholders(params);
     let use_https = params.use_https;
 
+    let conf_tmpl = if is_cloud && template_dir.join("nginx.conf.cloud.tmpl").is_file() {
+        "nginx.conf.cloud.tmpl"
+    } else {
+        "nginx.conf.tmpl"
+    };
     let targets = [
-        ("nginx.conf.tmpl", "nginx.conf"),
+        (conf_tmpl, "nginx.conf"),
         ("README.md.tmpl", "README.md"),
     ];
 

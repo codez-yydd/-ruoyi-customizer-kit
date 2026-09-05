@@ -53,6 +53,7 @@ pub struct ScriptsOutcome {
 pub fn generate_scripts(
     output_dir: &Path,
     params: &CustomizeParams,
+    is_cloud: bool,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
     let template_dir = scripts_template_dir()?;
@@ -64,12 +65,21 @@ pub fn generate_scripts(
     let placeholders = build_placeholders(params);
 
     // (模板名, 输出名, 是否为 shell 脚本需赋可执行位)
-    let targets: &[(&str, &str, bool)] = &[
-        ("start.sh.tmpl", "start.sh", true),
-        ("stop.sh.tmpl", "stop.sh", true),
-        ("start.bat.tmpl", "start.bat", false),
-        ("stop.bat.tmpl", "stop.bat", false),
-    ];
+    let targets: &[(&str, &str, bool)] = if is_cloud {
+        &[
+            ("start.cloud.sh.tmpl", "start.sh", true),
+            ("stop.cloud.sh.tmpl", "stop.sh", true),
+            ("start.cloud.bat.tmpl", "start.bat", false),
+            ("stop.cloud.bat.tmpl", "stop.bat", false),
+        ]
+    } else {
+        &[
+            ("start.sh.tmpl", "start.sh", true),
+            ("stop.sh.tmpl", "stop.sh", true),
+            ("start.bat.tmpl", "start.bat", false),
+            ("stop.bat.tmpl", "stop.bat", false),
+        ]
+    };
 
     let mut created = 0usize;
     let mut summary: Vec<String> = Vec::new();
@@ -122,6 +132,7 @@ pub fn generate_scripts(
 pub fn generate_dev_scripts(
     output_dir: &Path,
     params: &CustomizeParams,
+    is_cloud: bool,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
     let template_dir = scripts_template_dir()?;
@@ -129,10 +140,17 @@ pub fn generate_dev_scripts(
     let placeholders = build_placeholders(params);
 
     // (模板名, 输出名, 是否为 shell 脚本需赋可执行位)
-    let targets: &[(&str, &str, bool)] = &[
-        ("run.sh.tmpl", "run.sh", true),
-        ("run.bat.tmpl", "run.bat", false),
-    ];
+    let targets: &[(&str, &str, bool)] = if is_cloud {
+        &[
+            ("run.cloud.sh.tmpl", "run.sh", true),
+            ("run.cloud.bat.tmpl", "run.bat", false),
+        ]
+    } else {
+        &[
+            ("run.sh.tmpl", "run.sh", true),
+            ("run.bat.tmpl", "run.bat", false),
+        ]
+    };
 
     let mut created = 0usize;
     let mut summary: Vec<String> = Vec::new();
@@ -240,6 +258,9 @@ pub fn generate_dev_ui_scripts(
 /// 打包脚本面向"产出可部署产物"场景——后端 `mvn package` 出 jar、前端 `npm run build:prod` 出 dist，
 /// 统一汇总到项目根目录新建的 `build/` 文件夹（jar 文件 + dist 文件夹）。
 ///
+/// `is_cloud=true` 时使用 `build.cloud.*.tmpl`：收集 gateway/auth/system 等服务 jar，
+/// 不查找也不报错 `*-admin.jar`。
+///
 /// 输出目录结构：
 /// ```text
 /// {output_dir}/
@@ -249,6 +270,7 @@ pub fn generate_dev_ui_scripts(
 pub fn generate_build_scripts(
     output_dir: &Path,
     params: &CustomizeParams,
+    is_cloud: bool,
     log: &dyn Fn(&str),
 ) -> Result<ScriptsOutcome, String> {
     let template_dir = scripts_template_dir()?;
@@ -256,10 +278,18 @@ pub fn generate_build_scripts(
     let placeholders = build_placeholders(params);
 
     // (模板名, 输出名, 是否为 shell 脚本需赋可执行位)
-    let targets: &[(&str, &str, bool)] = &[
-        ("build.sh.tmpl", "build.sh", true),
-        ("build.bat.tmpl", "build.bat", false),
-    ];
+    // Cloud 无 admin 模块，必须用多服务 jar 模板，禁止复制 *-admin.jar
+    let targets: &[(&str, &str, bool)] = if is_cloud {
+        &[
+            ("build.cloud.sh.tmpl", "build.sh", true),
+            ("build.cloud.bat.tmpl", "build.bat", false),
+        ]
+    } else {
+        &[
+            ("build.sh.tmpl", "build.sh", true),
+            ("build.bat.tmpl", "build.bat", false),
+        ]
+    };
 
     let mut created = 0usize;
     let mut summary: Vec<String> = Vec::new();
@@ -403,6 +433,75 @@ pub fn set_admin_pom_final_name(
         final_name
     ));
     Ok(true)
+}
+
+/// Cloud：为 gateway/auth/system/gen/job/file/monitor 等可运行服务写入 finalName。
+/// 不再查找 `*-admin`。
+pub fn set_cloud_service_final_names(
+    root: &Path,
+    _params: &CustomizeParams,
+    log: &dyn Fn(&str),
+) -> Result<usize, String> {
+    let mut n = 0usize;
+    let dummy_modules = collect_pom_rel_dirs(root);
+    for suffix in crate::core::detector::cloud_runnable_leaf_suffixes() {
+        let Some(module) =
+            crate::core::detector::find_module_by_leaf_suffix(root, &dummy_modules, suffix)
+        else {
+            continue;
+        };
+        let pom_path = root.join(&module).join("pom.xml");
+        if !pom_path.is_file() {
+            continue;
+        }
+        let content = crate::utils::file::read_text(&pom_path)
+            .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", pom_path.display()))?;
+        if content.contains("<finalName>") {
+            continue;
+        }
+        let leaf = Path::new(&module)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or(module.clone());
+        let new_content = inject_final_name(&content, &leaf);
+        if new_content == content {
+            continue;
+        }
+        std::fs::write(&pom_path, &new_content)
+            .map_err(|e| format!("写入 {} 失败：{e}", pom_path.display()))?;
+        log(&format!("{} 已设置 finalName={leaf}.jar", pom_path.display()));
+        n += 1;
+    }
+    Ok(n)
+}
+
+fn collect_pom_rel_dirs(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            if !e.path().is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if e.path().join("pom.xml").is_file() {
+                out.push(name.clone());
+            }
+            if name.ends_with("-modules")
+                || name.ends_with("-common")
+                || name.ends_with("-visual")
+                || name.ends_with("-api")
+            {
+                if let Ok(children) = std::fs::read_dir(e.path()) {
+                    for c in children.flatten() {
+                        if c.path().is_dir() && c.path().join("pom.xml").is_file() {
+                            out.push(format!("{}/{}", name, c.file_name().to_string_lossy()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 /// 在 admin 模块目录下定位 pom.xml。
@@ -572,7 +671,7 @@ mod tests {
     fn generate_dev_scripts_writes_to_root_and_replaces_placeholders() {
         let tmp = tempfile::tempdir().unwrap();
         let p = sample_params();
-        let outcome = generate_dev_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        let outcome = generate_dev_scripts(tmp.path(), &p, false, &|_| {}).unwrap();
         assert_eq!(outcome.created_files, 2, "应生成 run.sh + run.bat");
 
         let run_sh = std::fs::read_to_string(tmp.path().join("run.sh")).unwrap();
@@ -590,9 +689,9 @@ mod tests {
     fn generate_dev_scripts_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let p = sample_params();
-        let first = generate_dev_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        let first = generate_dev_scripts(tmp.path(), &p, false, &|_| {}).unwrap();
         assert_eq!(first.created_files, 2);
-        let second = generate_dev_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        let second = generate_dev_scripts(tmp.path(), &p, false, &|_| {}).unwrap();
         assert_eq!(second.created_files, 0, "已存在应跳过");
     }
 
@@ -632,7 +731,7 @@ mod tests {
     fn generate_build_scripts_writes_to_root_and_replaces_placeholders() {
         let tmp = tempfile::tempdir().unwrap();
         let p = sample_params();
-        let outcome = generate_build_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        let outcome = generate_build_scripts(tmp.path(), &p, false, &|_| {}).unwrap();
         assert_eq!(outcome.created_files, 2, "应生成 build.sh + build.bat");
 
         let build_sh = std::fs::read_to_string(tmp.path().join("build.sh")).unwrap();
@@ -660,10 +759,46 @@ mod tests {
     fn generate_build_scripts_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let p = sample_params();
-        let first = generate_build_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        let first = generate_build_scripts(tmp.path(), &p, false, &|_| {}).unwrap();
         assert_eq!(first.created_files, 2);
-        let second = generate_build_scripts(tmp.path(), &p, &|_| {}).unwrap();
+        let second = generate_build_scripts(tmp.path(), &p, false, &|_| {}).unwrap();
         assert_eq!(second.created_files, 0, "已存在应跳过");
+    }
+
+    #[test]
+    fn generate_build_scripts_cloud_uses_multi_service_jars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = sample_params();
+        let outcome = generate_build_scripts(tmp.path(), &p, true, &|_| {}).unwrap();
+        assert_eq!(outcome.created_files, 2, "应生成 Cloud build.sh + build.bat");
+
+        let build_sh = std::fs::read_to_string(tmp.path().join("build.sh")).unwrap();
+        assert!(!build_sh.contains("{{"), "不应残留任何占位符");
+        assert!(build_sh.contains("myapp-gateway"), "Cloud 产物清单应含 gateway");
+        assert!(build_sh.contains("myapp-auth"), "Cloud 产物清单应含 auth");
+        assert!(build_sh.contains("myapp-system"), "Cloud 产物清单应含 system");
+        assert!(
+            build_sh.contains("copy_jar \"myapp-gateway\""),
+            "应走 Cloud 多服务收集：{build_sh}"
+        );
+        assert!(
+            !build_sh.contains("myapp-admin/target") && !build_sh.contains("copy_jar \"myapp-admin\""),
+            "Cloud 打包不得查找 admin 模块：{build_sh}"
+        );
+        assert!(build_sh.contains("127.0.0.1:8848"), "应提示 Nacos 地址");
+        assert!(build_sh.contains("pnpm") && build_sh.contains("build:ele"));
+
+        let build_bat = std::fs::read_to_string(tmp.path().join("build.bat")).unwrap();
+        assert!(!build_bat.contains("{{"), "不应残留任何占位符");
+        assert!(build_bat.contains("myapp-gateway"), "bat 产物清单应含 gateway");
+        assert!(
+            !build_bat.contains("myapp-admin\\target") && !build_bat.contains("myapp-admin\\"),
+            "Cloud bat 不得查找 admin 模块"
+        );
+        assert!(
+            build_bat.is_ascii(),
+            "build.cloud.bat 必须纯 ASCII：UTF-8 中文在中文 Windows 的 cmd 下会按 GBK 误解析导致无法执行"
+        );
     }
 
     // ---------- 源码导出脚本 ----------

@@ -57,8 +57,8 @@ async function run() {
     result.value = resp
     store.setExecuteResult(resp)
     store.log(resp.message, resp.success ? 'SUCCESS' : 'WARN')
-    // 执行成功后清理 zip 识别用的临时解压目录（执行阶段已有独立的输出目录）
-    if (resp.success && sourceType.value === 'zip' && extractRoot.value) {
+    // 执行成功后清理识别用的临时目录（zip 解压根或 git clone 根）
+    if (resp.success && extractRoot.value) {
       await cleanupTempDir()
     }
     // 执行成功后保存配置到历史记录（store 内部会脱敏敏感字段）
@@ -72,7 +72,7 @@ async function run() {
   }
 }
 
-/** 清理 zip 识别用的临时解压目录（静默失败，不阻断流程） */
+/** 清理识别用的临时目录（静默失败，不阻断流程） */
 async function cleanupTempDir() {
   if (!extractRoot.value) return
   try {
@@ -85,7 +85,7 @@ async function cleanupTempDir() {
 
 async function backHome() {
   // 兜底：若临时目录仍未清理（如执行失败未走成功分支），返回首页前清理
-  if (sourceType.value === 'zip' && extractRoot.value) {
+  if (extractRoot.value) {
     await cleanupTempDir()
   }
   store.resetFlow()

@@ -1,0 +1,99 @@
+# {{PROJECT_NAME}} Nginx 反向代理配置（RuoYi-Cloud）
+# 由若依锻造台 RuoYi Forge 自动生成
+#
+# 部署说明：
+#   1. 将前端打包产物（dist/）放到 /var/www/{{FRONTEND_DIR}} 下
+#   2. 网关 ruoyi-gateway 监听 {{SERVER_PORT}}（默认 8080）
+#   3. 暴露的 web 端口为 80（HTTP）或 443（HTTPS，80 自动 301 跳转 HTTPS）
+#   4. 启动前请确认 Nacos（127.0.0.1:8848）可达
+#
+# Cloud 前端路径本身带 /auth /system，strip /prod-api 后交给网关路由。
+# 官方核实 2026-09-05：不要改 nacos 地址。
+
+# ---------------- 端口配置（集中定义，三处必须一致）----------------
+# 网关端口：{{SERVER_PORT}}
+# 此端口需与以下配置保持一致：
+#   - 网关 bootstrap / Nacos 中的 server.port
+#   - scripts/start.sh 与 scripts/stop.sh 的 GATEWAY_PORT
+#   - 前端代理目标（vite proxy / VITE_GLOB_API_URL）
+# ----------------------------------------------------------------
+
+# upstream：Cloud 网关
+upstream backend {
+    server 127.0.0.1:{{SERVER_PORT}};
+}
+
+# gzip 压缩
+gzip on;
+gzip_min_length 1k;
+gzip_comp_level 4;
+gzip_types text/plain text/css application/json application/javascript text/xml application/xml application/xml+rss text/javascript image/svg+xml;
+gzip_vary on;
+gzip_disable "msie6";
+
+# Web 入口（启用 HTTPS 时，80 仅做强制跳转）
+server {
+    listen       80;
+    server_name  {{SERVER_NAME}};
+{{#HTTPS}}
+
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS 入口
+server {
+    listen       443 ssl;
+    server_name  {{SERVER_NAME}};
+
+    # 证书路径（宝塔风格）：将证书放到 /www/wwwroot/nginx/crt/ 下
+    #   证书链 {{SERVER_NAME}}_bundle.crt，私钥 {{SERVER_NAME}}.key
+    # 证书放在其他位置时，修改下面两行路径即可
+    ssl_certificate     /www/wwwroot/nginx/crt/{{SERVER_NAME}}_bundle.crt;
+    ssl_certificate_key /www/wwwroot/nginx/crt/{{SERVER_NAME}}.key;
+    ssl_session_timeout 5m;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-RSA-AES128-GCM-SHA256:HIGH:!aNULL:!MD5:!RC4:!DHE;
+    ssl_prefer_server_ciphers on;
+{{/HTTPS}}
+
+    # 前端静态资源
+    root   /var/www/{{FRONTEND_DIR}};
+    index  index.html index.htm;
+
+    # 前端 SPA 路由回退（Vue Router history 模式）
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 静态资源缓存
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 7d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # 反代网关：去掉 /prod-api 前缀，剩余 /auth /system 等交给网关路由
+    location ^~ /prod-api/ {
+        proxy_connect_timeout 120s;
+        proxy_send_timeout    120s;
+        proxy_read_timeout    120s;
+        send_timeout          120s;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header REMOTE-HOST $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        rewrite ^/prod-api(/.*)$ $1 break;
+        proxy_pass http://backend;
+    }
+
+    client_max_body_size 100m;
+
+    location = /index.html {
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+    }
+
+    error_page 500 502 503 504 /50x.html;
+    location = /50x.html {
+        root   html;
+    }
+}

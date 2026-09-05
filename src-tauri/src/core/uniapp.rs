@@ -214,6 +214,43 @@ fn replace_placeholders(content: &str, placeholders: &HashMap<String, String>) -
     result
 }
 
+/// Cloud UniApp overlay：登录走网关 `/auth/login`，token 取 `access_token`。
+/// 仓库没有 wechat-login Java Controller，不生成后端；仅覆盖前端调用。
+pub fn apply_cloud_overlay(
+    uniapp_dir: &Path,
+    params: &CustomizeParams,
+    log: &dyn Fn(&str),
+) -> Result<usize, String> {
+    let overlay = match crate::core::paths::require_dir(
+        "templates/ruoyi-vue/uniapp/cloud-overlay",
+        "Cloud UniApp overlay",
+    ) {
+        Ok(d) => d,
+        Err(_) => {
+            log("未找到 UniApp Cloud overlay，跳过");
+            return Ok(0);
+        }
+    };
+    let placeholders = build_placeholders(params);
+    let mut created = 0usize;
+    let mut modified = 0usize;
+    copy_template_dir(
+        &overlay,
+        uniapp_dir,
+        &placeholders,
+        &mut created,
+        &mut modified,
+        log,
+    )?;
+    log("已应用 Cloud UniApp overlay（/auth/login + access_token）");
+    Ok(created + modified)
+}
+
+/// 供 Nacos 引擎把微信配置追加到 system 服务文本。
+pub fn wechat_yaml_block(params: &CustomizeParams) -> String {
+    format_wechat_config(params)
+}
+
 /// 基于 params 动态生成微信配置块（带中文注释）。
 ///
 /// 规则：

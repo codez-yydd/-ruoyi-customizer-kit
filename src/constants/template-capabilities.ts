@@ -29,7 +29,7 @@ export const TEMPLATE_META: Record<string, TemplateMeta> = {
   },
   'ruoyi-cloud': {
     label: 'RuoYi-Cloud',
-    desc: '微服务版（Spring Cloud + Nacos），多服务结构'
+    desc: '微服务版（Spring Cloud + Nacos），已支持全功能改造'
   }
 }
 

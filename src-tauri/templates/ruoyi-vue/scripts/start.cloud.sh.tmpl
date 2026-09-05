@@ -1,0 +1,73 @@
+#!/bin/bash
+# {{PROJECT_NAME}} Cloud 多服务启动脚本（Linux/macOS）
+# 由若依锻造台 RuoYi Forge 自动生成
+#
+# 启动顺序：gateway → auth → system → 其余
+# 官方核实 2026-09-05：Nacos 保持 127.0.0.1:8848，不要改地址。
+
+set -e
+
+APP_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$APP_HOME"
+
+echo "▶ 请先确认 Nacos 可达：http://127.0.0.1:8848/nacos/"
+if command -v curl >/dev/null 2>&1; then
+  if ! curl -sf -o /dev/null --connect-timeout 2 "http://127.0.0.1:8848/nacos/" ; then
+    echo "⚠️  无法连接 127.0.0.1:8848，请先启动 Nacos 后再运行本脚本"
+  fi
+fi
+
+find_jar() {
+  local dir="$1"
+  local pattern="$2"
+  ls "$dir"/${pattern}*.jar 2>/dev/null | grep -v "\.original$" | head -1
+}
+
+start_one() {
+  local name="$1"
+  local search="$2"
+  local extra_port="$3"
+  local jar=""
+  if [ -d "./$search/target" ]; then
+    jar=$(find_jar "./$search/target" "$(basename "$search")")
+  fi
+  if [ -z "$jar" ]; then
+    jar=$(find_jar . "$(basename "$search")")
+  fi
+  if [ -z "$jar" ]; then
+    echo "⚠️  跳过 $name：找不到 $(basename "$search")*.jar（请先 mvn package）"
+    return 0
+  fi
+  mkdir -p logs
+  local opts="-Xms256m -Xmx512m -Dfile.encoding=UTF-8"
+  if [ -n "$extra_port" ]; then
+    opts="$opts -Dserver.port=$extra_port"
+  fi
+  echo "▶ 启动 $name：$(basename "$jar")"
+  nohup java $opts -jar "$jar" > "logs/${name}.log" 2>&1 &
+  echo $! > "logs/${name}.pid"
+}
+
+# 网关默认 {{SERVER_PORT}}
+start_one "gateway" "{{MODULE_PREFIX}}-gateway" "{{SERVER_PORT}}"
+sleep 2
+start_one "auth" "{{MODULE_PREFIX}}-auth" ""
+sleep 2
+if [ -d "./{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system" ]; then
+  start_one "system" "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system" ""
+elif [ -d "./{{MODULE_PREFIX}}-system" ]; then
+  start_one "system" "{{MODULE_PREFIX}}-system" ""
+fi
+sleep 2
+
+for dir in {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-gen \
+           {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-job \
+           {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-file \
+           {{MODULE_PREFIX}}-visual/{{MODULE_PREFIX}}-monitor; do
+  if [ -d "./$dir" ]; then
+    start_one "$(basename "$dir")" "$dir" ""
+  fi
+done
+
+echo "✅ Cloud 服务启动命令已发出，日志在 logs/"
+echo "   停止：./scripts/stop.sh"

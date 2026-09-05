@@ -51,6 +51,34 @@ export interface CleanupResponse {
   message: string
 }
 
+/** 官方仓库源站 */
+export type OfficialHost = 'gitee' | 'github'
+
+/** 官方拉取项目类型（不含单体 RuoYi） */
+export type OfficialEdition = 'vue' | 'cloud'
+
+/** 官方拉取 Spring Boot 大版本 */
+export type OfficialBootMajor = 2 | 3 | 4
+
+/** download_official_archive 命令响应 */
+export interface DownloadOfficialResponse {
+  success: boolean
+  message: string
+  zip_path: string
+  /** `"zip"` | `"directory"`；失败或旧后端为空串 */
+  source_type?: string
+  /** directory 模式：含 pom.xml 的项目根 */
+  root_path?: string
+  /** directory 模式：clone 根目录（供 cleanupExtractDir） */
+  extract_root?: string
+}
+
+/** download:progress 事件载荷 */
+export interface DownloadProgress {
+  received: number
+  total: number
+}
+
 /** 用户改造参数 */
 export interface CustomizeParams {
   original_package: string
@@ -126,8 +154,12 @@ export interface CustomizeParams {
   // ---- SQL 初始化脚本定制 ----
   /** 是否定制 SQL 初始化脚本 */
   enable_sql_customize: boolean
-  /** 新数据库名（留空则用 new_module_prefix 推导） */
+  /** 新数据库名。Vue/单体留空则用 new_module_prefix；Cloud 留空则保持官方 ry-cloud */
   db_name: string
+  /** Cloud 配置库名（兼容 CLI/旧导入）。留空则：有 db_name 用 `{db_name}-config`，否则 ry-config */
+  config_db_name: string
+  /** Cloud 裁剪模块：仅 gen / job / file / monitor */
+  remove_modules: string[]
   /** 数据库类型：mysql | postgresql */
   db_type: string
   /** 管理员登录账号（留空保持 admin；仅改 user_id=1 种子行，不动 role_key='admin' 权限体系） */
@@ -190,7 +222,7 @@ export interface CustomizeParams {
   /** 是否生成启动/停止脚本（.sh + .bat） */
   enable_startup_scripts: boolean
   // ---- 替换后台 UI ----
-  /** 是否用预置后台模板（如 vben-web-ele）替换若依原 ruoyi-ui 前端（仅 ruoyi-vue 支持） */
+  /** 是否用预置后台模板生成/替换后台前端（ruoyi-vue / ruoyi-cloud 可用，单体禁用；源仓无前端时默认开启） */
   enable_replace_ui: boolean
   /** 后台 UI 模板标识（对应 templates/ruoyi-vue/ui/{ui_template}），默认 vben-web-ele */
   ui_template: string
@@ -210,6 +242,12 @@ export type TaskType =
   | 'AddMybatisPlusConfig'
   | 'UpdateGeneratorTemplatesForMybatisPlus'
   | 'AddLongIdJsonSerializeAnnotation'
+  | 'InjectSnowflakeId'
+  | 'RewriteNacosConfig'
+  | 'TrimCloudModules'
+  | 'CustomizeWebFooter'
+  | 'CustomizeSiteSettings'
+  | 'SwitchDatabaseDialect'
   | 'GenerateUniappProject'
   | 'ReplaceUI'
   | 'AppendWechatConfig'

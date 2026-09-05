@@ -6,9 +6,20 @@
 
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectStore } from '@/stores/project'
 import { pickDirectory, pickZipFile } from '@/api/dialog'
 import * as api from '@/api'
+import type { DownloadProgress, OfficialBootMajor, OfficialEdition, OfficialHost } from '@/types'
+
+/** 官方拉取阶段，供首页进度文案切换 */
+export type OfficialPullStage = 'download' | 'extract' | 'detect'
+
+/** 官方拉取结果：已进入识别流程，或带回后端失败原因 */
+export interface OfficialPullResult {
+  proceeded: boolean
+  message?: string
+}
 
 export function useProjectFlow() {
   const router = useRouter()
@@ -16,11 +27,11 @@ export function useProjectFlow() {
   const detecting = ref(false)
 
   /** 执行识别（私有核心），写入 store；返回是否识别成功 */
-  async function runDetect(path: string): Promise<boolean> {
+  async function runDetect(path: string, template?: string): Promise<boolean> {
     detecting.value = true
     store.log('开始识别项目结构...', 'INFO')
     try {
-      const resp = await api.detectProject(path)
+      const resp = await api.detectProject(path, template)
       store.setProjectInfo(resp.project)
       if (resp.success && resp.project) {
         store.log(resp.message, 'SUCCESS')
@@ -28,6 +39,10 @@ export function useProjectFlow() {
           `识别为 ${resp.project.project_type}，原包名：${resp.project.original_package || '未识别'}`,
           'SUCCESS'
         )
+        if (resp.project.frontend_dirs.length === 0
+          && (resp.project.template_dir === 'ruoyi-vue' || resp.project.template_dir === 'ruoyi-cloud')) {
+          store.log('官方后端不含 ruoyi-ui，将使用预置后台模板（可在参数页关闭）', 'WARN')
+        }
         return true
       }
       store.log(`识别未通过：${resp.message}`, 'WARN')
@@ -90,8 +105,8 @@ export function useProjectFlow() {
       }
     }
 
-    // 重新选择项目：先清理上一次 zip 模式遗留的临时解压目录，再重置状态
-    if (store.sourceType === 'zip' && store.extractRoot) {
+    // 重新选择项目：先清理上一次 zip / git clone 遗留的临时目录，再重置状态
+    if (store.extractRoot) {
       await cleanupExtractRoot(store.extractRoot)
     }
 
@@ -113,7 +128,114 @@ export function useProjectFlow() {
     return ok
   }
 
-  /** 清理 zip 识别用的临时解压目录（静默失败，不阻断流程） */
+  /**
+   * 从官方仓库拉取源码再识别。
+   * Gitee 浅克隆返回 directory（跳过 extractZip）；GitHub zip 仍走解压。
+   * 识别时显式传入 ruoyi-vue / ruoyi-cloud，避免官方 Vue 无 ui 被误判为单体 ruoyi。
+   */
+  async function pullOfficialAndDetect(
+    opts: {
+      host: OfficialHost
+      edition: OfficialEdition
+      bootMajor: OfficialBootMajor
+      onProgress?: (p: DownloadProgress) => void
+      onStage?: (stage: OfficialPullStage) => void
+      navigate?: boolean
+    }
+  ): Promise<OfficialPullResult> {
+    const navigate = opts.navigate ?? true
+    const editionLabel = opts.edition === 'vue' ? 'RuoYi-Vue' : 'RuoYi-Cloud'
+    const hostLabel = opts.host === 'gitee' ? 'Gitee' : 'GitHub'
+    const template = opts.edition === 'vue' ? 'ruoyi-vue' : 'ruoyi-cloud'
+
+    let unlisten: UnlistenFn | null = null
+    try {
+      unlisten = await listen<DownloadProgress>('download:progress', (event) => {
+        opts.onProgress?.(event.payload)
+      })
+
+      opts.onStage?.('download')
+      if (opts.host === 'gitee') {
+        store.log(
+          `正在从 Gitee git 浅克隆官方 ${editionLabel}（Spring Boot ${opts.bootMajor}.x）…`,
+          'INFO'
+        )
+      } else {
+        store.log(
+          `正在从 ${hostLabel} 拉取官方 ${editionLabel}（Spring Boot ${opts.bootMajor}.x）...`,
+          'INFO'
+        )
+      }
+      const dl = await api.downloadOfficialArchive(opts.host, opts.edition, opts.bootMajor)
+      if (!dl.success) {
+        store.log(`拉取失败：${dl.message}`, 'ERROR')
+        return { proceeded: false, message: dl.message }
+      }
+      store.log(dl.message, 'SUCCESS')
+
+      const isDirectory =
+        dl.source_type === 'directory' || (!!dl.root_path && !dl.zip_path)
+
+      if (store.extractRoot) {
+        await cleanupExtractRoot(store.extractRoot)
+      }
+
+      if (isDirectory) {
+        if (!dl.root_path) {
+          store.log('拉取失败：未返回项目目录', 'ERROR')
+          return { proceeded: false, message: '未返回项目目录' }
+        }
+        store.resetFlow()
+        store.setRootPath(dl.root_path)
+        store.setSourceType('directory')
+        store.setExtractRoot(dl.extract_root || '')
+
+        opts.onStage?.('detect')
+        await runDetect(dl.root_path, template)
+        if (navigate) {
+          router.push({ name: 'detect' })
+        }
+        return { proceeded: true }
+      }
+
+      if (!dl.zip_path) {
+        store.log(`拉取失败：${dl.message || '未返回 zip'}`, 'ERROR')
+        return { proceeded: false, message: dl.message || '未返回 zip' }
+      }
+
+      opts.onStage?.('extract')
+      store.log('正在解压到临时目录（仅供识别）...', 'INFO')
+      const resp = await api.extractZipProject(dl.zip_path)
+      if (!resp.success || !resp.root_path) {
+        store.log(`解压失败：${resp.message}`, 'ERROR')
+        return { proceeded: false, message: resp.message }
+      }
+      store.log(resp.message, 'SUCCESS')
+
+      store.resetFlow()
+      store.setRootPath(resp.root_path)
+      store.setSourceType('zip')
+      store.setZipPath(dl.zip_path)
+      store.setExtractRoot(resp.extract_root)
+
+      opts.onStage?.('detect')
+      await runDetect(resp.root_path, template)
+      if (navigate) {
+        router.push({ name: 'detect' })
+      }
+      // 已进入识别流程（无论识别是否 soft pass / 失败），调用方应关闭拉取对话框
+      return { proceeded: true }
+    } catch (e) {
+      store.log(`拉取异常：${e}`, 'ERROR')
+      return { proceeded: false, message: String(e) }
+    } finally {
+      if (unlisten) {
+        unlisten()
+      }
+    }
+  }
+
+  /** 清理识别用的临时目录（zip 解压根或 git clone 根；静默失败，不阻断流程） */
   async function cleanupExtractRoot(extractRoot: string) {
     if (!extractRoot) return
     try {
@@ -124,5 +246,5 @@ export function useProjectFlow() {
     }
   }
 
-  return { detecting, chooseAndDetect, cleanupExtractRoot }
+  return { detecting, chooseAndDetect, pullOfficialAndDetect, cleanupExtractRoot }
 }

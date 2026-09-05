@@ -19,7 +19,7 @@ fn generate_scripts_produces_all_four_files_with_placeholders_replaced() {
     let tmp = tempfile::tempdir().unwrap();
     let params = sample_params();
     let outcome =
-        ruoyi_forge_lib::core::scripts::generate_scripts(tmp.path(), &params, &|_| {}).unwrap();
+        ruoyi_forge_lib::core::scripts::generate_scripts(tmp.path(), &params, false, &|_| {}).unwrap();
     assert_eq!(outcome.created_files, 4, "应生成 4 个脚本文件");
 
     let scripts_dir = tmp.path().join("scripts");
@@ -49,7 +49,7 @@ fn generate_nginx_config_http_mode_omits_https_block() {
     let mut params = sample_params();
     params.use_https = false;
     let outcome =
-        ruoyi_forge_lib::core::nginx::generate_nginx_config(tmp.path(), &params, &|_| {}).unwrap();
+        ruoyi_forge_lib::core::nginx::generate_nginx_config(tmp.path(), &params, false, &|_| {}).unwrap();
     assert_eq!(outcome.created_files, 2, "应生成 nginx.conf + README.md");
 
     let conf = fs::read_to_string(tmp.path().join("nginx/nginx.conf")).unwrap();
@@ -77,7 +77,7 @@ fn generate_nginx_config_https_mode_keeps_https_block() {
     let mut params = sample_params();
     params.use_https = true;
     let outcome =
-        ruoyi_forge_lib::core::nginx::generate_nginx_config(tmp.path(), &params, &|_| {}).unwrap();
+        ruoyi_forge_lib::core::nginx::generate_nginx_config(tmp.path(), &params, false, &|_| {}).unwrap();
     assert_eq!(outcome.created_files, 2);
 
     let conf = fs::read_to_string(tmp.path().join("nginx/nginx.conf")).unwrap();
@@ -106,12 +106,12 @@ fn generate_is_idempotent_existing_files_are_skipped() {
     let tmp = tempfile::tempdir().unwrap();
     let params = sample_params();
 
-    let first = ruoyi_forge_lib::core::scripts::generate_scripts(tmp.path(), &params, &|_| {}).unwrap();
+    let first = ruoyi_forge_lib::core::scripts::generate_scripts(tmp.path(), &params, false, &|_| {}).unwrap();
     assert_eq!(first.created_files, 4);
 
     // 第二次：所有文件已存在，应全部跳过
     let second =
-        ruoyi_forge_lib::core::scripts::generate_scripts(tmp.path(), &params, &|_| {}).unwrap();
+        ruoyi_forge_lib::core::scripts::generate_scripts(tmp.path(), &params, false, &|_| {}).unwrap();
     assert_eq!(second.created_files, 0, "已存在的文件应跳过，不覆盖");
 }
 
@@ -120,7 +120,7 @@ fn server_name_empty_defaults_to_localhost_in_output() {
     let tmp = tempfile::tempdir().unwrap();
     let mut params = sample_params();
     params.server_name = String::new();
-    ruoyi_forge_lib::core::nginx::generate_nginx_config(tmp.path(), &params, &|_| {}).unwrap();
+    ruoyi_forge_lib::core::nginx::generate_nginx_config(tmp.path(), &params, false, &|_| {}).unwrap();
 
     let conf = fs::read_to_string(tmp.path().join("nginx/nginx.conf")).unwrap();
     assert!(conf.contains("localhost"), "域名留空应默认 localhost");

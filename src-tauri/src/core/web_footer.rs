@@ -47,6 +47,12 @@ pub fn customize_web_footer(
     let mut summary: Vec<String> = Vec::new();
     let start_year = footer_start_year(params);
 
+    // Cloud：不再找 SecurityConfig；Controller 生成到 system；外部门户路径 /system/webInfo
+    // （官方核实 2026-09-05：网关 /system/** StripPrefix=1，Controller 映射仍为 /webInfo）
+    if crate::core::detector::is_cloud_layout(root) {
+        return customize_web_footer_cloud(root, params, &start_year, log);
+    }
+
     // 1. application 配置：ruoyi 块写入 copyrightYear（起始年）+ icp（备案占位）
     if let Some(admin) = find_module_dir(root, params, "admin") {
         match patch_app_yaml(&admin, &start_year) {
@@ -84,7 +90,7 @@ pub fn customize_web_footer(
 
     // 3. 生成公开接口 /webInfo
     if let Some(admin) = find_module_dir(root, params, "admin") {
-        match write_web_info_controller(&admin, params) {
+        match write_web_info_controller(&admin, params, false) {
             Ok(true) => {
                 created += 1;
                 summary.push("已生成免登录接口 GET /webInfo（版权起始年份 + ICP 备案号）".into());
@@ -137,6 +143,85 @@ pub fn customize_web_footer(
     })
 }
 
+/// Cloud 页脚：ICP 由 Nacos system 文本承载；Controller 落到 system；不改 SecurityConfig。
+/// 无 system 模块 → 明确 Err。经典 ruoyi-ui 补丁仅当存在 `*-ui`。
+fn customize_web_footer_cloud(
+    root: &Path,
+    params: &CustomizeParams,
+    start_year: &str,
+    log: &dyn Fn(&str),
+) -> Result<WebFooterOutcome, String> {
+    let mut modified = 0usize;
+    let mut created = 0usize;
+    let mut summary: Vec<String> = Vec::new();
+
+    let system = find_module_dir(root, params, "system")
+        .ok_or("Cloud 未找到 system 模块，无法生成 WebInfoController（官方路径 /system/webInfo）")?;
+
+    // 官方 Cloud 全树无 RuoYiConfig.java（核实 2026-09-05）。找不到只记警告，不失败。
+    // ICP 回退由 Controller 的 @Value("${ruoyi.icp:}") 读取 Nacos system 文本。
+    if let Some(core) = find_module_dir(root, params, "common-core") {
+        match patch_ruoyi_config(&core) {
+            Ok(true) => {
+                modified += 1;
+                log("Cloud 旧 fork 含 RuoYiConfig，已增加 icp 字段");
+            }
+            Ok(false) => {}
+            Err(warn) => {
+                summary.push(format!("⚠️ {warn}（Cloud 无 RuoYiConfig 属正常，ICP 回退走 @Value）"));
+                log(&warn);
+            }
+        }
+    } else {
+        summary.push("⚠️ 官方 Cloud 无 RuoYiConfig，ICP 回退使用 @Value(\"${ruoyi.icp:}\")".into());
+    }
+
+    match write_web_info_controller(&system, params, true) {
+        Ok(true) => {
+            created += 1;
+            summary.push(format!(
+                "已生成免登录接口 GET /system/webInfo（网关 StripPrefix 后 Controller 映射 /webInfo；copyrightYear={start_year}）"
+            ));
+            log("Cloud WebInfoController 已生成到 system 模块");
+        }
+        Ok(false) => {}
+        Err(e) => return Err(e),
+    }
+
+    let ui_dirs = find_ui_dirs(root);
+    if ui_dirs.is_empty() {
+        if params.enable_replace_ui {
+            summary.push("vben/arco overlay 请求 /system/webInfo，无需经典 ui 补丁".into());
+        }
+    }
+    for ui in &ui_dirs {
+        if let Some((m, c)) = patch_classic_frontend(ui, log) {
+            modified += m;
+            created += c;
+            // 经典 ui 默认 /webInfo；Cloud 经网关须走 /system/webInfo
+            let api = ui.join("src/api/webInfo.js");
+            if api.is_file() {
+                if let Ok(txt) = std::fs::read_to_string(&api) {
+                    let new = txt.replace("url: '/webInfo'", "url: '/system/webInfo'");
+                    if new != txt {
+                        let _ = std::fs::write(&api, new);
+                    }
+                }
+            }
+            summary.push(format!(
+                "{}：页脚已改造为恒显版权栏（Cloud 接口 /system/webInfo）",
+                ui.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()
+            ));
+        }
+    }
+
+    Ok(WebFooterOutcome {
+        modified_files: modified,
+        created_files: created,
+        summary,
+    })
+}
+
 // ---------- 模块/文件定位 ----------
 
 /// 定位后端模块目录：优先新前缀名（{new}-{suffix}），回退原前缀名，最后扫描 *-{suffix}。
@@ -154,6 +239,30 @@ pub fn find_module_dir(root: &Path, params: &CustomizeParams, suffix: &str) -> O
             let name = e.file_name().to_string_lossy().to_string();
             if name.ends_with(&format!("-{suffix}")) && e.path().is_dir() {
                 return Some(e.path());
+            }
+        }
+    }
+    // Cloud 嵌套：ruoyi-modules/ruoyi-system、ruoyi-common/ruoyi-common-core
+    // Vue 根下已命中 admin/common/framework，不会走到这里。
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !(name.ends_with("-modules")
+                || name.ends_with("-common")
+                || name.ends_with("-visual")
+                || name.ends_with("-api"))
+            {
+                continue;
+            }
+            if let Ok(children) = std::fs::read_dir(e.path()) {
+                for c in children.flatten() {
+                    let cn = c.file_name().to_string_lossy().to_string();
+                    if c.path().is_dir()
+                        && (cn == new_name || cn == old_name || cn.ends_with(&format!("-{suffix}")))
+                    {
+                        return Some(c.path());
+                    }
+                }
             }
         }
     }
@@ -307,29 +416,83 @@ fn patch_ruoyi_config(common: &Path) -> Result<bool, String> {
 // ---------- 3. WebInfoController 生成 ----------
 
 /// 生成免登录接口 WebInfoController（GET /webInfo）。
+/// Vue：复用默认 tmpl，路径 `web/controller/common`（成功路径不变）。
+/// Cloud：官方包 + `@Value` ICP 回退，路径 `system/controller`（核实 2026-09-05）。
 /// Ok(false) = 已存在跳过；Err = 模板缺失/写失败。
-fn write_web_info_controller(admin: &Path, params: &CustomizeParams) -> Result<bool, String> {
-    let tmpl_path = crate::core::paths::require_file(
-        "templates/ruoyi-vue/java/WebInfoController.java.tmpl",
-        "WebInfoController",
-    )?;
-    let tmpl = std::fs::read_to_string(&tmpl_path)
-        .map_err(|e| format!("读取 WebInfoController 模板失败：{e}"))?;
-    let content = tmpl.replace("{{PACKAGE}}", &params.new_package);
-
+fn write_web_info_controller(admin: &Path, params: &CustomizeParams, cloud: bool) -> Result<bool, String> {
     let pkg_path = params.new_package.replace('.', "/");
-    let target = admin
-        .join("src/main/java")
-        .join(pkg_path)
-        .join("web/controller/common/WebInfoController.java");
+    let rel = if cloud {
+        "system/controller/WebInfoController.java"
+    } else {
+        "web/controller/common/WebInfoController.java"
+    };
+    let target = admin.join("src/main/java").join(&pkg_path).join(rel);
     if target.exists() {
         return Ok(false);
     }
+    let content = if cloud {
+        render_cloud_web_info_controller(params)
+    } else {
+        let tmpl_path = crate::core::paths::require_file(
+            "templates/ruoyi-vue/java/WebInfoController.java.tmpl",
+            "WebInfoController",
+        )?;
+        let tmpl = std::fs::read_to_string(&tmpl_path)
+            .map_err(|e| format!("读取 WebInfoController 模板失败：{e}"))?;
+        tmpl.replace("{{PACKAGE}}", &params.new_package)
+    };
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
     }
     std::fs::write(&target, content).map_err(|e| format!("写入 {} 失败：{e}", target.display()))?;
     Ok(true)
+}
+
+/// 官方 Cloud system 控制器锚点（2026-09-05 master）：
+/// AjaxResult=`common.core.web.domain`，无 RuoYiConfig，映射仍为 `/webInfo`。
+fn render_cloud_web_info_controller(params: &CustomizeParams) -> String {
+    let pkg = &params.new_package;
+    format!(
+        "package {pkg}.system.controller;\n\n\
+import java.util.HashMap;\n\
+import java.util.Map;\n\n\
+import org.springframework.beans.factory.annotation.Autowired;\n\
+import org.springframework.beans.factory.annotation.Value;\n\
+import org.springframework.web.bind.annotation.GetMapping;\n\
+import org.springframework.web.bind.annotation.RequestMapping;\n\
+import org.springframework.web.bind.annotation.RestController;\n\
+import {pkg}.common.core.utils.StringUtils;\n\
+import {pkg}.common.core.web.domain.AjaxResult;\n\
+import {pkg}.system.service.ISysConfigService;\n\n\
+/**\n\
+ * 网站公开信息（免登录）\n\
+ *\n\
+ * Cloud：网关 /system/** StripPrefix=1，本接口映射 /webInfo，外部门户 /system/webInfo。\n\
+ * 官方仓库无 RuoYiConfig，ICP 回退读取 Nacos system 文本 ruoyi.icp。\n\
+ */\n\
+@RestController\n\
+@RequestMapping(\"/webInfo\")\n\
+public class WebInfoController\n\
+{{\n\
+    @Value(\"${{ruoyi.icp:}}\")\n\
+    private String icpFallback;\n\n\
+    @Value(\"${{ruoyi.copyrightYear:}}\")\n\
+    private String copyrightYearFallback;\n\n\
+    @Autowired\n\
+    private ISysConfigService configService;\n\n\
+    @GetMapping\n\
+    public AjaxResult getWebInfo()\n\
+    {{\n\
+        Map<String, Object> data = new HashMap<>();\n\
+        data.put(\"copyrightYear\", copyrightYearFallback);\n\
+        data.put(\"title\", configService.selectConfigByKey(\"sys.site.title\"));\n\
+        data.put(\"logo\", configService.selectConfigByKey(\"sys.site.logo\"));\n\
+        String icp = configService.selectConfigByKey(\"sys.site.icp\");\n\
+        data.put(\"icp\", StringUtils.isNotEmpty(icp) ? icp : icpFallback);\n\
+        return AjaxResult.success(data);\n\
+    }}\n\
+}}\n"
+    )
 }
 
 // ---------- 4. SecurityConfig 放行 ----------

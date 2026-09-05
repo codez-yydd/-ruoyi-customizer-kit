@@ -97,7 +97,16 @@ fn add_oss_dependency(
         log(&format!("{aid} 依赖已存在，跳过"));
         return Ok(false);
     }
-    for module in prioritize_modules(backend_modules) {
+    let candidates = if crate::core::detector::is_cloud_layout(root) {
+        if let Some(m) = crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "system") {
+            vec![m]
+        } else {
+            return Err("Cloud 未找到 system 模块，无法添加 OSS 依赖".into());
+        }
+    } else {
+        prioritize_modules(backend_modules)
+    };
+    for module in candidates {
         let pom = root.join(&module).join("pom.xml");
         if !pom.is_file() {
             continue;
@@ -137,17 +146,25 @@ fn add_oss_classes(
     boot_major: Option<u32>,
     log: &dyn Fn(&str),
 ) -> Result<usize, String> {
-    let admin = backend_modules
-        .iter()
-        .find(|m| m.ends_with("-admin"))
-        .or_else(|| backend_modules.first())
-        .ok_or("无后端模块可放置 OSS 配置类")?;
+    let cloud = crate::core::detector::is_cloud_layout(root);
+    let admin = if cloud {
+        crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "system")
+            .ok_or("Cloud 未找到 system 模块，无法放置 OSS 配置类")?
+    } else {
+        backend_modules
+            .iter()
+            .find(|m| m.ends_with("-admin"))
+            .or_else(|| backend_modules.first())
+            .cloned()
+            .ok_or("无后端模块可放置 OSS 配置类")?
+    };
     let pkg_path = package_to_path(&params.new_package);
+    let pkg_suffix = if cloud { "system/config" } else { "framework/config" };
     let config_dir = root
-        .join(admin)
+        .join(&admin)
         .join("src/main/java")
         .join(&pkg_path)
-        .join("framework/config");
+        .join(pkg_suffix);
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败：{e}"))?;
 
     let mut created = 0usize;
@@ -155,7 +172,7 @@ fn add_oss_classes(
     // OssProperties.java
     let props_file = config_dir.join("OssProperties.java");
     if !props_file.exists() {
-        std::fs::write(&props_file, render_oss_properties(params))
+        std::fs::write(&props_file, adapt_oss_pkg(render_oss_properties(params), params, cloud))
             .map_err(|e| format!("写入 OssProperties.java 失败：{e}"))?;
         created += 1;
         log("已生成 OssProperties.java");
@@ -164,22 +181,27 @@ fn add_oss_classes(
     // OssClient.java
     let client_file = config_dir.join("OssClient.java");
     if !client_file.exists() {
-        std::fs::write(&client_file, render_oss_client(params, boot_major))
+        std::fs::write(&client_file, adapt_oss_pkg(render_oss_client(params, boot_major), params, cloud))
             .map_err(|e| format!("写入 OssClient.java 失败：{e}"))?;
         created += 1;
         log("已生成 OssClient.java");
     }
 
-    // OssController.java（放 web/controller/common 包下）
+    // Vue：web/controller/common；Cloud：system/controller（官方 SysUserController 包）
+    let ctrl_suffix = if cloud {
+        "system/controller"
+    } else {
+        "web/controller/common"
+    };
     let ctrl_dir = root
-        .join(admin)
+        .join(&admin)
         .join("src/main/java")
         .join(&pkg_path)
-        .join("web/controller/common");
+        .join(ctrl_suffix);
     std::fs::create_dir_all(&ctrl_dir).map_err(|e| format!("创建目录失败：{e}"))?;
     let ctrl_file = ctrl_dir.join("OssController.java");
     if !ctrl_file.exists() {
-        std::fs::write(&ctrl_file, render_oss_controller(params))
+        std::fs::write(&ctrl_file, render_oss_controller(params, cloud))
             .map_err(|e| format!("写入 OssController.java 失败：{e}"))?;
         created += 1;
         log("已生成 OssController.java（/common/oss/upload）");
@@ -273,21 +295,49 @@ fn render_oss_client(params: &CustomizeParams, boot_major: Option<u32>) -> Strin
 }
 
 /// 渲染 OssController.java（新增独立 /common/oss/upload 接口，不改若依原 CommonController）
-fn render_oss_controller(params: &CustomizeParams) -> String {
+/// Vue 成功路径不变；Cloud 用官方 `system.controller` + `common.core.web.domain.AjaxResult`。
+fn render_oss_controller(params: &CustomizeParams, cloud: bool) -> String {
     let pkg = &params.new_package;
+    let (java_pkg, oss_import, ajax_import) = if cloud {
+        (
+            format!("{pkg}.system.controller"),
+            format!("{pkg}.system.config.OssClient"),
+            format!("import {pkg}.common.core.web.domain.AjaxResult;\n"),
+        )
+    } else {
+        (
+            format!("{pkg}.web.controller.common"),
+            format!("{pkg}.framework.config.OssClient"),
+            String::new(),
+        )
+    };
     format!(
-        "package {pkg}.web.controller.common;\n\nimport {pkg}.framework.config.OssClient;\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.multipart.MultipartFile;\n\nimport java.io.InputStream;\nimport java.util.UUID;\n\n/**\n * OSS 文件上传接口（独立于若依默认本地上传的 CommonController）。\n * 接口：POST /common/oss/upload\n */\n@RestController\npublic class OssController\n{{\n    @Autowired\n    private OssClient ossClient;\n\n    /**\n     * 上传文件到 OSS。\n     * 文件名使用 UUID + 原扩展名，避免冲突。\n     */\n    @PostMapping(\"/common/oss/upload\")\n    public AjaxResult upload(@RequestParam(\"file\") MultipartFile file) throws Exception\n    {{\n        if (file.isEmpty()) {{\n            return AjaxResult.error(\"上传文件不能为空\");\n        }}\n        String original = file.getOriginalFilename();\n        String ext = (original != null && original.contains(\".\"))\n                ? original.substring(original.lastIndexOf(\".\")) : \"\";\n        String objectKey = \"upload/\" + UUID.randomUUID().toString().replace(\"-\", \"\") + ext;\n        try (InputStream in = file.getInputStream()) {{\n            String url = ossClient.upload(objectKey, in);\n            AjaxResult ok = AjaxResult.success();\n            ok.put(\"url\", url);\n            ok.put(\"fileName\", objectKey);\n            return ok;\n        }}\n    }}\n}}\n"
+        "package {java_pkg};\n\nimport {oss_import};\n{ajax_import}import org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.web.bind.annotation.PostMapping;\nimport org.springframework.web.bind.annotation.RequestParam;\nimport org.springframework.web.bind.annotation.RestController;\nimport org.springframework.web.multipart.MultipartFile;\n\nimport java.io.InputStream;\nimport java.util.UUID;\n\n/**\n * OSS 文件上传接口（独立于若依默认本地上传的 CommonController）。\n * 接口：POST /common/oss/upload\n */\n@RestController\npublic class OssController\n{{\n    @Autowired\n    private OssClient ossClient;\n\n    /**\n     * 上传文件到 OSS。\n     * 文件名使用 UUID + 原扩展名，避免冲突。\n     */\n    @PostMapping(\"/common/oss/upload\")\n    public AjaxResult upload(@RequestParam(\"file\") MultipartFile file) throws Exception\n    {{\n        if (file.isEmpty()) {{\n            return AjaxResult.error(\"上传文件不能为空\");\n        }}\n        String original = file.getOriginalFilename();\n        String ext = (original != null && original.contains(\".\"))\n                ? original.substring(original.lastIndexOf(\".\")) : \"\";\n        String objectKey = \"upload/\" + UUID.randomUUID().toString().replace(\"-\", \"\") + ext;\n        try (InputStream in = file.getInputStream()) {{\n            String url = ossClient.upload(objectKey, in);\n            AjaxResult ok = AjaxResult.success();\n            ok.put(\"url\", url);\n            ok.put(\"fileName\", objectKey);\n            return ok;\n        }}\n    }}\n}}\n"
     )
 }
 
 // ---------- yml 配置追加 ----------
 
 /// 在 application.yaml/yml 末尾追加 OSS 配置块（带注释）。
+fn adapt_oss_pkg(src: String, params: &CustomizeParams, cloud: bool) -> String {
+    if !cloud {
+        return src;
+    }
+    src.replace(
+        &format!("{}.framework.config", params.new_package),
+        &format!("{}.system.config", params.new_package),
+    )
+}
+
 fn append_oss_yml(
     root: &Path,
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<bool, String> {
+    if crate::core::detector::is_cloud_layout(root) {
+        log("Cloud OSS 配置由 Nacos system 文本注入，跳过 admin application.yml");
+        return Ok(false);
+    }
     let res_dir = find_resources_dir(root);
     let res_dir = match res_dir {
         Some(d) => d,
@@ -296,18 +346,7 @@ fn append_oss_yml(
             return Ok(false);
         }
     };
-    let prefix = &params.new_module_prefix;
-    let q = |v: &str| format!("'{}'", v.replace('\'', "''"));
-    let block = format!(
-        "\n# ===== {prefix} OSS 对象存储配置 =====\n{prefix}:\n  oss: # 对象存储\n    enabled: {enabled} # 是否启用 OSS\n    provider: {provider} # 厂商：aliyun|tencent|minio|qiniu\n    endpoint: {endpoint} # endpoint（区域/地址）\n    bucket: {bucket} # bucket 名称\n    access-key: {ak} # accessKey\n    secret-key: {sk} # secretKey\n    custom-domain: {cd} # 自定义域名（CDN，留空用默认域名）\n",
-        enabled = params.enable_oss,
-        provider = q(&params.oss_provider),
-        endpoint = q(&params.oss_endpoint),
-        bucket = q(&params.oss_bucket),
-        ak = q(&params.oss_access_key),
-        sk = q(&params.oss_secret_key),
-        cd = q(&params.oss_custom_domain),
-    );
+    let block = oss_yaml_block(params);
 
     let mut appended = false;
     for name in &["application.yaml", "application.yml"] {
@@ -316,13 +355,11 @@ fn append_oss_yml(
             let content = crate::utils::file::read_text(&path)
                 .ok_or_else(|| format!("读取 {} 失败（UTF-8/GBK 均无法识别）", path.display()))?;
             // 幂等：已含 {prefix}.oss 顶层则跳过
-            let marker = format!("{prefix}:");
+            let marker = format!("{}:", params.new_module_prefix);
             let mut has_oss = false;
-            // 粗判：文件里已有 oss: 配置段
-            if content.contains(&format!("  oss:")) {
+            if content.contains("  oss:") || content.contains(&marker) {
                 has_oss = true;
             }
-            let _ = marker; // marker 用于未来精确判断顶层键
             if has_oss {
                 log(&format!("{} 已含 oss 配置，跳过", path.display()));
             } else {
@@ -340,6 +377,22 @@ fn append_oss_yml(
         }
     }
     Ok(appended)
+}
+
+/// 供 Nacos 引擎把 OSS 配置追加到 system 服务文本。
+pub fn oss_yaml_block(params: &CustomizeParams) -> String {
+    let prefix = &params.new_module_prefix;
+    let q = |v: &str| format!("'{}'", v.replace('\'', "''"));
+    format!(
+        "\n# ===== {prefix} OSS 对象存储配置 =====\n{prefix}:\n  oss: # 对象存储\n    enabled: {enabled} # 是否启用 OSS\n    provider: {provider} # 厂商：aliyun|tencent|minio|qiniu\n    endpoint: {endpoint} # endpoint（区域/地址）\n    bucket: {bucket} # bucket 名称\n    access-key: {ak} # accessKey\n    secret-key: {sk} # secretKey\n    custom-domain: {cd} # 自定义域名（CDN，留空用默认域名）\n",
+        enabled = params.enable_oss,
+        provider = q(&params.oss_provider),
+        endpoint = q(&params.oss_endpoint),
+        bucket = q(&params.oss_bucket),
+        ak = q(&params.oss_access_key),
+        sk = q(&params.oss_secret_key),
+        cd = q(&params.oss_custom_domain),
+    )
 }
 
 // ---------- 辅助（与 wechat.rs 一致的私有实现） ----------

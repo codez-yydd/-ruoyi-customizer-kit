@@ -13,8 +13,8 @@ pub mod utils;
 pub mod cli;
 
 use commands::{
-    build_sub_agents_description, cleanup_extract_dir, detect_project, extract_zip_project,
-    list_templates, load_config_json, ping, save_config_json,
+    build_sub_agents_description, cleanup_extract_dir, detect_project, download_official_archive,
+    extract_zip_project, list_templates, load_config_json, ping, save_config_json,
 };
 use commands::execute::execute_transform;
 use commands::preview::preview_tasks;
@@ -37,6 +37,7 @@ pub fn run() {
             ping,
             list_templates,
             detect_project,
+            download_official_archive,
             extract_zip_project,
             cleanup_extract_dir,
             preview_tasks,

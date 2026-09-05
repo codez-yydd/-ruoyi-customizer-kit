@@ -174,8 +174,17 @@ fn write_mp_artifacts(
     Ok(())
 }
 
-/// 候选模块中第一个存在 pom.xml 的模块（common > framework > admin > 其余）。
+/// 候选模块中第一个存在 pom.xml 的模块。
+/// Vue：common > framework > admin > 其余（成功语义不变）。
+/// Cloud：固定写入 `{prefix}-common/{prefix}-common-datasource`（叶子，不是聚合 ruoyi-common）。
 fn first_writable_module(root: &Path, modules: &[String]) -> Result<String, String> {
+    if crate::core::detector::is_cloud_layout(root) {
+        if let Some(m) = crate::core::detector::find_module_by_leaf_suffix(root, modules, "common-datasource")
+        {
+            return Ok(m);
+        }
+        return Err("Cloud 未找到 ruoyi-common-datasource（或改名后的 *-common-datasource）".into());
+    }
     for module in &prioritize_modules(modules) {
         if root.join(module).join("pom.xml").is_file() {
             return Ok(module.clone());
@@ -205,11 +214,27 @@ pub fn add_config_class(
     backend_modules: &[String],
     log: &dyn Fn(&str),
 ) -> Result<bool, String> {
-    let admin = backend_modules.iter().find(|m| m.ends_with("-admin"))
-        .or_else(|| backend_modules.first())
-        .ok_or("无后端模块可放置配置类")?;
+    let cloud = crate::core::detector::is_cloud_layout(root);
+    let (module, pkg_suffix, java_pkg) = if cloud {
+        let system = crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "system")
+            .ok_or("Cloud 未找到 system 模块，无法放置 MybatisPlusConfig")?;
+        (
+            system,
+            "system/config".to_string(),
+            format!("{}.system.config", params.new_package),
+        )
+    } else {
+        let admin = backend_modules.iter().find(|m| m.ends_with("-admin"))
+            .or_else(|| backend_modules.first())
+            .ok_or("无后端模块可放置配置类")?;
+        (
+            admin.clone(),
+            "framework/config".to_string(),
+            format!("{}.framework.config", params.new_package),
+        )
+    };
     let pkg_path = package_to_path(&params.new_package);
-    let config_dir = root.join(admin).join("src/main/java").join(&pkg_path).join("framework/config");
+    let config_dir = root.join(&module).join("src/main/java").join(&pkg_path).join(&pkg_suffix);
     let config_file = config_dir.join("MybatisPlusConfig.java");
 
     if config_file.exists() {
@@ -219,12 +244,11 @@ pub fn add_config_class(
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败：{e}"))?;
     let dialect = crate::core::db_dialect::from_params(params);
     let java = format!(
-        "package {pkg}.framework.config;\n\nimport com.baomidou.mybatisplus.annotation.DbType;\nimport com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;\nimport com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\n\n/**\n * MyBatis-Plus 配置\n */\n@Configuration\npublic class MybatisPlusConfig\n{{\n    /**\n     * 分页插件\n     */\n    @Bean\n    public MybatisPlusInterceptor mybatisPlusInterceptor()\n    {{\n        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();\n        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.{mp_db_type}));\n        return interceptor;\n    }}\n}}\n",
-        pkg = params.new_package,
+        "package {java_pkg};\n\nimport com.baomidou.mybatisplus.annotation.DbType;\nimport com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;\nimport com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;\nimport org.springframework.context.annotation.Bean;\nimport org.springframework.context.annotation.Configuration;\n\n/**\n * MyBatis-Plus 配置\n */\n@Configuration\npublic class MybatisPlusConfig\n{{\n    /**\n     * 分页插件\n     */\n    @Bean\n    public MybatisPlusInterceptor mybatisPlusInterceptor()\n    {{\n        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();\n        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.{mp_db_type}));\n        return interceptor;\n    }}\n}}\n",
         mp_db_type = dialect.mp_db_type
     );
     std::fs::write(&config_file, java).map_err(|e| format!("写入配置类失败：{e}"))?;
-    log(&format!("已生成 {admin}/.../framework/config/MybatisPlusConfig.java"));
+    log(&format!("已生成 {module}/.../{pkg_suffix}/MybatisPlusConfig.java"));
     Ok(true)
 }
 

@@ -37,7 +37,11 @@ bcrypt = "0.15"
 rand = "0.8"
 # 文本编码检测与 GBK 转码（非 UTF-8 项目文件参与改造）
 encoding_rs = "0.8"
+# Nacos config_info 写回后重算 md5（对反转义 yaml 原文做 hex 小写）
+md-5 = "0.10"
 clap = { version = "4", features = ["derive"] }
+# 官方仓库 archive zip / git 浅克隆（Gitee 网页 zip 会登录墙，拉取走 git）
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "charset", "http2"] }
 
 [dev-dependencies]
 tempfile = "3"

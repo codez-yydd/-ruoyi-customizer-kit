@@ -13,6 +13,8 @@ pub enum TaskType {
     RenameMavenModule,
     UpdateFrontendTitle,
     RewriteApplicationProfiles,
+    RewriteNacosConfig,
+    TrimCloudModules,
     RewriteLogbackPath,
     InjectColoredConsolePattern,
     AddMybatisPlusDependency,

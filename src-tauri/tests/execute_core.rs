@@ -1,6 +1,7 @@
 // 集成测试：验证核心改造执行（包名替换、目录移动、pom 修改、模块重命名、前端标题）。
 // 构造一个含真实包结构的合成 RuoYi-Vue 项目，执行核心任务后断言结果。
 
+use ruoyi_forge_lib::commands::project::detect_auto;
 use ruoyi_forge_lib::core::detector;
 use ruoyi_forge_lib::core::executor::execute_all;
 use ruoyi_forge_lib::core::planner;
@@ -166,4 +167,73 @@ fn refuses_to_overwrite_existing_package_dir() {
     let move_result = results.iter().find(|r| r.task_id == move_task.id).unwrap();
     assert_eq!(move_result.status, TaskStatus::Failed, "目标目录已存在时应失败");
     assert!(move_result.message.contains("已存在"), "失败信息应说明冲突");
+}
+
+#[test]
+fn generates_preset_ui_when_official_vue_has_no_frontend() {
+    let snapshot = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("templates/ruoyi-vue/ui/vben-web-ele/package.json");
+    if !snapshot.is_file() {
+        eprintln!(
+            "跳过 generates_preset_ui_when_official_vue_has_no_frontend：本机 templates/ruoyi-vue/ui/vben-web-ele 快照不存在"
+        );
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root.join("pom.xml"),
+        "<?xml version=\"1.0\"?>\n<project>\n<groupId>com.ruoyi</groupId>\n<artifactId>ruoyi</artifactId>\n</project>\n",
+    );
+    for m in ["admin", "framework", "system", "common"] {
+        write(
+            root.join(format!("ruoyi-{m}/pom.xml")),
+            "<project><artifactId>ruoyi</artifactId></project>",
+        );
+    }
+
+    let resp = detect_auto(root, None);
+    assert!(
+        resp.success,
+        "无 ui 官方 Vue 骨架应识别为 ruoyi-vue：{}",
+        resp.message
+    );
+    let mut info = resp.project.expect("应返回 project");
+    assert_eq!(info.template_dir, "ruoyi-vue");
+    assert!(info.frontend_dirs.is_empty());
+    info.root_path = root.to_string_lossy().to_string();
+
+    let template = load_template();
+    let mut params = make_params();
+    params.enable_replace_ui = true;
+    params.ui_template = "vben-web-ele".into();
+    params.output_dir = root.to_string_lossy().to_string();
+
+    let tasks: Vec<_> = planner::plan(&info, &params, &template)
+        .into_iter()
+        .filter(|t| t.task_type == TaskType::ReplaceUI)
+        .collect();
+    assert_eq!(tasks.len(), 1, "应规划 ReplaceUI");
+    assert!(
+        tasks[0].name.contains("源仓无前端目录"),
+        "无前端时任务名应为生成语义，实际：{}",
+        tasks[0].name
+    );
+
+    let results = execute_all(root, &info, &tasks, &params, &template, |_| {});
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].status,
+        TaskStatus::Success,
+        "生成预置 UI 应成功：{}",
+        results[0].message
+    );
+
+    let ui_dir = root.join("demo-ui");
+    assert!(
+        ui_dir.join("package.json").is_file()
+            || ui_dir.join("apps/web-ele/package.json").is_file(),
+        "产物应存在 demo-ui 的 package.json 或模板特征文件"
+    );
 }

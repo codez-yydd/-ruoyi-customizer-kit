@@ -42,6 +42,16 @@ function isDisabled(feature: keyof CustomizeParams): boolean {
   return isFeatureDisabled(templateDir.value, feature)
 }
 
+const isCloud = computed(() => templateDir.value === 'ruoyi-cloud')
+
+/** 源仓是否已有独立前端目录（无则可用预置模板生成 {prefix}-ui） */
+const hasSourceFrontend = computed(() => (projectInfo.value?.frontend_dirs?.length ?? 0) > 0)
+/** 拆仓 Vue / Cloud 且无前端目录：首次进入默认生成预置后台 */
+const sourceHasNoFrontend = computed(() => {
+  const tpl = templateDir.value
+  return (tpl === 'ruoyi-vue' || tpl === 'ruoyi-cloud') && !hasSourceFrontend.value
+})
+
 /**
  * 关闭当前项目类型不支持的开关（防御性清理）。
  * 用于：项目类型变化、应用预设、导入配置、应用历史 —— 任何批量覆写 form 之后，
@@ -73,6 +83,7 @@ const SECTION = {
   output: 'output',
   switches: 'switches',
   security: 'security',
+  cloud: 'cloud',
   structure: 'structure',
   oss: 'oss',
   jwt: 'jwt',
@@ -128,6 +139,8 @@ const defaults = (): CustomizeParams => ({
   // SQL 定制
   enable_sql_customize: false,
   db_name: '',
+  config_db_name: '',
+  remove_modules: [] as string[],
   db_type: 'mysql',
   admin_username: '',
   admin_nickname: '',
@@ -172,6 +185,8 @@ const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.va
 // 历史配置可能缺 ui_template 或值已失效，统一纠正，避免开关旁显示「未知」
 form.ui_template = normalizeUiTemplateKey(form.ui_template)
 if (!form.db_type) form.db_type = 'mysql'
+if (!form.config_db_name) form.config_db_name = ''
+if (!Array.isArray(form.remove_modules)) form.remove_modules = []
 
 // 识别结果变化时重置原值
 watch(
@@ -264,6 +279,7 @@ const sectionCounts = computed(() => ({
     form.enable_uniapp
   ]),
   security: countTrue([form.enable_security, form.enable_sql_customize]),
+  cloud: form.remove_modules.length,
   structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]),
   oss: countTrue([form.enable_oss]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
@@ -367,6 +383,14 @@ TRIGGERS.forEach(([getter, key]) => {
     if (v) expandSection(key)
   })
 })
+// Cloud 专属分区始终可见，默认展开（不依赖 SQL/安全开关）
+watch(
+  isCloud,
+  (v) => {
+    if (v) expandSection(SECTION.cloud)
+  },
+  { immediate: true }
+)
 
 /**
  * 项目类型变化时（或进入配置页时），强制关闭当前项目类型不支持的开关，
@@ -380,6 +404,12 @@ watch(
   },
   { immediate: true }
 )
+
+// 首次进入（尚无已存参数）：拆仓 Vue/Cloud 且源仓无前端目录时，默认开启生成预置后台
+if (!storedParams.value && sourceHasNoFrontend.value && !isDisabled('enable_replace_ui')) {
+  form.enable_replace_ui = true
+  form.ui_template = normalizeUiTemplateKey(form.ui_template)
+}
 
 /** 下拉菜单 command 回调：按 key 查找预设并应用（找不到则静默忽略） */
 function handlePresetCommand(key: string) {
@@ -719,7 +749,10 @@ function generateRandomSecret(): string {
                   <template v-if="form.enable_replace_ui">
                     已选：{{ selectedUiMeta.label }} → 生成到
                     {{ form.new_module_prefix ? `${form.new_module_prefix}-ui` : '请先填写新模块前缀' }}
-                    （将删除原 ruoyi-ui）
+                    <template v-if="hasSourceFrontend">（将删除原 ruoyi-ui）</template>
+                  </template>
+                  <template v-else-if="sourceHasNoFrontend">
+                    源仓没有前端目录，关闭后产物将只有后端
                   </template>
                   <template v-else>
                     用现代开源后台替换若依原 ruoyi-ui；开启后点选下方卡片预览并选型（支持多模板扩展）
@@ -805,9 +838,10 @@ function generateRandomSecret(): string {
                 <el-form-item v-if="form.enable_sql_customize" label="新数据库名">
                   <el-input
                     v-model="form.db_name"
-                    :placeholder="`留空则用模块前缀 ${form.new_module_prefix || 'demo'}`"
+                    :placeholder="isCloud ? '留空则保持官方默认 ry-cloud' : `留空则用模块前缀 ${form.new_module_prefix || 'demo'}`"
                   />
                   <span v-if="form.db_type === 'postgresql'" class="inline-hint muted">同时用于 PG 连接 url</span>
+                  <span v-else-if="isCloud" class="inline-hint muted">没填则业务库 ry-cloud、配置库 ry-config 都不改；填了则业务库用该名，配置库用 `{库名}-config`</span>
                 </el-form-item>
                 <el-form-item
                   v-if="form.enable_sql_customize"
@@ -845,6 +879,38 @@ function generateRandomSecret(): string {
                 <template v-else>
                   自动匹配 ry_*.sql 脚本，替换库名（ry-vue/ry-cloud）与 admin 密码哈希。
                 </template>
+              </div>
+            </div>
+          </el-collapse-item>
+
+          <!-- 微服务 Cloud：始终可见，不依赖 SQL/安全开关 -->
+          <el-collapse-item v-if="isCloud" :name="SECTION.cloud">
+            <template #title>
+              <span class="section-title">微服务 Cloud</span>
+              <el-badge v-if="sectionCounts.cloud > 0" :value="`已配置 ${sectionCounts.cloud}`" class="section-badge" type="primary" />
+            </template>
+            <div class="detail-panel">
+              <div class="detail-grid">
+                <el-form-item label="裁剪微服务模块">
+                  <el-select
+                    v-model="form.remove_modules"
+                    multiple
+                    collapse-tags
+                    collapse-tags-tooltip
+                    placeholder="不裁剪则留空"
+                    style="width: 100%"
+                    @change="onSwitchChange"
+                  >
+                    <el-option label="代码生成 gen" value="gen" />
+                    <el-option label="定时任务 job" value="job" />
+                    <el-option label="文件服务 file" value="file" />
+                    <el-option label="监控 monitor" value="monitor" />
+                  </el-select>
+                  <span class="inline-hint muted">不可裁 gateway / auth / system / common / api</span>
+                </el-form-item>
+              </div>
+              <div class="detail-tip muted">
+                没填新数据库名：业务库 ry-cloud、配置库 ry-config 都不改。填了：业务库用该名，配置库用 `{库名}-config`。业务库名在「安全 &amp; SQL」里。裁剪会删目录、根 pom、Nacos 条目、网关路由、相关菜单。
               </div>
             </div>
           </el-collapse-item>
@@ -1028,7 +1094,10 @@ function generateRandomSecret(): string {
                   <span class="switch-item__label">启动脚本</span>
                   <el-switch v-model="form.enable_startup_scripts" @change="onSwitchChange" />
                 </div>
-                <div class="switch-item__hint muted">start/stop 脚本 + build 一键打包脚本（.sh + .bat），端口与 Nginx 共用</div>
+                <div class="switch-item__hint muted">
+                  <template v-if="isCloud">按 gateway → auth → system 顺序启动/停止，需先起 Nacos；并生成 Cloud 多 jar 打包脚本</template>
+                  <template v-else>start/stop 脚本 + build 一键打包脚本（.sh + .bat），端口与 Nginx 共用</template>
+                </div>
               </div>
             </div>
 
@@ -1049,7 +1118,12 @@ function generateRandomSecret(): string {
                 </el-form-item>
               </div>
               <div class="detail-tip muted">
-                输出到 output_dir/nginx/（配置）和 output_dir/scripts/（脚本）。
+                <template v-if="isCloud && form.enable_startup_scripts">
+                  开启启动脚本时生成 Cloud 多服务 start/stop（gateway→auth→system→其余，先检查 Nacos 8848），以及 Cloud 多 jar 打包脚本，不是分离版的 *-admin.jar。输出到 output_dir/scripts/ 与项目根目录。
+                </template>
+                <template v-else>
+                  输出到 output_dir/nginx/（配置）和 output_dir/scripts/（脚本）。
+                </template>
               </div>
             </div>
           </el-collapse-item>

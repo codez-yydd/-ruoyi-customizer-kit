@@ -23,7 +23,7 @@ interface UiPrefs {
 
 /** 默认偏好：核心 4 区展开，其余折叠 */
 const DEFAULT_PREFS: UiPrefs = {
-  activeSections: ['package', 'frontend', 'output', 'switches'],
+  activeSections: ['package', 'frontend', 'output', 'switches', 'cloud'],
   currentPresetKey: ''
 }
 

@@ -1,0 +1,35 @@
+#!/bin/bash
+# {{PROJECT_NAME}} Cloud 多服务停止脚本（Linux/macOS）
+# 由若依锻造台 RuoYi Forge 自动生成
+
+APP_HOME="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$APP_HOME"
+
+stop_one() {
+  local name="$1"
+  local pid_file="logs/${name}.pid"
+  if [ -f "$pid_file" ]; then
+    PID=$(cat "$pid_file")
+    if kill -0 "$PID" >/dev/null 2>&1; then
+      echo "⏹ 停止 $name PID=$PID"
+      kill "$PID" 2>/dev/null || true
+      sleep 1
+      kill -9 "$PID" >/dev/null 2>&1 || true
+    fi
+    rm -f "$pid_file"
+  fi
+}
+
+for name in gateway auth system gen job file monitor; do
+  stop_one "$name"
+done
+
+# 回退：按网关端口清理
+SERVER_PORT={{SERVER_PORT}}
+PIDS=$(lsof -ti :$SERVER_PORT -sTCP:LISTEN 2>/dev/null || true)
+if [ -n "$PIDS" ]; then
+  echo "⏹ 按端口 $SERVER_PORT 停止：$PIDS"
+  echo "$PIDS" | xargs kill 2>/dev/null || true
+fi
+
+echo "✅ Cloud 服务已停止"

@@ -1,0 +1,24 @@
+#!/bin/bash
+# {{PROJECT_NAME}} Cloud 开发脚本（构建 + 提示启动顺序）
+# 用法：./run.sh
+
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8"
+
+echo "========== 请先确认 Nacos 可达：http://127.0.0.1:8848/nacos/ =========="
+echo "========== Maven install =========="
+mvn clean install -DskipTests
+
+if [ $? -ne 0 ]; then
+    echo "Maven install failed!"
+    exit 1
+fi
+
+echo "========== Cloud 启动顺序：gateway → auth → system → 其余 =========="
+echo "请分别在各模块目录执行 spring-boot:run，或使用 scripts/start.sh"
+echo "网关端口：{{SERVER_PORT}}"
+echo "示例："
+echo "  cd {{MODULE_PREFIX}}-gateway && mvn spring-boot:run"
+echo "  cd {{MODULE_PREFIX}}-auth && mvn spring-boot:run"
+echo "  cd {{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system && mvn spring-boot:run"

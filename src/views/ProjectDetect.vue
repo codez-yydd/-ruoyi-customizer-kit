@@ -12,7 +12,7 @@ import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
-const { rootPath, projectInfo, sourceType, extractRoot } = storeToRefs(store)
+const { rootPath, projectInfo, extractRoot } = storeToRefs(store)
 
 const hasResult = computed(() => projectInfo.value !== null)
 const recognized = computed(() => projectInfo.value?.confidence.recognized ?? false)
@@ -30,10 +30,9 @@ const springBootLabel = computed(() => {
   return '未识别'
 })
 
-/** 回首页重新选择项目：清理 zip 临时目录并重置流程 */
+/** 回首页重新选择项目：清理临时目录并重置流程 */
 async function backToHome() {
-  // 若为 zip 模式，清理临时解压目录（静默失败）
-  if (sourceType.value === 'zip' && extractRoot.value) {
+  if (extractRoot.value) {
     try {
       await api.cleanupExtractDir(extractRoot.value)
     } catch {
@@ -49,6 +48,17 @@ function goConfig() {
   if (!recognized.value) return
   router.push({ name: 'config' })
 }
+
+/** 非单体且源仓无前端：提示将用预置模板生成 {前缀}-ui */
+const showOfficialNoFrontendHint = computed(() => {
+  const info = projectInfo.value
+  if (!info) return false
+  if (info.template_dir === 'ruoyi') return false
+  return info.frontend_dirs.length === 0
+})
+const generatedUiDirName = computed(
+  () => `${projectInfo.value?.original_module_prefix || 'ruoyi'}-ui`
+)
 </script>
 
 <template>
@@ -151,6 +161,14 @@ function goConfig() {
           <div v-else class="tags">
             <el-tag v-for="m in projectInfo.frontend_dirs" :key="m" type="success">{{ m }}</el-tag>
           </div>
+          <el-alert
+            v-if="showOfficialNoFrontendHint"
+            class="frontend-hint"
+            type="info"
+            :closable="false"
+            show-icon
+            :title="`官方后端不含前端，下一步将用锻造台预置模板生成 ${generatedUiDirName}`"
+          />
         </div>
 
         <!-- 配置文件 -->
@@ -257,6 +275,9 @@ function goConfig() {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+.frontend-hint {
+  margin-top: 10px;
 }
 .file-list {
   margin: 0;

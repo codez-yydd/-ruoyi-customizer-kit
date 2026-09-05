@@ -63,6 +63,7 @@ const SKIP_DIRS: &[&str] = &[
     ".output",
     "coverage",
     ".pnpm-store",
+    "cloud-overlay",
     "playwright-report",
     "test-results",
 ];
@@ -85,6 +86,7 @@ pub fn generate_ui_project(
     template_dir: &Path,
     output_dir: &Path,
     params: &CustomizeParams,
+    overlay: Option<&Path>,
     log: &dyn Fn(&str),
 ) -> Result<ReplaceUiResult, String> {
     if !template_dir.is_dir() {
@@ -133,6 +135,21 @@ pub fn generate_ui_project(
         &mut files_modified,
         log,
     )?;
+
+    // Cloud overlay：复制主模板后再覆盖认证/网关路径（默认 vben/arco 保持 POST /login + {token}）
+    if let Some(overlay_dir) = overlay {
+        if overlay_dir.is_dir() {
+            log(&format!("应用 Cloud UI overlay：{}", overlay_dir.display()));
+            copy_template_dir(
+                overlay_dir,
+                &ui_dir,
+                &placeholders,
+                &mut files_created,
+                &mut files_modified,
+                log,
+            )?;
+        }
+    }
 
     log(&format!(
         "后台 UI 工程已生成：{}（{} 个文件，其中 {} 个做占位符替换）",
@@ -336,7 +353,7 @@ mod tests {
 
         let params = base_params();
         let log = |_m: &str| {};
-        let result = generate_ui_project(&template, tmp.path(), &params, &log).unwrap();
+        let result = generate_ui_project(&template, tmp.path(), &params, None, &log).unwrap();
         assert!(result.output_dir.exists());
         assert!(!result.output_dir.join("old.txt").exists());
         let env = fs::read_to_string(result.output_dir.join("apps/web-ele/.env")).unwrap();

@@ -87,6 +87,8 @@ pub fn default_params() -> CustomizeParams {
         enable_startup_scripts: false,
         enable_replace_ui: false,
         ui_template: "vben-web-ele".into(),
+        config_db_name: String::new(),
+        remove_modules: Vec::new(),
     }
 }
 
@@ -607,6 +609,7 @@ fn type_compatible(old: &Value, new: &Value) -> bool {
         (Value::Bool(_), Value::Bool(_))
             | (Value::Number(_), Value::Number(_))
             | (Value::String(_), Value::String(_))
+            | (Value::Array(_), Value::Array(_))
             | (Value::Null, _)
     )
 }

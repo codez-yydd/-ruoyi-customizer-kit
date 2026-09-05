@@ -24,6 +24,7 @@ pub mod sub_agents;
 pub mod web_footer;
 pub mod site_settings;
 pub mod db_dialect;
+pub mod nacos_config;
 pub mod pipeline;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
@@ -191,9 +192,15 @@ pub struct CustomizeParams {
     /// 是否定制 SQL 初始化脚本（库名替换 / admin 密码 / 清演示 / 清 quartz）
     #[serde(default)]
     pub enable_sql_customize: bool,
-    /// 新数据库名（留空则用 new_module_prefix 推导）
+    /// 新数据库名。Vue/单体留空则用 new_module_prefix；Cloud 留空则保持官方 ry-cloud
     #[serde(default)]
     pub db_name: String,
+    /// Cloud 配置库名（兼容 CLI/旧导入）。留空则：有 db_name 用 `{db_name}-config`，否则 ry-config
+    #[serde(default)]
+    pub config_db_name: String,
+    /// Cloud 裁剪微服务模块，合法值仅 gen / job / file / monitor
+    #[serde(default)]
+    pub remove_modules: Vec<String>,
     /// 数据库类型：mysql | postgresql。旧配置 JSON 无该字段时默认为 mysql。
     #[serde(default = "default_db_type")]
     pub db_type: String,
@@ -284,7 +291,7 @@ pub struct CustomizeParams {
     pub enable_startup_scripts: bool,
     // ---- 替换后台 UI ----
     /// 是否用预置后台模板（如 vben-web-ele）替换若依原 ruoyi-ui 前端
-    /// 仅 ruoyi-vue（前后端分离版）支持，单体/微服务禁用。
+    /// ruoyi-vue 与 ruoyi-cloud 可用（cloud 复制主模板后再覆盖 cloud-overlay）；单体禁用。
     #[serde(default)]
     pub enable_replace_ui: bool,
     /// 后台 UI 模板标识（对应 templates/ruoyi-vue/ui/{ui_template} 目录名），默认 vben-web-ele
@@ -337,6 +344,8 @@ impl Default for CustomizeParams {
             clean_demo_users: false,
             enable_sql_customize: false,
             db_name: String::new(),
+            config_db_name: String::new(),
+            remove_modules: Vec::new(),
             db_type: "mysql".into(),
             admin_username: String::new(),
             admin_nickname: String::new(),
@@ -429,7 +438,60 @@ impl CustomizeParams {
                 return Some("管理员昵称不能包含单引号或反斜杠".into());
             }
         }
+        if let Some(err) = validate_remove_modules(&self.remove_modules) {
+            return Some(err);
+        }
         None
+    }
+}
+
+/// Cloud 允许裁剪的模块（官方核实 2026-09-05：不可裁 gateway/auth/system/common/api）
+pub const ALLOWED_CLOUD_REMOVE_MODULES: &[&str] = &["gen", "job", "file", "monitor"];
+
+/// 校验 `remove_modules`：空列表合法；非法值（含 api/common/gateway/auth/system）拒绝。
+pub fn validate_remove_modules(modules: &[String]) -> Option<String> {
+    for raw in modules {
+        let key = raw.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            continue;
+        }
+        if !ALLOWED_CLOUD_REMOVE_MODULES.contains(&key.as_str()) {
+            return Some(format!(
+                "裁剪模块「{raw}」不合法：仅允许 gen / job / file / monitor（不可裁 gateway/auth/system/common/api）"
+            ));
+        }
+    }
+    None
+}
+
+/// 业务库名（Vue/单体）：填写则用之，否则 `{new_module_prefix}`
+pub fn resolve_biz_db_name(params: &CustomizeParams) -> String {
+    if params.db_name.is_empty() {
+        params.new_module_prefix.clone()
+    } else {
+        params.db_name.clone()
+    }
+}
+
+/// Cloud 业务库名：填写 `db_name` 则用之，否则保持官方默认 `ry-cloud`（不用模块前缀）。
+pub fn resolve_cloud_biz_db_name(params: &CustomizeParams) -> String {
+    if params.db_name.is_empty() {
+        "ry-cloud".into()
+    } else {
+        params.db_name.clone()
+    }
+}
+
+/// Cloud 配置库名：`config_db_name` 非空优先（兼容 CLI/旧导入）；
+/// 否则有 `db_name` 用 `{db_name}-config`；都空则保持官方默认 `ry-config`。
+/// 不用模块前缀推导。
+pub fn resolve_config_db_name(params: &CustomizeParams) -> String {
+    if !params.config_db_name.is_empty() {
+        params.config_db_name.clone()
+    } else if !params.db_name.is_empty() {
+        format!("{}-config", params.db_name)
+    } else {
+        "ry-config".into()
     }
 }
 
@@ -546,5 +608,78 @@ mod tests {
         }"#;
         let info: ProjectInfo = serde_json::from_str(json).expect("旧 JSON 应能反序列化");
         assert_eq!(info.spring_boot_major, None);
+    }
+
+    #[test]
+    fn remove_modules_empty_is_ok() {
+        assert!(validate_remove_modules(&[]).is_none());
+        assert!(validate_remove_modules(&["gen".into(), "job".into()]).is_none());
+    }
+
+    #[test]
+    fn remove_modules_rejects_illegal() {
+        let err = validate_remove_modules(&["system".into()]).expect("应拒绝");
+        assert!(err.contains("system"));
+        assert!(validate_remove_modules(&["gateway".into()]).is_some());
+        assert!(validate_remove_modules(&["auth".into()]).is_some());
+        assert!(validate_remove_modules(&["api".into()]).is_some());
+        assert!(validate_remove_modules(&["common".into()]).is_some());
+    }
+
+    #[test]
+    fn resolve_config_db_name_empty_keeps_official() {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        assert_eq!(resolve_config_db_name(&p), "ry-config");
+    }
+
+    #[test]
+    fn resolve_config_db_name_derives_from_db_name() {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        p.db_name = "demo".into();
+        assert_eq!(resolve_config_db_name(&p), "demo-config");
+    }
+
+    #[test]
+    fn resolve_config_db_name_explicit_wins() {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        p.db_name = "demo".into();
+        p.config_db_name = "custom-cfg".into();
+        assert_eq!(resolve_config_db_name(&p), "custom-cfg");
+    }
+
+    #[test]
+    fn resolve_cloud_biz_db_name_empty_keeps_official() {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        assert_eq!(resolve_cloud_biz_db_name(&p), "ry-cloud");
+        assert_eq!(resolve_biz_db_name(&p), "demo", "Vue 路径仍按前缀回落");
+    }
+
+    #[test]
+    fn resolve_cloud_biz_db_name_uses_db_name() {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "other".into();
+        p.db_name = "demo".into();
+        assert_eq!(resolve_cloud_biz_db_name(&p), "demo");
+        assert_eq!(resolve_biz_db_name(&p), "demo");
+    }
+
+    #[test]
+    fn customize_params_validate_rejects_illegal_remove_modules() {
+        let mut p = CustomizeParams::default();
+        p.original_package = "com.ruoyi".into();
+        p.new_package = "com.demo".into();
+        p.original_module_prefix = "ruoyi".into();
+        p.new_module_prefix = "demo".into();
+        p.new_project_name = "demo".into();
+        p.frontend_title = "演示系统".into();
+        p.output_dir = "/tmp/out".into();
+        p.remove_modules = vec!["system".into()];
+        assert!(p.validate().is_some());
+        p.remove_modules = vec!["file".into()];
+        assert!(p.validate().is_none());
     }
 }

@@ -101,6 +101,8 @@ where
         TaskType::RenameMavenModule => do_rename_modules(root, params, template, &mut r, log),
         TaskType::UpdateFrontendTitle => do_update_frontend(root, params, template, &engine, &mut r, log),
         TaskType::RewriteApplicationProfiles => do_rewrite_config(root, info, params, template, &mut r, log),
+        TaskType::RewriteNacosConfig => do_rewrite_nacos_config(root, params, &mut r, log),
+        TaskType::TrimCloudModules => do_trim_cloud_modules(root, params, &mut r, log),
         TaskType::RewriteLogbackPath => do_rewrite_logback(root, &engine, &mut r, log),
         TaskType::InjectColoredConsolePattern => do_inject_colored_console(root, &engine, &mut r, log),
         TaskType::AddMybatisPlusDependency => do_add_mp_dependency(root, info, &mut r, log),
@@ -109,7 +111,7 @@ where
         TaskType::AddLongIdJsonSerializeAnnotation => do_add_long_id(root, info, &mut r, log),
         TaskType::InjectSnowflakeId => do_inject_snowflake_id(root, params, info, &mut r, log),
         TaskType::GenerateUniappProject => do_generate_uniapp(root, params, &mut r, log),
-        TaskType::ReplaceUI => do_replace_ui(root, params, &mut r, log),
+        TaskType::ReplaceUI => do_replace_ui(root, info, params, &mut r, log),
         TaskType::AppendWechatConfig => do_append_wechat_config(root, params, &mut r, log),
         TaskType::AddWechatPayDependency => do_add_wechat_pay_dependency(root, info, &mut r, log),
         TaskType::AddWechatPayConfig => do_add_wechat_pay_config(root, params, info, &mut r, log),
@@ -254,40 +256,106 @@ where
     Ok(())
 }
 
-/// 4. 重命名模块目录（后端模块 + 前端目录，统一按前缀替换）
+/// 4. 重命名模块目录（后端模块 + 前端目录，统一按前缀替换）。
+/// Cloud 支持嵌套路径：先改 `ruoyi-modules/ruoyi-system`，再改 `ruoyi-modules`。
+/// Vue 根目录模块（admin/common/framework）行为保持不变。
 fn do_rename_modules<F>(root: &Path, params: &CustomizeParams, template: &Template, r: &mut TaskResult, log: &F) -> Result<(), String>
 where
     F: Fn(&str),
 {
-    let old_prefix = &params.original_module_prefix;
-    let new_prefix = &params.new_module_prefix;
+    let old_prefix = format!("{}-", params.original_module_prefix);
+    let new_prefix = format!("{}-", params.new_module_prefix);
 
-    // 收集需要重命名的目录：后端模块 + 前端模块
-    let backend_set: Vec<String> = template.module.modules.clone();
-    let frontend_set: Vec<String> = template.module.frontend_modules.clone();
-    let all_modules: Vec<String> = backend_set.iter().chain(frontend_set.iter()).cloned().collect();
+    let mut rels: Vec<String> = Vec::new();
+    for m in template
+        .module
+        .modules
+        .iter()
+        .chain(template.module.frontend_modules.iter())
+    {
+        if root.join(m).is_dir() {
+            rels.push(m.replace('\\', "/"));
+            add_path_ancestors(&mut rels, m);
+        }
+    }
+    // 扫描 *-modules / *-common / *-visual / *-api 子模块（Cloud 叶子，如 common-log）
+    collect_nested_module_dirs(root, &old_prefix, &mut rels);
 
-    let entries: Vec<String> = std::fs::read_dir(root)
-        .map_err(|e| e.to_string())?
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|name| {
-            name.starts_with(&format!("{}-", old_prefix)) && all_modules.contains(name)
-        })
-        .collect();
-    for name in entries {
-        let new_name = name.replacen(&format!("{}-", old_prefix), &format!("{}-", new_prefix), 1);
-        let from = root.join(&name);
-        let to = root.join(&new_name);
+    rels.sort();
+    rels.dedup();
+    rels.sort_by_key(|p| std::cmp::Reverse(p.matches('/').count()));
+
+    for rel in rels {
+        let name = Path::new(&rel)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| rel.clone());
+        if !name.starts_with(&old_prefix) {
+            continue;
+        }
+        let new_name = name.replacen(&old_prefix, &new_prefix, 1);
+        let from = root.join(&rel);
+        if !from.is_dir() {
+            continue;
+        }
+        let to = from
+            .parent()
+            .map(|p| p.join(&new_name))
+            .unwrap_or_else(|| root.join(&new_name));
         if to.exists() {
             return Err(format!("目标模块目录已存在，拒绝覆盖：{}", to.display()));
         }
         std::fs::rename(&from, &to).map_err(|e| format!("重命名 {} 失败：{e}", from.display()))?;
         r.renamed_dirs += 1;
-        log(&format!("重命名 {} → {}", name, new_name));
+        log(&format!("重命名 {} → {}", rel, to.strip_prefix(root).unwrap_or(&to).display()));
     }
     Ok(())
+}
+
+fn add_path_ancestors(out: &mut Vec<String>, rel: &str) {
+    let mut cur = PathBuf::from(rel.replace('\\', "/"));
+    while let Some(parent) = cur.parent() {
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        out.push(parent.to_string_lossy().replace('\\', "/"));
+        cur = parent.to_path_buf();
+    }
+}
+
+fn collect_nested_module_dirs(root: &Path, old_prefix: &str, out: &mut Vec<String>) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for e in entries.flatten() {
+        if !e.path().is_dir() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if matches!(name.as_str(), "target" | "node_modules" | ".git" | ".idea" | "dist") {
+            continue;
+        }
+        let is_container = name.ends_with("-modules")
+            || name.ends_with("-common")
+            || name.ends_with("-visual")
+            || name.ends_with("-api");
+        if is_container {
+            if let Ok(children) = std::fs::read_dir(e.path()) {
+                for c in children.flatten() {
+                    if !c.path().is_dir() {
+                        continue;
+                    }
+                    let cn = c.file_name().to_string_lossy().to_string();
+                    if cn.starts_with(old_prefix) && c.path().join("pom.xml").is_file() {
+                        out.push(format!("{name}/{cn}"));
+                    }
+                }
+            }
+        }
+        if name.starts_with(old_prefix) && e.path().join("pom.xml").is_file() {
+            out.push(name);
+        }
+    }
 }
 
 /// 5. 修改前端标题（适配已重命名的前端目录）
@@ -616,8 +684,16 @@ where
     } else {
         r.message = "依赖已存在，跳过".into();
     }
-    // 改造现有 Mapper/Service/ServiceImpl 源码为 MyBatis-Plus 继承体系
-    let adapted = crate::core::mybatis_plus::adapt_existing_sources(root, log)?;
+    // Cloud：仅扫 system + job；Vue：全树（成功语义不变）
+    let adapted = if crate::core::detector::is_cloud_project(root, &info.template_dir) {
+        let mut n = 0usize;
+        for m in crate::core::detector::cloud_mp_scan_modules(root, &modules) {
+            n += crate::core::mybatis_plus::adapt_existing_sources(&root.join(&m), log)?;
+        }
+        n
+    } else {
+        crate::core::mybatis_plus::adapt_existing_sources(root, log)?
+    };
     r.modified_files += adapted;
     Ok(())
 }
@@ -811,21 +887,38 @@ where
     Ok(count)
 }
 
-/// 扫描当前实际存在的后端模块目录（兼顾已改名场景）
+/// 扫描当前实际存在的后端模块目录（兼顾已改名场景）。
+/// Cloud 递归纳入 `*-modules/*`、`*-common/*`、`*-visual/*`、`*-api/*`（有 pom.xml 的子模块）。
+/// Vue 根下本就有 admin/common/framework，行为兼容。
 fn current_backend_modules(root: &Path, info: &crate::core::ProjectInfo) -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for e in entries.flatten() {
-            if e.path().is_dir() {
-                let name = e.file_name().to_string_lossy().to_string();
-                // 含 src/main/java 或 pom.xml 的视为后端模块
-                if e.path().join("pom.xml").is_file() {
-                    out.push(name);
+            if !e.path().is_dir() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_string();
+            if matches!(name.as_str(), "target" | "node_modules" | ".git" | ".idea" | "dist") {
+                continue;
+            }
+            if e.path().join("pom.xml").is_file() {
+                out.push(name.clone());
+            }
+            let is_container = name.ends_with("-modules")
+                || name.ends_with("-common")
+                || name.ends_with("-visual")
+                || name.ends_with("-api");
+            if is_container {
+                if let Ok(children) = std::fs::read_dir(e.path()) {
+                    for c in children.flatten() {
+                        if c.path().is_dir() && c.path().join("pom.xml").is_file() {
+                            out.push(format!("{}/{}", name, c.file_name().to_string_lossy()));
+                        }
+                    }
                 }
             }
         }
     }
-    // 若扫描为空，回退到 info
     if out.is_empty() {
         out = info.backend_modules.clone();
     }
@@ -863,24 +956,35 @@ fn current_generator_files(root: &Path, info: &crate::core::ProjectInfo) -> Vec<
     out
 }
 
-/// 返回所有含 src/main/java/<old_pkg> 的后端模块名
+/// 返回所有含 src/main/java/<old_pkg> 的后端模块名（含 Cloud 嵌套叶子模块）
 fn template_modules_with_java(root: &Path, old_package: &str) -> Vec<String> {
     let old_rel = package_to_path(old_package);
-    // 扫描 root 下所有 ruoyi-* 或已重命名模块中含 java 源码的目录
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(root) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            if !e.path().is_dir() {
-                continue;
-            }
-            let java_old = e.path().join("src/main/java").join(&old_rel);
-            if java_old.is_dir() {
-                out.push(name);
-            }
-        }
-    }
-    out
+    let dummy = crate::core::ProjectInfo {
+        root_path: root.to_string_lossy().into(),
+        project_type: String::new(),
+        template_dir: String::new(),
+        backend_modules: vec![],
+        frontend_dirs: vec![],
+        config_files: vec![],
+        logback_files: vec![],
+        generator_template_files: vec![],
+        original_package: String::new(),
+        original_module_prefix: String::new(),
+        original_artifact_prefix: String::new(),
+        spring_boot_major: None,
+        confidence: crate::core::Confidence {
+            required_hit: 0,
+            required_total: 0,
+            optional_hit: vec![],
+            recognized: false,
+            missing_required: vec![],
+        },
+        detected_at: String::new(),
+    };
+    current_backend_modules(root, &dummy)
+        .into_iter()
+        .filter(|m| root.join(m).join("src/main/java").join(&old_rel).is_dir())
+        .collect()
 }
 
 /// 递归收集所有 pom.xml（排除目录内）
@@ -947,6 +1051,11 @@ where
     let result = crate::core::uniapp::generate_uniapp_project(&template_dir, &output_dir, params, &|msg| log(msg))?;
     r.created_files = result.files_created;
     r.modified_files = result.files_modified;
+    if crate::core::detector::is_cloud_layout(_root) {
+        if let Ok(n) = crate::core::uniapp::apply_cloud_overlay(&result.output_dir, params, &|msg| log(msg)) {
+            r.modified_files += n;
+        }
+    }
     Ok(())
 }
 
@@ -954,7 +1063,7 @@ where
 ///
 /// 模板目录走 core::paths 统一解析链：开发态源码目录优先，打包态回退随包资源目录。
 /// ui_template 决定取 templates/ruoyi-vue/ui/{ui_template} 哪个预置工程。
-fn do_replace_ui<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+fn do_replace_ui<F>(root: &Path, info: &crate::core::ProjectInfo, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
 where
     F: Fn(&str),
 {
@@ -965,8 +1074,23 @@ where
     };
     let template_dir =
         crate::core::paths::require_dir(&format!("templates/ruoyi-vue/ui/{ui_subdir}"), "后台 UI")?;
+    let overlay = if crate::core::detector::is_cloud_project(root, &info.template_dir) {
+        crate::core::paths::require_dir(
+            &format!("templates/ruoyi-vue/ui/{ui_subdir}/cloud-overlay"),
+            "Cloud UI overlay",
+        )
+        .ok()
+    } else {
+        None
+    };
     let output_dir = PathBuf::from(&params.output_dir);
-    let result = crate::core::replace_ui::generate_ui_project(&template_dir, &output_dir, params, &|msg| log(msg))?;
+    let result = crate::core::replace_ui::generate_ui_project(
+        &template_dir,
+        &output_dir,
+        params,
+        overlay.as_deref(),
+        &|msg| log(msg),
+    )?;
     r.created_files = result.files_created;
     r.modified_files = result.files_modified;
     Ok(())
@@ -977,6 +1101,11 @@ fn do_append_wechat_config<F>(root: &Path, params: &CustomizeParams, r: &mut Tas
 where
     F: Fn(&str),
 {
+    if crate::core::detector::is_cloud_layout(root) {
+        r.status = TaskStatus::Skipped;
+        r.message = "Cloud 微信/支付配置已由 Nacos 引擎写入 system 服务文本，跳过 admin yaml".into();
+        return Ok(());
+    }
     // 扫描 root 下 *-admin/src/main/resources
     let res_dir = {
         let mut found = None;
@@ -1138,8 +1267,178 @@ where
     Ok(())
 }
 
+fn do_rewrite_nacos_config<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    match crate::core::nacos_config::rewrite(root, params, &|msg| log(msg))? {
+        crate::core::nacos_config::NacosRewriteOutcome::Done {
+            path,
+            modified_entries,
+        } => {
+            r.modified_files = modified_entries;
+            r.message = format!("已改写 {}（{modified_entries} 条）", path.display());
+        }
+        crate::core::nacos_config::NacosRewriteOutcome::Skipped(msg) => {
+            r.status = TaskStatus::Skipped;
+            r.message = msg;
+        }
+    }
+    Ok(())
+}
+
+fn do_trim_cloud_modules<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let keys: Vec<String> = params
+        .remove_modules
+        .iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if keys.is_empty() {
+        r.status = TaskStatus::Skipped;
+        r.message = "未选择裁剪模块，跳过".into();
+        return Ok(());
+    }
+
+    // 1) 删目录：*-modules/*-{gen|job|file}；monitor → 整个 *-visual
+    for key in &keys {
+        if key == "monitor" {
+            if let Some(visual) = find_dir_by_suffix(root, "-visual") {
+                log(&format!("删除整个 visual：{}", visual.display()));
+                std::fs::remove_dir_all(&visual)
+                    .map_err(|e| format!("删除 {} 失败：{e}", visual.display()))?;
+                r.renamed_dirs += 1;
+            }
+        } else if let Some(dir) = find_nested_service_dir(root, key) {
+            log(&format!("删除模块目录：{}", dir.display()));
+            std::fs::remove_dir_all(&dir).map_err(|e| format!("删除 {} 失败：{e}", dir.display()))?;
+            r.renamed_dirs += 1;
+        }
+    }
+
+    // 2) 根 pom / modules pom 移除 <module>
+    r.modified_files += strip_pom_modules(root, &keys, log)?;
+
+    // 3) Nacos 条目 + 网关路由 + sentinel resource
+    r.modified_files += crate::core::nacos_config::trim_removed_modules(root, &keys, &|m| log(m))?;
+
+    // 4) 业务库 SQL：按菜单名删 sys_menu；裁 job 时联动 quartz
+    r.modified_files += trim_business_sql_menus(root, params, &keys, log)?;
+    Ok(())
+}
+
+fn find_dir_by_suffix(root: &Path, suffix: &str) -> Option<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return None;
+    };
+    entries.flatten().find_map(|e| {
+        let name = e.file_name().to_string_lossy().to_string();
+        (e.path().is_dir() && name.ends_with(suffix)).then_some(e.path())
+    })
+}
+
+fn find_nested_service_dir(root: &Path, leaf: &str) -> Option<PathBuf> {
+    let suffix = format!("-{leaf}");
+    if let Some(modules) = find_dir_by_suffix(root, "-modules") {
+        if let Ok(entries) = std::fs::read_dir(&modules) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if e.path().is_dir() && name.ends_with(&suffix) {
+                    return Some(e.path());
+                }
+            }
+        }
+    }
+    find_dir_by_suffix(root, &suffix)
+}
+
+fn strip_pom_modules(root: &Path, keys: &[String], log: &dyn Fn(&str)) -> Result<usize, String> {
+    let mut n = 0usize;
+    let mut poms = vec![root.join("pom.xml")];
+    if let Some(modules) = find_dir_by_suffix(root, "-modules") {
+        poms.push(modules.join("pom.xml"));
+    }
+    for pom in poms {
+        if !pom.is_file() {
+            continue;
+        }
+        let Some(content) = read_text(&pom) else {
+            continue;
+        };
+        let mut new_content = content.clone();
+        for key in keys {
+            if key == "monitor" {
+                new_content = strip_module_tag(&new_content, "visual");
+            } else {
+                new_content = strip_module_tag(&new_content, key);
+            }
+        }
+        if new_content != content {
+            std::fs::write(&pom, new_content).map_err(|e| format!("写入 {} 失败：{e}", pom.display()))?;
+            n += 1;
+            log(&format!("已从 {} 移除被裁模块", pom.display()));
+        }
+    }
+    Ok(n)
+}
+
+fn strip_module_tag(pom: &str, key: &str) -> String {
+    // 兼容官方多行 <module> 与单行聚合写法（改名后如 demo-gen）
+    let re = regex::Regex::new(&format!(
+        r"[ \t]*<module>[^<]*{key}[^<]*</module>[ \t]*\r?\n?"
+    ))
+    .unwrap();
+    re.replace_all(pom, "").to_string()
+}
+
+fn trim_business_sql_menus(
+    root: &Path,
+    params: &CustomizeParams,
+    keys: &[String],
+    log: &dyn Fn(&str),
+) -> Result<usize, String> {
+    let mut names: Vec<&str> = Vec::new();
+    let mut clean_job_quartz = false;
+    for k in keys {
+        match k.as_str() {
+            "gen" => names.extend(["代码生成", "代码生成器"]),
+            "job" => {
+                names.extend(["定时任务", "定时任务调度"]);
+                clean_job_quartz = true;
+            }
+            "file" => names.extend(["文件管理", "文件存储"]),
+            "monitor" => names.extend(["服务监控", "系统监控"]),
+            _ => {}
+        }
+    }
+    let mut modified = 0usize;
+    for sql in crate::core::security::collect_sql_files(root) {
+        let name = sql.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        if name.to_ascii_lowercase().starts_with("ry_config") {
+            continue; // 业务库脚本
+        }
+        let Some(content) = crate::utils::file::read_text(&sql) else {
+            continue;
+        };
+        let mut new_content = content.clone();
+        let removed = crate::core::sql_customize::remove_sys_menu_by_names(&mut new_content, &names);
+        if clean_job_quartz || params.clean_quartz {
+            crate::core::sql_customize::remove_quartz_blocks(&mut new_content);
+        }
+        if new_content != content {
+            std::fs::write(&sql, new_content).map_err(|e| format!("写入 {} 失败：{e}", sql.display()))?;
+            modified += 1;
+            log(&format!("业务库 SQL 裁剪菜单 {removed} 行：{}", sql.display()));
+        }
+    }
+    Ok(modified)
+}
+
 /// 12l. 生成 Nginx 反向代理配置到 output_dir/nginx/
-fn do_generate_nginx_config<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+fn do_generate_nginx_config<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
 where
     F: Fn(&str),
 {
@@ -1150,7 +1449,12 @@ where
             output_dir.display()
         ));
     }
-    let outcome = crate::core::nginx::generate_nginx_config(&output_dir, params, &|msg| log(msg))?;
+    let outcome = crate::core::nginx::generate_nginx_config(
+        &output_dir,
+        params,
+        crate::core::detector::is_cloud_layout(root),
+        &|msg| log(msg),
+    )?;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
@@ -1159,7 +1463,7 @@ where
 }
 
 /// 12m. 生成启动/停止脚本到 output_dir/scripts/
-fn do_generate_startup_scripts<F>(_root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+fn do_generate_startup_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
 where
     F: Fn(&str),
 {
@@ -1170,7 +1474,12 @@ where
             output_dir.display()
         ));
     }
-    let outcome = crate::core::scripts::generate_scripts(&output_dir, params, &|msg| log(msg))?;
+    let outcome = crate::core::scripts::generate_scripts(
+        &output_dir,
+        params,
+        crate::core::detector::is_cloud_layout(root),
+        &|msg| log(msg),
+    )?;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
@@ -1187,7 +1496,12 @@ fn do_generate_dev_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut Tas
 where
     F: Fn(&str),
 {
-    let outcome = crate::core::scripts::generate_dev_scripts(root, params, &|msg| log(msg))?;
+    let outcome = crate::core::scripts::generate_dev_scripts(
+        root,
+        params,
+        crate::core::detector::is_cloud_layout(root),
+        &|msg| log(msg),
+    )?;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
@@ -1218,7 +1532,12 @@ fn do_generate_build_scripts<F>(root: &Path, params: &CustomizeParams, r: &mut T
 where
     F: Fn(&str),
 {
-    let outcome = crate::core::scripts::generate_build_scripts(root, params, &|msg| log(msg))?;
+    let outcome = crate::core::scripts::generate_build_scripts(
+        root,
+        params,
+        crate::core::detector::is_cloud_layout(root),
+        &|msg| log(msg),
+    )?;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
         r.message = outcome.summary.join("；");
@@ -1291,6 +1610,16 @@ fn do_update_admin_pom_final_name<F>(root: &Path, params: &CustomizeParams, r: &
 where
     F: Fn(&str),
 {
+    if crate::core::detector::is_cloud_layout(root) {
+        let n = crate::core::scripts::set_cloud_service_final_names(root, params, &|msg| log(msg))?;
+        if n == 0 {
+            r.status = TaskStatus::Skipped;
+            r.message = "Cloud 无 admin；已改用多服务打包脚本，未写入 *-admin finalName".into();
+        } else {
+            r.modified_files = n;
+        }
+        return Ok(());
+    }
     let modified = crate::core::scripts::set_admin_pom_final_name(root, params, &|msg| log(msg))?;
     if modified {
         r.modified_files = 1;

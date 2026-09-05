@@ -53,8 +53,21 @@ pub fn customize_site_settings(
     }
 
     // 2. 后端管理接口 SiteSettingsController
-    if let Some(admin) = find_module_dir(root, params, "admin") {
-        match write_site_settings_controller(&admin, params) {
+    // Cloud：生成到 system（外部门户 /system/site/settings）；无 system → 明确 Err。
+    // 分离版 admin 路径完全不动。
+    if crate::core::detector::is_cloud_layout(root) {
+        let system = find_module_dir(root, params, "system")
+            .ok_or("Cloud 未找到 system 模块，无法生成 SiteSettingsController")?;
+        match write_site_settings_controller(&system, params, true) {
+            Ok(true) => {
+                created += 1;
+                summary.push("已生成管理接口 GET/PUT /system/site/settings（网关 StripPrefix 后 Controller 映射 /site/settings）".into());
+            }
+            Ok(false) => {}
+            Err(e) => return Err(e),
+        }
+    } else if let Some(admin) = find_module_dir(root, params, "admin") {
+        match write_site_settings_controller(&admin, params, false) {
             Ok(true) => {
                 created += 1;
                 summary.push("已生成管理接口 GET/PUT /site/settings（标题/Logo/ICP，保存即时生效）".into());
@@ -228,28 +241,142 @@ fn next_seed_id(content: &str, table: &str, floor: i64) -> i64 {
 // ---------- 2. SiteSettingsController 生成 ----------
 
 /// 生成站点设置管理接口。Ok(false) = 已存在跳过。
-fn write_site_settings_controller(admin: &Path, params: &CustomizeParams) -> Result<bool, String> {
-    let tmpl_path = crate::core::paths::require_file(
-        "templates/ruoyi-vue/java/SiteSettingsController.java.tmpl",
-        "SiteSettingsController",
-    )?;
-    let tmpl = std::fs::read_to_string(&tmpl_path)
-        .map_err(|e| format!("读取 SiteSettingsController 模板失败：{e}"))?;
-    let content = tmpl.replace("{{PACKAGE}}", &params.new_package);
-
+/// Vue：默认 tmpl + `web/controller/system`（成功路径不变）。
+/// Cloud：官方包 + `@RequiresPermissions` + `@Value` ICP 回退，路径 `system/controller`。
+fn write_site_settings_controller(
+    admin: &Path,
+    params: &CustomizeParams,
+    cloud: bool,
+) -> Result<bool, String> {
     let pkg_path = params.new_package.replace('.', "/");
-    let target = admin
-        .join("src/main/java")
-        .join(pkg_path)
-        .join("web/controller/system/SiteSettingsController.java");
+    let rel = if cloud {
+        "system/controller/SiteSettingsController.java"
+    } else {
+        "web/controller/system/SiteSettingsController.java"
+    };
+    let target = admin.join("src/main/java").join(&pkg_path).join(rel);
     if target.exists() {
         return Ok(false);
     }
+    let content = if cloud {
+        render_cloud_site_settings_controller(params)
+    } else {
+        let tmpl_path = crate::core::paths::require_file(
+            "templates/ruoyi-vue/java/SiteSettingsController.java.tmpl",
+            "SiteSettingsController",
+        )?;
+        let tmpl = std::fs::read_to_string(&tmpl_path)
+            .map_err(|e| format!("读取 SiteSettingsController 模板失败：{e}"))?;
+        tmpl.replace("{{PACKAGE}}", &params.new_package)
+    };
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败：{e}"))?;
     }
     std::fs::write(&target, content).map_err(|e| format!("写入 {} 失败：{e}", target.display()))?;
     Ok(true)
+}
+
+/// 官方 Cloud SysUserController 锚点（2026-09-05 master）：
+/// AjaxResult=`common.core.web.domain`，权限=`@RequiresPermissions`，无 RuoYiConfig。
+/// 映射仍为 `/site/settings`（外部门户 `/system/site/settings`）。
+fn render_cloud_site_settings_controller(params: &CustomizeParams) -> String {
+    let pkg = &params.new_package;
+    format!(
+        "package {pkg}.system.controller;\n\n\
+import java.util.HashMap;\n\
+import java.util.List;\n\
+import java.util.Map;\n\n\
+import org.springframework.beans.factory.annotation.Autowired;\n\
+import org.springframework.beans.factory.annotation.Value;\n\
+import org.springframework.web.bind.annotation.GetMapping;\n\
+import org.springframework.web.bind.annotation.PutMapping;\n\
+import org.springframework.web.bind.annotation.RequestBody;\n\
+import org.springframework.web.bind.annotation.RequestMapping;\n\
+import org.springframework.web.bind.annotation.RestController;\n\
+import {pkg}.common.core.utils.StringUtils;\n\
+import {pkg}.common.core.web.controller.BaseController;\n\
+import {pkg}.common.core.web.domain.AjaxResult;\n\
+import {pkg}.common.log.annotation.Log;\n\
+import {pkg}.common.log.enums.BusinessType;\n\
+import {pkg}.common.security.annotation.RequiresPermissions;\n\
+import {pkg}.system.domain.SysConfig;\n\
+import {pkg}.system.service.ISysConfigService;\n\n\
+/**\n\
+ * 站点设置（标题 / 后台Logo / ICP备案号）\n\
+ *\n\
+ * Cloud：网关 /system/** StripPrefix=1，本接口映射 /site/settings，\n\
+ * 外部门户 /system/site/settings。官方仓库无 RuoYiConfig，\n\
+ * ICP 空值回退 Nacos system 文本 ruoyi.icp。\n\
+ */\n\
+@RestController\n\
+@RequestMapping(\"/site/settings\")\n\
+public class SiteSettingsController extends BaseController\n\
+{{\n\
+    private static final String KEY_TITLE = \"sys.site.title\";\n\
+    private static final String KEY_LOGO = \"sys.site.logo\";\n\
+    private static final String KEY_ICP = \"sys.site.icp\";\n\n\
+    @Value(\"${{ruoyi.icp:}}\")\n\
+    private String icpFallback;\n\n\
+    @Autowired\n\
+    private ISysConfigService configService;\n\n\
+    @RequiresPermissions(\"site:settings:list\")\n\
+    @GetMapping\n\
+    public AjaxResult get()\n\
+    {{\n\
+        return AjaxResult.success(buildView());\n\
+    }}\n\n\
+    @RequiresPermissions(\"site:settings:edit\")\n\
+    @Log(title = \"站点设置\", businessType = BusinessType.UPDATE)\n\
+    @PutMapping\n\
+    public AjaxResult update(@RequestBody Map<String, String> body)\n\
+    {{\n\
+        saveConfig(KEY_TITLE, \"站点标题\", clamp(body.get(\"title\"), 50));\n\
+        saveConfig(KEY_LOGO, \"后台Logo\", clamp(body.get(\"logo\"), 500));\n\
+        saveConfig(KEY_ICP, \"ICP备案号\", clamp(body.get(\"icp\"), 100));\n\
+        return AjaxResult.success(buildView());\n\
+    }}\n\n\
+    private Map<String, Object> buildView()\n\
+    {{\n\
+        Map<String, Object> data = new HashMap<>();\n\
+        data.put(\"title\", configService.selectConfigByKey(KEY_TITLE));\n\
+        data.put(\"logo\", configService.selectConfigByKey(KEY_LOGO));\n\
+        String icp = configService.selectConfigByKey(KEY_ICP);\n\
+        data.put(\"icp\", StringUtils.isNotEmpty(icp) ? icp : icpFallback);\n\
+        return data;\n\
+    }}\n\n\
+    private String clamp(String value, int max)\n\
+    {{\n\
+        if (value == null)\n\
+        {{\n\
+            return \"\";\n\
+        }}\n\
+        value = value.trim();\n\
+        return value.length() > max ? value.substring(0, max) : value;\n\
+    }}\n\n\
+    private void saveConfig(String key, String name, String value)\n\
+    {{\n\
+        SysConfig query = new SysConfig();\n\
+        query.setConfigKey(key);\n\
+        List<SysConfig> exist = configService.selectConfigList(query);\n\
+        if (exist.isEmpty())\n\
+        {{\n\
+            SysConfig config = new SysConfig();\n\
+            config.setConfigName(name);\n\
+            config.setConfigKey(key);\n\
+            config.setConfigValue(value);\n\
+            config.setConfigType(\"Y\");\n\
+            config.setRemark(\"后台设置页面维护\");\n\
+            configService.insertConfig(config);\n\
+        }}\n\
+        else\n\
+        {{\n\
+            SysConfig config = exist.get(0);\n\
+            config.setConfigValue(value);\n\
+            configService.updateConfig(config);\n\
+        }}\n\
+    }}\n\
+}}\n"
+    )
 }
 
 // ---------- 3. 经典 ruoyi-ui 前端 ----------
@@ -574,7 +701,7 @@ mod tests {
             p.original_module_prefix = "ruoyi".into();
             p
         };
-        assert!(write_site_settings_controller(&admin, &params).unwrap());
+        assert!(write_site_settings_controller(&admin, &params, false).unwrap());
         let target = admin.join("src/main/java/com/example/demo/web/controller/system/SiteSettingsController.java");
         let content = std::fs::read_to_string(&target).unwrap();
         assert!(content.contains("package com.example.demo.web.controller.system;"), "{content}");
@@ -582,7 +709,7 @@ mod tests {
         assert!(content.contains("site:settings:edit"), "{content}");
         assert!(!content.contains("{{PACKAGE}}"), "占位符应被替换");
         // 幂等
-        assert!(!write_site_settings_controller(&admin, &params).unwrap());
+        assert!(!write_site_settings_controller(&admin, &params, false).unwrap());
     }
 
     // ---------- 经典前端补丁 ----------

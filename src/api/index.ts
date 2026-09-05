@@ -12,7 +12,11 @@ import type {
   TemplateInfo,
   ProjectInfo,
   ConfigIoResponse,
-  SubAgentsDescriptionResponse
+  SubAgentsDescriptionResponse,
+  DownloadOfficialResponse,
+  OfficialHost,
+  OfficialEdition,
+  OfficialBootMajor
 } from '@/types'
 
 /** 健康检查 */
@@ -34,6 +38,23 @@ export function detectProject(rootPath: string, template?: string): Promise<Dete
   return invoke<DetectResponse>('detect_project', {
     rootPath,
     template: template ?? null
+  })
+}
+
+/**
+ * 从官方仓库拉取 RuoYi-Vue / RuoYi-Cloud。
+ * Gitee：git 浅克隆，响应 source_type=directory；GitHub：archive zip。
+ * 进度通过 download:progress 事件推送 { received, total }（克隆时 total=0）。
+ */
+export function downloadOfficialArchive(
+  host: OfficialHost,
+  edition: OfficialEdition,
+  bootMajor: OfficialBootMajor
+): Promise<DownloadOfficialResponse> {
+  return invoke<DownloadOfficialResponse>('download_official_archive', {
+    host,
+    edition,
+    bootMajor
   })
 }
 

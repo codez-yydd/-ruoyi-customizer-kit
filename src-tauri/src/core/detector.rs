@@ -32,6 +32,9 @@ pub fn detect(project_root: &Path, template: &Template) -> ProjectInfo {
         .cloned()
         .collect();
     let recognized = missing_required.is_empty() && required_total > 0;
+    // 官方 Vue 后端仓无 ruoyi-ui 的 soft pass 不在这里做：
+    // detect.json 必备仍含 ruoyi-ui/package.json；soft pass 由 detect_auto 在 ruoyi-vue 候选上调用，
+    // 并用 Thymeleaf 模板目录区分单体，避免无 ui 的单体被当成 ruoyi-vue。
 
     // 2. 实际存在的模块 / 配置 / logback / generator 文件
     let backend_modules = existing_modules(project_root, &template.module, false);
@@ -124,6 +127,93 @@ fn extract_version_after(content: &str, tag: &str) -> Option<String> {
 /// 从版本号字符串取主版本号（如 "3.2.4" → 3）
 fn major_of(version: &str) -> Option<u32> {
     version.split('.').next()?.parse::<u32>().ok()
+}
+
+/// 官方核实 2026-09-05，来源：
+/// gitee.com/y_project/RuoYi-Cloud 、 github.com/yangzongzhuan/RuoYi-Cloud
+/// - master = Spring Boot 4.1.0 + SCA 2025.1.2 + java 17 + Nacos 3.x
+/// - springboot3 = Spring Boot 3.5.16 + SCA 2025.0.2 + java 17 + Nacos 3.x
+/// - springboot2 = Spring Boot 2.7.18 + SCA 2021.0.9 + java 1.8 + Nacos 2.x
+/// 根 pom 三档都有 `<spring-boot.version>`，复用 `detect_boot_major_version`；不做 Boot 升级。
+/// 最新官方后端仓库已不再内置 ruoyi-ui（前端拆到 RuoYi-Cloud-Vue2/Vue3）。
+pub fn is_cloud_template(template_dir: &str) -> bool {
+    template_dir == "ruoyi-cloud"
+}
+
+/// 按目录结构判断是否为 Cloud：根下存在 `*-gateway`，且存在 `*-modules` 或 `sql/ry_config*.sql`。
+/// Vue 分离版有 `*-admin`、无 gateway+modules 组合，不会误判。
+pub fn is_cloud_layout(root: &Path) -> bool {
+    has_dir_suffix(root, "-gateway") && (has_dir_suffix(root, "-modules") || find_ry_config_sql(root).is_some())
+}
+
+/// template_dir 或目录结构任一命中即视为 Cloud。
+pub fn is_cloud_project(root: &Path, template_dir: &str) -> bool {
+    is_cloud_template(template_dir) || is_cloud_layout(root)
+}
+
+fn has_dir_suffix(root: &Path, suffix: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        e.path().is_dir() && e.file_name().to_string_lossy().ends_with(suffix)
+    })
+}
+
+/// 查找 `sql/ry_config*.sql`（官方配置库脚本入口通配，核实 2026-09-05）。
+pub fn find_ry_config_sql(root: &Path) -> Option<PathBuf> {
+    let sql_dir = root.join("sql");
+    if !sql_dir.is_dir() {
+        return None;
+    }
+    let Ok(entries) = std::fs::read_dir(&sql_dir) else {
+        return None;
+    };
+    let mut hits: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.file_name()
+                    .map(|n| {
+                        let n = n.to_string_lossy().to_ascii_lowercase();
+                        n.starts_with("ry_config") && n.ends_with(".sql")
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+    hits.sort();
+    hits.into_iter().next()
+}
+
+/// 按叶子目录后缀定位模块（支持 Cloud 嵌套：`{prefix}-modules/{prefix}-system`）。
+/// `leaf_suffix` 如 `system` / `common-datasource` / `gateway`。
+pub fn find_module_by_leaf_suffix(root: &Path, modules: &[String], leaf_suffix: &str) -> Option<String> {
+    let want = format!("-{leaf_suffix}");
+    modules.iter().find(|m| {
+        let name = Path::new(m)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| m.replace('\\', "/").rsplit('/').next().unwrap_or(m).to_string());
+        (name.ends_with(&want) || name == leaf_suffix) && root.join(m).join("pom.xml").is_file()
+    }).cloned()
+}
+
+/// Cloud 可运行服务叶子后缀（gateway / auth / system / gen / job / file / monitor）。
+pub fn cloud_runnable_leaf_suffixes() -> &'static [&'static str] {
+    &["gateway", "auth", "system", "gen", "job", "file", "monitor"]
+}
+
+/// Cloud Mapper/Service 改造扫描目录：`*-modules/*-system` 与 `*-modules/*-job`。
+pub fn cloud_mp_scan_modules(root: &Path, modules: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(s) = find_module_by_leaf_suffix(root, modules, "system") {
+        out.push(s);
+    }
+    if let Some(j) = find_module_by_leaf_suffix(root, modules, "job") {
+        out.push(j);
+    }
+    out
 }
 
 /// 计算「存在的」模块清单。frontend=true 时取前端模块，否则取后端模块。
@@ -333,6 +423,62 @@ fn detect_from_root_pom_groupid(root: &Path) -> Option<String> {
     re.captures(&content).map(|c| c[1].to_string())
 }
 
+/// 判断缺失项是否「仅」为 ruoyi-ui（官方 RuoYi-Vue 后端仓拆仓后的情况）。
+/// 路径变体：`ruoyi-ui/package.json`、`ruoyi-ui`、`ruoyi-ui/`、反斜杠写法。
+pub fn is_only_ruoyi_ui_missing(missing: &[String]) -> bool {
+    !missing.is_empty() && missing.iter().all(|f| is_ruoyi_ui_required_path(f))
+}
+
+/// 是否为 ruoyi-ui 必备路径（含 package.json 及目录本身）。
+pub fn is_ruoyi_ui_required_path(path: &str) -> bool {
+    let n = path.replace('\\', "/");
+    let n = n.trim_end_matches('/');
+    n == "ruoyi-ui" || n == "ruoyi-ui/package.json" || n.starts_with("ruoyi-ui/")
+}
+
+/// 是否像 RuoYi 单体（Thymeleaf 内嵌前端）。
+/// 条件：`ruoyi-admin/src/main/resources/templates` 是目录，且其中存在任意 `.html`
+///（含 `index.html` / `login.html` / `main.html`，含子目录）。
+/// 官方 Vue 后端仓没有这套 Thymeleaf；单体测试骨架有 `templates/main.html`。
+pub fn looks_like_thymeleaf_monolith(root: &Path) -> bool {
+    let templates = root.join("ruoyi-admin/src/main/resources/templates");
+    templates.is_dir() && dir_contains_html(&templates)
+}
+
+fn dir_contains_html(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if dir_contains_html(&path) {
+                return true;
+            }
+        } else if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("html"))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// 官方 Vue 后端仓无 ruoyi-ui 时：若缺失项仅 ruoyi-ui，视为识别成功（soft pass）。
+/// 不改 detect.json 必备列表；`detector::detect` 本身不调用。
+/// 由 `detect_auto` 在 ruoyi-vue 候选上调用（自动识别与显式指定均走）；
+/// 调用方须先排除 Thymeleaf 单体，以免无 ui 的单体被当成 ruoyi-vue。
+pub fn apply_official_vue_ui_soft_pass(project: &mut ProjectInfo) {
+    if project.confidence.recognized {
+        return;
+    }
+    if is_only_ruoyi_ui_missing(&project.confidence.missing_required) {
+        project.confidence.recognized = true;
+    }
+}
+
 /// 判断目录名是否属于应排除的（资源/构建产物等），用于包路径扫描时跳过无关目录。
 fn is_excluded_dir_name(name: &std::ffi::OsStr) -> bool {
     let n = name.to_string_lossy();
@@ -387,5 +533,42 @@ mod tests {
         // 仅一段相同（com）不构成有效包名，回退到第一个
         let pkgs = vec!["com.foo".into(), "com.bar".into()];
         assert_eq!(common_package_prefix(&pkgs), "com.foo");
+    }
+
+    #[test]
+    fn ruoyi_ui_path_variants() {
+        assert!(is_ruoyi_ui_required_path("ruoyi-ui/package.json"));
+        assert!(is_ruoyi_ui_required_path("ruoyi-ui"));
+        assert!(is_ruoyi_ui_required_path("ruoyi-ui/"));
+        assert!(is_ruoyi_ui_required_path("ruoyi-ui\\package.json"));
+        assert!(!is_ruoyi_ui_required_path("ruoyi-admin/pom.xml"));
+        assert!(!is_ruoyi_ui_required_path("pom.xml"));
+    }
+
+    #[test]
+    fn only_ui_missing_requires_non_empty_and_all_ui() {
+        assert!(!is_only_ruoyi_ui_missing(&[]));
+        assert!(is_only_ruoyi_ui_missing(&["ruoyi-ui/package.json".into()]));
+        assert!(!is_only_ruoyi_ui_missing(&[
+            "ruoyi-ui/package.json".into(),
+            "pom.xml".into()
+        ]));
+    }
+
+    #[test]
+    fn thymeleaf_monolith_requires_html_under_admin_templates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert!(!looks_like_thymeleaf_monolith(root));
+
+        let tpl = root.join("ruoyi-admin/src/main/resources/templates");
+        std::fs::create_dir_all(&tpl).unwrap();
+        assert!(
+            !looks_like_thymeleaf_monolith(root),
+            "空 templates 目录不应判为 Thymeleaf 单体"
+        );
+
+        std::fs::write(tpl.join("main.html"), "<!DOCTYPE html><html></html>").unwrap();
+        assert!(looks_like_thymeleaf_monolith(root));
     }
 }

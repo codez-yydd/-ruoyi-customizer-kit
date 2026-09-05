@@ -1,0 +1,119 @@
+#!/bin/bash
+# {{PROJECT_NAME}} Cloud 一键打包脚本（Linux/macOS），由若依锻造台自动生成
+#
+# 产物统一汇总到项目根目录的 build/ 文件夹：
+#   build/
+#     ├── {{MODULE_PREFIX}}-gateway.jar
+#     ├── {{MODULE_PREFIX}}-auth.jar
+#     ├── {{MODULE_PREFIX}}-system.jar
+#     ├── {{MODULE_PREFIX}}-gen.jar / -job.jar / -file.jar / -monitor.jar（目录存在才收集）
+#     └── dist/                         前端构建产物（交由 Nginx 托管）
+#
+# Cloud 没有 *-admin.jar。找不到某个核心 jar 只警告，尽量继续。
+# 用法：./build.sh
+# 前端自动识别：vben monorepo 用 pnpm build:ele，产物在 apps/web-ele/dist
+
+set -e
+
+# 项目根目录（脚本所在目录）
+APP_HOME="$(cd "$(dirname "$0")" && pwd)"
+cd "$APP_HOME"
+
+# 强制 UTF-8，避免控制台 / 日志中文乱码
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -Dsun.jnu.encoding=UTF-8"
+
+FRONTEND_DIR="{{MODULE_PREFIX}}-ui"
+FRONTEND_DIST=""
+
+# ========== 1. 后端打包 ==========
+echo "========== Maven package =========="
+mvn clean package -DskipTests
+
+# ========== 2. 前端打包 ==========
+echo "========== Frontend build =========="
+if [ ! -d "$FRONTEND_DIR" ]; then
+  echo "⚠️  未找到前端目录 $FRONTEND_DIR，跳过前端构建"
+else
+  cd "$FRONTEND_DIR"
+  if [ -f "pnpm-workspace.yaml" ]; then
+    if ! command -v pnpm >/dev/null 2>&1; then
+      echo "❌ 未找到 pnpm，请先安装：npm install -g pnpm"
+      exit 1
+    fi
+    if [ ! -d "node_modules" ]; then
+      echo "---------- pnpm install ----------"
+      pnpm install
+    fi
+    echo "---------- pnpm run build:ele ----------"
+    pnpm run build:ele
+    FRONTEND_DIST="$APP_HOME/$FRONTEND_DIR/apps/web-ele/dist"
+  else
+    if [ ! -d "node_modules" ]; then
+      echo "---------- npm install ----------"
+      npm install
+    fi
+    npm run build:prod
+    FRONTEND_DIST="$APP_HOME/$FRONTEND_DIR/dist"
+  fi
+  cd "$APP_HOME"
+fi
+
+# ========== 3. 汇总产物到 build/ ==========
+echo "========== Assemble build/ =========="
+mkdir -p build
+
+# 按存在的目录收集 jar（跳过 .original）；裁掉的模块目录不存在则跳过
+copy_jar() {
+  local dir="$1"
+  local warn_if_missing="$2"
+  if [ ! -d "$dir" ]; then
+    if [ "$warn_if_missing" = "1" ]; then
+      echo "⚠️  未找到目录 $dir，跳过"
+    fi
+    return 0
+  fi
+  local leaf
+  leaf="$(basename "$dir")"
+  local jar=""
+  jar="$(ls "$dir/target"/${leaf}*.jar 2>/dev/null | grep -v "\.original$" | head -1 || true)"
+  if [ -z "$jar" ]; then
+    echo "⚠️  找不到 $dir/target/${leaf}*.jar，请确认已 mvn package"
+    return 0
+  fi
+  cp "$jar" build/
+  echo "✅ 已复制：build/$(basename "$jar")"
+}
+
+copy_jar "{{MODULE_PREFIX}}-gateway" 1
+copy_jar "{{MODULE_PREFIX}}-auth" 1
+if [ -d "./{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system" ]; then
+  copy_jar "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-system" 1
+else
+  copy_jar "{{MODULE_PREFIX}}-system" 1
+fi
+copy_jar "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-gen" 0
+copy_jar "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-job" 0
+copy_jar "{{MODULE_PREFIX}}-modules/{{MODULE_PREFIX}}-file" 0
+copy_jar "{{MODULE_PREFIX}}-visual/{{MODULE_PREFIX}}-monitor" 0
+
+# 前端 dist（兼容传统 ruoyi-ui 与 vben monorepo）
+if [ -z "$FRONTEND_DIST" ]; then
+  if [ -d "$FRONTEND_DIR/apps/web-ele/dist" ]; then
+    FRONTEND_DIST="$FRONTEND_DIR/apps/web-ele/dist"
+  elif [ -d "$FRONTEND_DIR/dist" ]; then
+    FRONTEND_DIST="$FRONTEND_DIR/dist"
+  fi
+fi
+if [ -n "$FRONTEND_DIST" ] && [ -d "$FRONTEND_DIST" ]; then
+  rm -rf build/dist
+  cp -r "$FRONTEND_DIST" build/dist
+  echo "✅ 已复制前端产物：build/dist"
+else
+  echo "⚠️  未找到前端 dist，跳过前端产物汇总"
+fi
+
+echo ""
+echo "🎉 打包完成！产物位于 build/ 目录"
+echo "导入业务库 + 配置库 SQL 后，请先启动 Nacos：http://127.0.0.1:8848/nacos/"

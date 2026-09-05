@@ -1,13 +1,14 @@
 // 集成测试：验证多版本项目识别 —— 单体版（RuoYi）与前后端分离版（RuoYi-Vue）的区分。
 //
-// 核心区分策略：两者后端模块几乎相同（ruoyi-admin/common/framework/system/quartz/generator），
-// 靠「是否存在独立前端目录 ruoyi-ui」区分：
+// 核心区分策略：两者后端模块几乎相同（ruoyi-admin/common/framework/system/quartz/generator）。
+// detect.json 仍以 ruoyi-ui/package.json 为 ruoyi-vue 必备；自动识别时：
 //   - 有 ruoyi-ui/package.json → RuoYi-Vue
-//   - 无 ruoyi-ui              → RuoYi（单体，Thymeleaf 内嵌前端）
+//   - 无 ruoyi-ui 且无 Thymeleaf templates/*.html → 官方拆仓 Vue，soft pass 为 ruoyi-vue
+//   - 无 ruoyi-ui 但有 ruoyi-admin/.../templates/*.html → RuoYi 单体
 //
-// 本测试验证 detect 层的模板匹配逻辑，不依赖 Tauri AppHandle（命令层 template_dir 回填
-// 在 project.rs 已用集成方式覆盖）。
+// 遍历走 detect_auto（与 GUI/CLI 同一路径），避免 detector::detect 与命令层双轨。
 
+use ruoyi_forge_lib::commands::project::detect_auto;
 use ruoyi_forge_lib::core::detector;
 use ruoyi_forge_lib::rules::template::{Template, TemplateSet};
 use std::fs;
@@ -147,26 +148,18 @@ fn write(path: PathBuf, content: impl AsRef<str>) {
     fs::write(path, content.as_ref()).unwrap();
 }
 
-// ========== 多模板遍历顺序测试（detect_project 命令核心逻辑的模拟） ==========
-//
-// detect_project 不传 template 时，会按优先级顺序遍历所有模板，取首个 recognized 的。
-// 由于该命令依赖 Tauri AppHandle 不便单测，这里模拟其核心遍历逻辑：
-// 按优先级排序模板 → 逐个 detect → 取首个 recognized。验证 Vue/单体项目各命中正确模板。
+// ========== 多模板遍历（与 detect_auto / GUI 自动识别同一路径） ==========
 
-/// 模拟 detect_project 的候选遍历：按优先级逐个尝试，返回首个 recognized 的 (模板名, ProjectInfo)。
-/// 复刻 commands/project.rs 的 sort + 遍历逻辑（不依赖 AppHandle）。
+/// 走 detect_auto（含官方 Vue 无 ui 的 soft pass + Thymeleaf 排除），返回首个识别成功的模板。
 fn detect_with_priority(
     root: &std::path::Path,
 ) -> Option<(String, ruoyi_forge_lib::core::ProjectInfo)> {
-    const PRIORITY: &[&str] = &["ruoyi-vue", "ruoyi", "ruoyi-cloud"];
-    for name in PRIORITY {
-        let template = load_template(name);
-        let info = detector::detect(root, &template);
-        if info.confidence.recognized {
-            return Some((name.to_string(), info));
-        }
+    let resp = detect_auto(root, None);
+    if !resp.success {
+        return None;
     }
-    None
+    let info = resp.project?;
+    Some((info.template_dir.clone(), info))
 }
 
 /// 构造一个最小可识别的 RuoYi-Vue 项目（有 ruoyi-ui）。
@@ -193,12 +186,25 @@ fn vue_project_hits_ruoyi_vue_not_ruoyi() {
 
 #[test]
 fn monolith_project_hits_ruoyi_not_ruoyi_vue() {
-    // 单体项目（无 ruoyi-ui）不满足 ruoyi-vue（缺 ruoyi-ui），应落到 ruoyi。
+    // 单体项目（无 ruoyi-ui，有 Thymeleaf）不得 soft pass 成 ruoyi-vue，应落到 ruoyi。
     let dir = build_fake_monolith();
     let (hit_name, info) = detect_with_priority(dir.path())
         .expect("单体项目应命中某个模板");
-    assert_eq!(hit_name, "ruoyi", "单体项目应命中 ruoyi（ruoyi-vue 因缺 ruoyi-ui 被跳过）");
+    assert_eq!(
+        hit_name, "ruoyi",
+        "单体项目应命中 ruoyi（Thymeleaf 阻止 ruoyi-vue soft pass）"
+    );
     assert_eq!(info.project_type, "RuoYi");
+}
+
+#[test]
+fn monolith_detect_auto_hits_ruoyi_not_ruoyi_vue() {
+    let dir = build_fake_monolith();
+    let resp = detect_auto(dir.path(), None);
+    assert!(resp.success, "单体 detect_auto 应成功：{}", resp.message);
+    let project = resp.project.expect("应返回 project");
+    assert_eq!(project.template_dir, "ruoyi");
+    assert_eq!(project.project_type, "RuoYi");
 }
 
 #[test]

@@ -32,12 +32,14 @@ pub fn customize_sql_scripts(
         });
     }
 
-    // 新库名：优先用 db_name，留空则用 new_module_prefix
-    let new_db = if params.db_name.is_empty() {
-        params.new_module_prefix.clone()
+    let is_cloud = crate::core::detector::is_cloud_layout(root);
+    // Cloud：空 db_name 保持 ry-cloud；Vue/单体：空则回落模块前缀
+    let new_db = if is_cloud {
+        crate::core::resolve_cloud_biz_db_name(params)
     } else {
-        params.db_name.clone()
+        crate::core::resolve_biz_db_name(params)
     };
+    let config_db = crate::core::resolve_config_db_name(params);
 
     // admin 密码哈希（若填了明文）
     let admin_hash = if params.admin_password.is_empty() {
@@ -59,8 +61,12 @@ pub fn customize_sql_scripts(
         let mut new_content = content;
         let mut changed = false;
 
-        // 库名替换（MySQL 走 CREATE DATABASE/USE；PostgreSQL 仅匹配 CREATE DATABASE）
-        let n = replace_db_name(&mut new_content, &new_db, params);
+        // 库名替换：Vue/单体保持 ry-vue+ry-cloud 单库语义；Cloud 双库（ry-cloud / ry-config）
+        let n = if is_cloud {
+            replace_cloud_db_names(&mut new_content, &new_db, &config_db)
+        } else {
+            replace_db_name(&mut new_content, &new_db, params)
+        };
         if n > 0 {
             changed = true;
             db_replaced_total += n;
@@ -111,6 +117,11 @@ pub fn customize_sql_scripts(
         } else {
             summary.push(format!("库名替换为「{}」（{} 处）", new_db, db_replaced_total));
         }
+    } else if is_cloud {
+        summary.push(format!(
+            "Cloud 双库：业务库「{}」、配置库「{}」（{} 处）",
+            new_db, config_db, db_replaced_total
+        ));
     } else {
         summary.push(format!("库名替换为「{}」（{} 处）", new_db, db_replaced_total));
     }
@@ -145,6 +156,59 @@ pub(crate) fn replace_db_name(content: &mut String, new_db: &str, params: &Custo
         // 用 ${1} ${3} 避免后跟字母时被误解析为命名捕获
         let replacement = format!("${{1}}{new_db}${{3}}");
         *content = re.replace_all(content, replacement).to_string();
+    }
+    count
+}
+
+/// Cloud 双库：`ry-cloud` → 业务库，`ry-config` → 配置库。
+/// 仅处理 CREATE DATABASE / USE / DROP DATABASE 语句级，jdbc url 由 nacos 引擎负责。
+/// Vue 路径不得调用本函数（`tests/new_features.rs` 单库语义必须保持）。
+pub(crate) fn replace_cloud_db_names(content: &mut String, biz_db: &str, config_db: &str) -> usize {
+    let mut total = 0usize;
+    // 目标仍是官方名时不改写，避免 ry-config→ry-config 被当成必须替换失败
+    if biz_db != "ry-cloud" && biz_db != "ry_cloud" {
+        let biz_re = regex::Regex::new(
+            r#"(?i)((?:create\s+database|use|drop\s+database)\s+`?)(ry[-_]cloud)(`?)"#,
+        )
+        .unwrap();
+        let n1 = biz_re.find_iter(content).count();
+        if n1 > 0 {
+            *content = biz_re
+                .replace_all(content, format!("${{1}}{biz_db}${{3}}").as_str())
+                .to_string();
+            total += n1;
+        }
+    }
+    if config_db != "ry-config" && config_db != "ry_config" {
+        let cfg_re = regex::Regex::new(
+            r#"(?i)((?:create\s+database|use|drop\s+database)\s+`?)(ry[-_]config)(`?)"#,
+        )
+        .unwrap();
+        let n2 = cfg_re.find_iter(content).count();
+        if n2 > 0 {
+            *content = cfg_re
+                .replace_all(content, format!("${{1}}{config_db}${{3}}").as_str())
+                .to_string();
+            total += n2;
+        }
+    }
+    total
+}
+
+/// 按菜单名锚点删除 sys_menu 行（Cloud 裁剪 gen/job 等）。复用行删除风格。
+pub(crate) fn remove_sys_menu_by_names(content: &mut String, names: &[&str]) -> usize {
+    if names.is_empty() {
+        return 0;
+    }
+    let escaped: Vec<String> = names.iter().map(|n| regex::escape(n)).collect();
+    let re = regex::Regex::new(&format!(
+        r#"(?im)^[ \t]*insert\s+into\s+sys_menu\b[^;]*'(?:{})'[^;]*;[ \t]*\r?\n?"#,
+        escaped.join("|")
+    ))
+    .unwrap();
+    let count = re.find_iter(content).count();
+    if count > 0 {
+        *content = re.replace_all(content, "").to_string();
     }
     count
 }
@@ -259,5 +323,40 @@ mod tests {
         assert!(content.contains("sys_user"));
         assert!(content.contains("sys_role"));
         assert!(!content.to_lowercase().contains("qrtz_"));
+    }
+
+    #[test]
+    fn vue_single_db_replaces_ry_cloud_and_skips_ry_config() {
+        let params = CustomizeParams::default();
+        let mut content =
+            "create database `ry-vue`;\ncreate database `ry-cloud`;\ncreate database `ry-config`;\n"
+                .to_string();
+        let n = replace_db_name(&mut content, "demo", &params);
+        assert_eq!(n, 2);
+        assert!(content.contains("`demo`"));
+        assert!(!content.contains("ry-vue"));
+        assert!(!content.contains("ry-cloud"));
+        assert!(content.contains("`ry-config`"), "Vue 单库不得改 ry-config");
+    }
+
+    #[test]
+    fn cloud_dual_db_replaces_ry_cloud_and_ry_config() {
+        let mut content = "CREATE DATABASE `ry-cloud`;\nUSE `ry-cloud`;\nCREATE DATABASE `ry-config`;\nUSE `ry-config`;\nDROP DATABASE `ry-config`;\n".to_string();
+        let n = replace_cloud_db_names(&mut content, "demo", "demo-config");
+        assert_eq!(n, 5);
+        assert!(content.contains("`demo`"));
+        assert!(content.contains("`demo-config`"));
+        assert!(!content.contains("ry-cloud"));
+        assert!(!content.contains("ry-config"));
+    }
+
+    #[test]
+    fn cloud_keeps_official_names_when_unchanged() {
+        let original =
+            "CREATE DATABASE `ry-cloud`;\nUSE `ry-cloud`;\nCREATE DATABASE `ry-config`;\nUSE `ry-config`;\n";
+        let mut content = original.to_string();
+        let n = replace_cloud_db_names(&mut content, "ry-cloud", "ry-config");
+        assert_eq!(n, 0, "目标仍是官方名时不应改写");
+        assert_eq!(content, original);
     }
 }

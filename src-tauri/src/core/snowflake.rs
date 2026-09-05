@@ -30,8 +30,16 @@ pub fn add_hutool_dependency(
         log("Hutool 依赖已存在，跳过");
         return Ok(false);
     }
-    // 候选模块优先级：common > framework > admin > 任意
-    let candidates = prioritize_modules(backend_modules);
+    // Cloud：hutool 加到 common-core；Vue：common > framework > admin
+    let candidates = if crate::core::detector::is_cloud_layout(root) {
+        if let Some(m) = crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "common-core") {
+            vec![m]
+        } else {
+            return Err("Cloud 未找到 ruoyi-common-core，无法添加 Hutool".into());
+        }
+    } else {
+        prioritize_modules(backend_modules)
+    };
     for module in &candidates {
         let pom = root.join(module).join("pom.xml");
         if !pom.is_file() {

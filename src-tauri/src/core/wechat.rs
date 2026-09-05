@@ -30,7 +30,15 @@ pub fn add_wechat_dependency(
         log("wechatpay-java 依赖已存在，跳过");
         return Ok(false);
     }
-    let candidates = prioritize_modules(backend_modules);
+    let candidates = if crate::core::detector::is_cloud_layout(root) {
+        if let Some(m) = crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "system") {
+            vec![m]
+        } else {
+            return Err("Cloud 未找到 system 模块，无法添加 wechatpay-java 依赖".into());
+        }
+    } else {
+        prioritize_modules(backend_modules)
+    };
     for module in &candidates {
         let pom = root.join(module).join("pom.xml");
         if !pom.is_file() {
@@ -76,17 +84,25 @@ pub fn add_wechat_config_class(
     backend_modules: &[String],
     log: &dyn Fn(&str),
 ) -> Result<usize, String> {
-    let admin = backend_modules
-        .iter()
-        .find(|m| m.ends_with("-admin"))
-        .or_else(|| backend_modules.first())
-        .ok_or("无后端模块可放置配置类")?;
+    let cloud = crate::core::detector::is_cloud_layout(root);
+    let admin = if cloud {
+        crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "system")
+            .ok_or("Cloud 未找到 system 模块，无法放置微信支付配置类")?
+    } else {
+        backend_modules
+            .iter()
+            .find(|m| m.ends_with("-admin"))
+            .or_else(|| backend_modules.first())
+            .cloned()
+            .ok_or("无后端模块可放置配置类")?
+    };
     let pkg_path = package_to_path(&params.new_package);
+    let pkg_suffix = if cloud { "system/config" } else { "framework/config" };
     let config_dir = root
-        .join(admin)
+        .join(&admin)
         .join("src/main/java")
         .join(&pkg_path)
-        .join("framework/config");
+        .join(pkg_suffix);
     std::fs::create_dir_all(&config_dir).map_err(|e| format!("创建目录失败：{e}"))?;
 
     let mut created = 0usize;
@@ -95,16 +111,30 @@ pub fn add_wechat_config_class(
 
     // 仅在文件不存在时生成（幂等）
     if !props_file.exists() {
-        std::fs::write(&props_file, render_wx_pay_properties(params))
+        let mut src = render_wx_pay_properties(params);
+        if cloud {
+            src = src.replace(
+                &format!("{}.framework.config", params.new_package),
+                &format!("{}.system.config", params.new_package),
+            );
+        }
+        std::fs::write(&props_file, src)
             .map_err(|e| format!("写入 WxPayProperties.java 失败：{e}"))?;
         created += 1;
-        log(&format!("已生成 {admin}/.../framework/config/WxPayProperties.java"));
+        log(&format!("已生成 {admin}/.../{pkg_suffix}/WxPayProperties.java"));
     }
     if !config_file.exists() {
-        std::fs::write(&config_file, render_wechat_pay_config(params))
+        let mut src = render_wechat_pay_config(params);
+        if cloud {
+            src = src.replace(
+                &format!("{}.framework.config", params.new_package),
+                &format!("{}.system.config", params.new_package),
+            );
+        }
+        std::fs::write(&config_file, src)
             .map_err(|e| format!("写入 WechatPayConfig.java 失败：{e}"))?;
         created += 1;
-        log(&format!("已生成 {admin}/.../framework/config/WechatPayConfig.java"));
+        log(&format!("已生成 {admin}/.../{pkg_suffix}/WechatPayConfig.java"));
     }
     Ok(created)
 }
@@ -119,12 +149,18 @@ pub fn create_cert_dir(
     backend_modules: &[String],
     log: &dyn Fn(&str),
 ) -> Result<bool, String> {
-    let admin = backend_modules
-        .iter()
-        .find(|m| m.ends_with("-admin"))
-        .or_else(|| backend_modules.first())
-        .ok_or("无后端模块可放置证书目录")?;
-    let cert_dir = root.join(admin).join("src/main/resources/cert");
+    let admin = if crate::core::detector::is_cloud_layout(root) {
+        crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "system")
+            .ok_or("Cloud 未找到 system 模块，无法放置证书目录")?
+    } else {
+        backend_modules
+            .iter()
+            .find(|m| m.ends_with("-admin"))
+            .or_else(|| backend_modules.first())
+            .cloned()
+            .ok_or("无后端模块可放置证书目录")?
+    };
+    let cert_dir = root.join(&admin).join("src/main/resources/cert");
     if cert_dir.exists() {
         log("cert 目录已存在，跳过");
         return Ok(false);
@@ -135,7 +171,7 @@ pub fn create_cert_dir(
     log(&format!("已创建 {admin}/src/main/resources/cert/"));
 
     // 追加 .gitignore 规则（幂等：已含标记则跳过）
-    append_gitignore(root, admin, log)?;
+    append_gitignore(root, &admin, log)?;
 
     Ok(true)
 }

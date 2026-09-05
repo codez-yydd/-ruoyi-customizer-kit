@@ -92,8 +92,10 @@ pub fn validate(
         }
     }
 
-    // 4. 配置三件套（仅在开启配置重构时校验）
-    if params.enable_config_rewrite {
+    let is_cloud = crate::core::detector::is_cloud_layout(root);
+
+    // 4. 配置三件套（仅在开启配置重构时校验；Cloud 走 Nacos，跳过 admin yaml）
+    if params.enable_config_rewrite && !is_cloud {
         if let Some(res) = find_resources_dir(root, template) {
             for f in ["application.yaml", "application-dev.yaml", "application-prod.yaml"] {
                 let p = res.join(f);
@@ -150,7 +152,7 @@ pub fn validate(
             items.push(check_mp_starter_matches_boot(root, major));
         }
     }
-    if params.enable_config_rewrite {
+    if params.enable_config_rewrite && !is_cloud {
         if let Some(major) = boot_major {
             if let Some(res) = find_resources_dir(root, template) {
                 items.push(check_redis_keys_match_boot(&res, major));
@@ -332,6 +334,178 @@ pub fn validate(
         items.extend(validate_postgresql(root, params, template, &scan));
     }
 
+    // 12. Cloud 失败级检查（官方核实 2026-09-05）
+    if is_cloud {
+        items.extend(validate_cloud(root, params, &scan));
+    }
+
+    items
+}
+
+/// Cloud：业务库+配置库脚本、bootstrap nacos 锚点、裁剪残留。
+fn validate_cloud(
+    root: &Path,
+    params: &crate::core::CustomizeParams,
+    scan: &crate::core::scanner::ScanResult,
+) -> Vec<CheckItem> {
+    let mut items = Vec::new();
+    let biz_db = crate::core::resolve_cloud_biz_db_name(params);
+    let cfg_db = crate::core::resolve_config_db_name(params);
+
+    let mut biz_sql = None;
+    let cfg_sql = crate::core::detector::find_ry_config_sql(root);
+    if let Ok(entries) = std::fs::read_dir(root.join("sql")) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+            if e.path().is_file()
+                && name.starts_with("ry_")
+                && name.ends_with(".sql")
+                && !name.starts_with("ry_config")
+                && !name.contains("seata")
+                && !name.contains("quartz")
+            {
+                biz_sql = Some(e.path());
+                break;
+            }
+        }
+    }
+
+    let (biz_ok, biz_msg) = match &biz_sql {
+        None => (false, "未找到业务库脚本 sql/ry_*.sql".into()),
+        Some(p) => {
+            let c = read_text_plain(p).unwrap_or_default();
+            if params.enable_sql_customize {
+                if biz_db == "ry-cloud" || biz_db == "ry_cloud" {
+                    if c.contains("ry-cloud") || c.contains("ry_cloud") {
+                        (true, "业务库脚本保持官方默认 ry-cloud".into())
+                    } else {
+                        (false, "业务库脚本缺少官方库名 ry-cloud".into())
+                    }
+                } else if c.contains(&biz_db) && !c.contains("`ry-cloud`") && !c.contains("ry-cloud") {
+                    (true, format!("业务库脚本已替换为 {biz_db}"))
+                } else {
+                    (false, format!("业务库脚本尚未将 ry-cloud 替换为 {biz_db}"))
+                }
+            } else {
+                (true, "业务库脚本存在（未开启 SQL 定制，不检查库名）".into())
+            }
+        }
+    };
+    items.push(CheckItem {
+        item: "Cloud 业务库脚本".into(),
+        result: if biz_ok { CheckResult::Pass } else { CheckResult::Fail },
+        message: biz_msg,
+    });
+
+    let (cfg_ok, cfg_msg) = match &cfg_sql {
+        None => (false, "未找到配置库脚本 sql/ry_config*.sql".into()),
+        Some(p) => {
+            let c = read_text_plain(p).unwrap_or_default();
+            if params.enable_sql_customize {
+                if cfg_db == "ry-config" || cfg_db == "ry_config" {
+                    if c.contains("ry-config") || c.contains("ry_config") {
+                        (true, "配置库脚本保持官方默认 ry-config".into())
+                    } else {
+                        (false, "配置库脚本缺少官方库名 ry-config".into())
+                    }
+                } else if c.contains(&cfg_db)
+                    && !c.contains("`ry-config`")
+                    && !c.contains("CREATE DATABASE `ry-config`")
+                {
+                    (true, format!("配置库脚本已替换为 {cfg_db}"))
+                } else {
+                    (false, format!("配置库脚本尚未将 ry-config 替换为 {cfg_db}"))
+                }
+            } else {
+                (true, "配置库脚本存在（未开启 SQL 定制，不检查库名）".into())
+            }
+        }
+    };
+    items.push(CheckItem {
+        item: "Cloud 配置库脚本".into(),
+        result: if cfg_ok { CheckResult::Pass } else { CheckResult::Fail },
+        message: cfg_msg,
+    });
+
+    // bootstrap：Boot2 shared-configs 或 Boot3/4 nacos: import（官方核实 2026-09-05）
+    let mut missing_nacos = Vec::new();
+    let mut checked = 0usize;
+    for p in &scan.text_files {
+        if p.file_name().map(|n| n == "bootstrap.yml" || n == "bootstrap.yaml").unwrap_or(false) {
+            checked += 1;
+            let c = read_text_plain(p).unwrap_or_default();
+            let ok = c.contains("shared-configs")
+                || c.contains("nacos:")
+                || c.contains("spring.cloud.nacos");
+            if !ok {
+                missing_nacos.push(p.to_string_lossy().to_string());
+            }
+        }
+    }
+    items.push(CheckItem {
+        item: "Cloud bootstrap Nacos 锚点".into(),
+        result: if checked == 0 {
+            CheckResult::Fail
+        } else if missing_nacos.is_empty() {
+            CheckResult::Pass
+        } else {
+            CheckResult::Fail
+        },
+        message: if checked == 0 {
+            "未找到 bootstrap.yml".into()
+        } else if missing_nacos.is_empty() {
+            format!("{checked} 个 bootstrap 仍含 nacos 锚点（shared-configs 或 nacos: import）")
+        } else {
+            format!("bootstrap 缺失 nacos 锚点：{}", missing_nacos.join("、"))
+        },
+    });
+
+    if !params.remove_modules.is_empty() {
+        let mut leftover = Vec::new();
+        for m in &params.remove_modules {
+            let key = m.trim().to_ascii_lowercase();
+            for p in &scan.text_files {
+                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                if name != "pom.xml" && !name.ends_with(".sql") {
+                    continue;
+                }
+                if let Some(c) = read_text_plain(p) {
+                    if key == "monitor" {
+                        if c.contains("ruoyi-visual") || c.contains("ruoyi-monitor") {
+                            leftover.push(p.to_string_lossy().to_string());
+                        }
+                    } else {
+                        let marker = format!("ruoyi-{key}");
+                        let renamed = format!("{}-{key}", params.new_module_prefix);
+                        if c.contains(&format!("<module>{marker}</module>"))
+                            || c.contains(&format!("<module>{renamed}</module>"))
+                            || (name.ends_with(".sql")
+                                && (c.contains(&format!("{marker}-"))
+                                    || c.contains(&format!("{renamed}-"))))
+                        {
+                            leftover.push(p.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+            leftover.sort();
+            leftover.dedup();
+        }
+        items.push(CheckItem {
+            item: "Cloud 裁剪模块残留".into(),
+            result: if leftover.is_empty() {
+                CheckResult::Pass
+            } else {
+                CheckResult::Fail
+            },
+            message: if leftover.is_empty() {
+                "被裁模块在 pom / Nacos 中无残留".into()
+            } else {
+                format!("{} 处仍有被裁模块残留", leftover.len())
+            },
+        });
+    }
+
     items
 }
 
@@ -486,6 +660,21 @@ fn collect_root_and_module_pom_texts(root: &Path) -> Vec<String> {
             }
             if let Some(c) = read_text_plain(&e.path().join("pom.xml")) {
                 out.push(c);
+            }
+            // Cloud 嵌套叶子：*-common/*-common-datasource 等
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.ends_with("-modules")
+                || name.ends_with("-common")
+                || name.ends_with("-visual")
+                || name.ends_with("-api")
+            {
+                if let Ok(children) = std::fs::read_dir(e.path()) {
+                    for c in children.flatten() {
+                        if let Some(txt) = read_text_plain(&c.path().join("pom.xml")) {
+                            out.push(txt);
+                        }
+                    }
+                }
             }
         }
     }

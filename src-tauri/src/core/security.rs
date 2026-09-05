@@ -112,7 +112,16 @@ pub fn apply_security_hardening(
             ));
             params.jwt_secret.clone()
         };
-        if customize_jwt_in_config(root, &secret, params.jwt_expire_minutes, log) {
+        if crate::core::detector::is_cloud_layout(root) {
+            if customize_jwt_in_cloud_constants(root, &secret, params.jwt_expire_minutes, log) {
+                modified += 1;
+                log("Cloud JWT 已写入 TokenConstants.SECRET 与 CacheConstants.EXPIRATION");
+            }
+            // 旧 fork 若 yaml 碰巧有 token.secret 也一并改
+            if customize_jwt_in_config(root, &secret, params.jwt_expire_minutes, log) {
+                modified += 1;
+            }
+        } else if customize_jwt_in_config(root, &secret, params.jwt_expire_minutes, log) {
             modified += 1;
             log("JWT 配置已写入 application.yaml");
         }
@@ -375,4 +384,61 @@ fn customize_jwt_in_config(
         }
     }
     changed
+}
+
+/// Cloud JWT 主路径：改 Java 常量（官方核实 2026-09-05）。
+/// - TokenConstants.SECRET（默认 abcdefghijklmnopqrstuvwxyz）
+/// - CacheConstants.EXPIRATION（默认 720 分钟）
+fn customize_jwt_in_cloud_constants(
+    root: &Path,
+    secret: &str,
+    expire_minutes: i32,
+    log: &dyn Fn(&str),
+) -> bool {
+    let mut changed = false;
+    if let Some(p) = find_java_by_name(root, "TokenConstants.java") {
+        if let Some(content) = read_text(&p) {
+            let re = regex::Regex::new(r#"(SECRET\s*=\s*")[^"]*(")"#).unwrap();
+            let new = re.replace(&content, format!("${{1}}{secret}${{2}}").as_str()).to_string();
+            if new != content {
+                let _ = std::fs::write(&p, new);
+                log(&format!("已更新 TokenConstants.SECRET：{}", p.display()));
+                changed = true;
+            }
+        }
+    }
+    if let Some(p) = find_java_by_name(root, "CacheConstants.java") {
+        if let Some(content) = read_text(&p) {
+            let re = regex::Regex::new(r"(EXPIRATION\s*=\s*)\d+").unwrap();
+            let new = re
+                .replace(&content, format!("${{1}}{expire_minutes}").as_str())
+                .to_string();
+            if new != content {
+                let _ = std::fs::write(&p, new);
+                log(&format!("已更新 CacheConstants.EXPIRATION：{}", p.display()));
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn find_java_by_name(root: &Path, file_name: &str) -> Option<std::path::PathBuf> {
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy().to_string();
+                !matches!(name.as_str(), "target" | "node_modules" | ".git" | ".idea" | "dist")
+            } else {
+                true
+            }
+        })
+        .flatten()
+    {
+        if entry.file_name().to_string_lossy() == file_name {
+            return Some(entry.path().to_path_buf());
+        }
+    }
+    None
 }

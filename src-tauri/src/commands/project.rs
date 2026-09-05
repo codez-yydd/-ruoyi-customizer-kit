@@ -57,6 +57,14 @@ pub fn detect_auto(root: &Path, template: Option<&str>) -> DetectResponse {
                 let mut project = detector::detect(root, &template);
                 // 记录命中的模板目录名，供 preview/execute 反查，消除主模板名硬编码
                 project.template_dir = tpl_name.clone();
+                // 官方 RuoYi-Vue 后端仓已无 ruoyi-ui：自动识别与显式指定均允许 soft pass，
+                // 但 Thymeleaf 单体（admin/templates/*.html）不得当成 ruoyi-vue。
+                if tpl_name == "ruoyi-vue"
+                    && detector::is_only_ruoyi_ui_missing(&project.confidence.missing_required)
+                    && !detector::looks_like_thymeleaf_monolith(root)
+                {
+                    detector::apply_official_vue_ui_soft_pass(&mut project);
+                }
                 let resp = build_detect_response(&project);
                 if resp.success {
                     return resp;
@@ -142,7 +150,15 @@ fn build_template(tpl_dir: &Path) -> Result<Template, String> {
 /// 由识别结果构造 DetectResponse（含友好消息）
 fn build_detect_response(project: &crate::core::ProjectInfo) -> DetectResponse {
     let message = if project.confidence.recognized {
-        format!("识别成功：{} 项目", project.project_type)
+        if detector::is_only_ruoyi_ui_missing(&project.confidence.missing_required) {
+            // 官方后端仓拆仓：识别成功，默认用预置模板生成前端
+            format!(
+                "识别成功：{} 项目。官方后端不含 ruoyi-ui，将使用预置后台模板生成前端",
+                project.project_type
+            )
+        } else {
+            format!("识别成功：{} 项目", project.project_type)
+        }
     } else if project.confidence.required_total == 0 {
         "模板未定义必备文件，无法判定项目类型".into()
     } else {
