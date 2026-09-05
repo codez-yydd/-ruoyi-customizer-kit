@@ -74,7 +74,7 @@
 
       <template #toolbar>
         <a-button
-          v-hasPermi="['monitor:operlog:remove']"
+          v-hasPermi="['monitor:operlog:remove', 'system:operlog:remove']"
           :disabled="multiple"
           status="danger"
           @click="handleDelete()"
@@ -82,12 +82,12 @@
           <template #icon><IconDelete /></template>
           {{ t('common.delete') }}
         </a-button>
-        <a-button v-hasPermi="['monitor:operlog:remove']" status="danger" @click="handleClean">
+        <a-button v-hasPermi="['monitor:operlog:remove', 'system:operlog:remove']" status="danger" @click="handleClean">
           <template #icon><IconDelete /></template>
           {{ t('common.clean') }}
         </a-button>
         <a-button
-          v-hasPermi="['monitor:operlog:export']"
+          v-hasPermi="['monitor:operlog:export', 'system:operlog:export']"
           :loading="exportLoading"
           @click="handleExportClick"
         >
@@ -120,7 +120,7 @@
       </template>
 
       <template #cell-operation="{ record }">
-        <a-link v-hasPermi="['monitor:operlog:query']" @click="openDetail(asLog(record))">
+        <a-link v-hasPermi="['monitor:operlog:query', 'system:operlog:query']" @click="openDetail(asLog(record))">
           {{ t('common.detail') }}
         </a-link>
       </template>

@@ -17,10 +17,25 @@ type LazyComponent = () => Promise<Component>
  */
 const pageModules = import.meta.glob('../views/**/*.vue')
 
-/** component 字符串 -> 懒加载组件；匹配不到时回退 404 并告警 */
+/**
+ * Cloud 官方日志菜单 component 为 system/operlog|logininfor，
+ * Arco 页面在 monitor/ 下；仅在原路径找不到时才走别名。
+ */
+const VIEW_ALIASES: Record<string, string> = {
+  'system/operlog/index': 'monitor/operlog/index',
+  'system/logininfor/index': 'monitor/logininfor/index'
+}
+
+/** component 字符串 -> 懒加载组件；匹配不到时按别名再找，仍没有则回退 404 并告警 */
 function loadView(component: string): LazyComponent {
   const key = `../views/${component}.vue`
-  const loader = pageModules[key]
+  let loader = pageModules[key]
+  if (!loader) {
+    const aliased = VIEW_ALIASES[component]
+    if (aliased) {
+      loader = pageModules[`../views/${aliased}.vue`]
+    }
+  }
   if (!loader) {
     console.warn(`[permission] 未找到页面组件: ${key}，已回退到 404 页面`)
     return () => import('../views/error/404.vue')

@@ -64,7 +64,7 @@
 
       <template #toolbar>
         <a-button
-          v-hasPermi="['monitor:logininfor:remove']"
+          v-hasPermi="['monitor:logininfor:remove', 'system:logininfor:remove']"
           :disabled="multiple"
           status="danger"
           @click="handleDelete()"
@@ -72,19 +72,19 @@
           <template #icon><IconDelete /></template>
           {{ t('common.delete') }}
         </a-button>
-        <a-button v-hasPermi="['monitor:logininfor:remove']" status="danger" @click="handleClean">
+        <a-button v-hasPermi="['monitor:logininfor:remove', 'system:logininfor:remove']" status="danger" @click="handleClean">
           <template #icon><IconDelete /></template>
           {{ t('common.clean') }}
         </a-button>
         <a-button
-          v-hasPermi="['monitor:logininfor:unlock']"
+          v-hasPermi="['monitor:logininfor:unlock', 'system:logininfor:unlock']"
           @click="openUnlock()"
         >
           <template #icon><IconUnlock /></template>
           {{ t('monitor.logininfor.unlock') }}
         </a-button>
         <a-button
-          v-hasPermi="['monitor:logininfor:export']"
+          v-hasPermi="['monitor:logininfor:export', 'system:logininfor:export']"
           :loading="exportLoading"
           @click="handleExportClick"
         >
@@ -100,13 +100,13 @@
       <template #cell-operation="{ record }">
         <a-space :size="4">
           <a-link
-            v-hasPermi="['monitor:logininfor:unlock']"
+            v-hasPermi="['monitor:logininfor:unlock', 'system:logininfor:unlock']"
             @click="handleUnlockUser(asLog(record).userName)"
           >
             {{ t('monitor.logininfor.unlock') }}
           </a-link>
           <a-link
-            v-hasPermi="['monitor:logininfor:remove']"
+            v-hasPermi="['monitor:logininfor:remove', 'system:logininfor:remove']"
             status="danger"
             @click="handleDelete(asLog(record).infoId)"
           >

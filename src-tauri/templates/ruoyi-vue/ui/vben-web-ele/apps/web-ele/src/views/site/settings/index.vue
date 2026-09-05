@@ -32,15 +32,21 @@ const rules = {
   icp: [{ max: 100, message: '备案号不能超过 100 个字符', trigger: 'blur' }],
 };
 
-/** Logo 预览地址：/profile/upload/... 需带接口前缀访问后端静态资源 */
+/** Logo 预览地址：相对路径拼接口前缀，完整 URL 原样使用 */
 const apiBaseUrl = import.meta.env.VITE_GLOB_API_URL || '/prod-api';
 const logoPreview = ref('');
+
+function resolveLogoSrc(path: string): string {
+  if (!path) return '';
+  if (/^(https?:)?\/\//.test(path) || path.startsWith('data:')) return path;
+  return `${apiBaseUrl}${path}`;
+}
 
 function applyForm(data?: SiteSettings) {
   form.title = data?.title || '';
   form.logo = data?.logo || '';
   form.icp = data?.icp || '';
-  logoPreview.value = form.logo ? `${apiBaseUrl}${form.logo}` : '';
+  logoPreview.value = form.logo ? resolveLogoSrc(form.logo) : '';
 }
 
 async function load() {
@@ -53,7 +59,7 @@ function applyRuntime(data?: SiteSettings) {
   const title = data?.title || import.meta.env.VITE_APP_TITLE || '';
   updatePreferences({
     app: { name: title },
-    logo: data?.logo ? { source: `${apiBaseUrl}${data.logo}` } : {},
+    logo: data?.logo ? { source: resolveLogoSrc(data.logo) } : {},
   });
 }
 
@@ -75,13 +81,13 @@ function handleReset() {
   load();
 }
 
-/** ElUpload 自定义上传：走若依 /common/upload，仅保留返回的相对路径 */
+/** ElUpload 自定义上传：由 uploadLogoApi 返回可回显的路径或完整 URL */
 async function requestUpload(options: { file: File }) {
   uploading.value = true;
   try {
     const fileName = await uploadLogoApi(options.file);
     form.logo = fileName;
-    logoPreview.value = `${apiBaseUrl}${fileName}`;
+    logoPreview.value = resolveLogoSrc(fileName);
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : 'Logo 上传失败');
   } finally {

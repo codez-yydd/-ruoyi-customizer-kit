@@ -25,23 +25,23 @@ export function updateSiteSettings(data: SiteSettings) {
 }
 
 /**
- * POST /common/upload —— 上传 Logo 图片
- * 若依字段名为 file，返回 {code, url, fileName}（无 data 字段），
- * 使用 rawResponse 保留 fileName，避免拦截器解包异常。
+ * POST /file/upload —— Cloud 官方文件服务
+ * body 为 { code, data: { name, url } }，取 data.url（缺省 data.name）作为 Logo 路径。
  */
 export async function uploadLogoApi(file: File): Promise<string> {
   const formData = new FormData();
   formData.append('file', file);
-  const resp = await requestClient.post<{ code?: number; fileName?: string }>(
-    '/system/common/upload',
-    formData,
-    {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      rawResponse: true,
-    },
-  );
-  if (resp?.code !== 200 || !resp.fileName) {
+  const resp = await requestClient.post<{
+    code?: number;
+    fileName?: string;
+    data?: { name?: string; url?: string };
+  }>('/file/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    rawResponse: true,
+  });
+  const url = resp?.data?.url || resp?.data?.name || resp?.fileName || '';
+  if (resp?.code !== 200 || !url) {
     throw new Error('Logo 上传失败');
   }
-  return resp.fileName;
+  return url;
 }

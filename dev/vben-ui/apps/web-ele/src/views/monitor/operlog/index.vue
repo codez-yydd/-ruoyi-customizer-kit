@@ -308,7 +308,7 @@ onMounted(getList);
         plain
         :icon="Delete"
         :disabled="multiple"
-        v-hasPermi="['monitor:operlog:remove']"
+        v-hasPermi="['monitor:operlog:remove', 'system:operlog:remove']"
         @click="handleDelete()"
       >
         删除
@@ -317,7 +317,7 @@ onMounted(getList);
         type="danger"
         plain
         :icon="Delete"
-        v-hasPermi="['monitor:operlog:remove']"
+        v-hasPermi="['monitor:operlog:remove', 'system:operlog:remove']"
         @click="handleClean"
       >
         清空
@@ -326,7 +326,7 @@ onMounted(getList);
         type="warning"
         plain
         :icon="Download"
-        v-hasPermi="['monitor:operlog:export']"
+        v-hasPermi="['monitor:operlog:export', 'system:operlog:export']"
         @click="handleExport"
       >
         导出
@@ -411,7 +411,7 @@ onMounted(getList);
             type="primary"
             size="small"
             :icon="View"
-            v-hasPermi="['monitor:operlog:query']"
+            v-hasPermi="['monitor:operlog:query', 'system:operlog:query']"
             @click="handleDetail(row)"
           >
             详细

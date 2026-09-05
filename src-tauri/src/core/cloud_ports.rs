@@ -131,6 +131,16 @@ pub fn rewrite_console_urls(sql: &str, params: &CustomizeParams) -> String {
     out
 }
 
+/// 替换 UI 时，把 Cloud 官方日志菜单 component 改到 Arco/vben 实际页面路径。
+/// 不改 perms（保持 system:operlog 与 Java 一致）。未替换 UI 时禁止改写，以免弄坏官方 ruoyi-ui。
+pub fn rewrite_cloud_ui_log_menu_components(sql: &str, params: &CustomizeParams) -> String {
+    if !params.enable_replace_ui {
+        return sql.to_string();
+    }
+    sql.replace("'system/operlog/index'", "'monitor/operlog/index'")
+        .replace("'system/logininfor/index'", "'monitor/logininfor/index'")
+}
+
 /// Cloud 项目：改各服务 bootstrap.yml 的 server.port，并改 sql/*.sql 控制台链接。
 /// 非 Cloud 直接返回。幂等。
 pub fn apply_cloud_ports(
@@ -200,7 +210,10 @@ fn apply_console_urls(
             Some(c) => c,
             None => continue,
         };
-        let new_content = rewrite_console_urls(&content, params);
+        let mut new_content = rewrite_console_urls(&content, params);
+        if params.enable_replace_ui {
+            new_content = rewrite_cloud_ui_log_menu_components(&new_content, params);
+        }
         if new_content != content {
             std::fs::write(&path, new_content)
                 .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
@@ -476,5 +489,49 @@ insert into sys_menu values ('118', 'http://localhost:8080/doc.html');\n";
         assert!(out.contains("http://127.0.0.1:8848/nacos"));
         assert!(!out.contains("localhost:8718"));
         assert!(!out.contains("localhost:8848"));
+    }
+
+    #[test]
+    fn rewrite_cloud_ui_log_menu_components_when_replace_ui() {
+        let mut p = base();
+        p.enable_replace_ui = true;
+        let sql = "\
+insert into sys_menu values ('system/operlog/index', 'system:operlog:list');\n\
+insert into sys_menu values ('system/logininfor/index', 'system:logininfor:list');\n";
+        let out = rewrite_cloud_ui_log_menu_components(sql, &p);
+        assert!(out.contains("'monitor/operlog/index'"), "{out}");
+        assert!(out.contains("'monitor/logininfor/index'"), "{out}");
+        assert!(!out.contains("'system/operlog/index'"));
+        assert!(!out.contains("'system/logininfor/index'"));
+        assert!(out.contains("system:operlog:list"));
+        assert!(out.contains("system:logininfor:list"));
+        let twice = rewrite_cloud_ui_log_menu_components(&out, &p);
+        assert_eq!(out, twice);
+    }
+
+    #[test]
+    fn rewrite_cloud_ui_log_menu_components_skipped_without_replace_ui() {
+        let p = base();
+        assert!(!p.enable_replace_ui);
+        let sql = "\
+insert into sys_menu values ('system/operlog/index', 'system:operlog:*');\n\
+insert into sys_menu values ('system/logininfor/index', 'system:logininfor:*');\n";
+        let out = rewrite_cloud_ui_log_menu_components(sql, &p);
+        assert_eq!(out, sql);
+        assert!(out.contains("'system/operlog/index'"));
+        assert!(out.contains("'system/logininfor/index'"));
+        assert!(!out.contains("'monitor/operlog/index'"));
+        assert!(!out.contains("'monitor/logininfor/index'"));
+    }
+
+    #[test]
+    fn console_url_rewrite_does_not_touch_log_components() {
+        let mut p = base();
+        p.enable_replace_ui = true;
+        let sql = "insert into sys_menu values ('system/operlog/index', 'http://localhost:8848/nacos');\n";
+        let out = rewrite_console_urls(sql, &p);
+        assert!(out.contains("'system/operlog/index'"));
+        assert!(!out.contains("'monitor/operlog/index'"));
+        assert!(out.contains("http://127.0.0.1:8848/nacos"));
     }
 }

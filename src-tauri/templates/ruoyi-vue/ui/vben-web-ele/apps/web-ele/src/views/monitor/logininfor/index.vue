@@ -257,7 +257,7 @@ onMounted(getList);
         plain
         :icon="Delete"
         :disabled="multiple"
-        v-hasPermi="['monitor:logininfor:remove']"
+        v-hasPermi="['monitor:logininfor:remove', 'system:logininfor:remove']"
         @click="handleDelete()"
       >
         删除
@@ -266,7 +266,7 @@ onMounted(getList);
         type="danger"
         plain
         :icon="Delete"
-        v-hasPermi="['monitor:logininfor:remove']"
+        v-hasPermi="['monitor:logininfor:remove', 'system:logininfor:remove']"
         @click="handleClean"
       >
         清空
@@ -276,7 +276,7 @@ onMounted(getList);
         plain
         :icon="Unlock"
         :disabled="single"
-        v-hasPermi="['monitor:logininfor:unlock']"
+        v-hasPermi="['monitor:logininfor:unlock', 'system:logininfor:unlock']"
         @click="handleUnlock"
       >
         解锁
@@ -285,7 +285,7 @@ onMounted(getList);
         type="warning"
         plain
         :icon="Download"
-        v-hasPermi="['monitor:logininfor:export']"
+        v-hasPermi="['monitor:logininfor:export', 'system:logininfor:export']"
         @click="handleExport"
       >
         导出

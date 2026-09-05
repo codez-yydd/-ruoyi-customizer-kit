@@ -147,12 +147,30 @@ const entries = [
   { titleKey: 'entryOperlogTitle', descKey: 'entryOperlogDesc', path: '/monitor/operlog', icon: 'log', tone: 'orange', permi: 'monitor:operlog:list' }
 ] satisfies DashEntry[]
 
-/** 无权限的入口不渲染 */
-const visibleEntries = computed(() => entries.filter((entry) => checkPermi([entry.permi])))
+/** 无权限的入口不渲染；操作日志同时认 Cloud 的 system:operlog:list */
+const visibleEntries = computed(() =>
+  entries.filter((entry) =>
+    entry.path === '/monitor/operlog'
+      ? checkPermi(['monitor:operlog:list', 'system:operlog:list'])
+      : checkPermi([entry.permi])
+  )
+)
+
+/** 动态菜单未注册时 vue-router 会命中 catch-all 404，push 不会 reject */
+function isRegisteredPath(target: string): boolean {
+  return router.resolve(target).matched.some((record) => record.name !== 'NotFound')
+}
 
 function goEntry(path: string): void {
-  // 动态菜单可能尚未包含目标路由，router.push 失败时容错提示
-  router.push(path).catch(() => {
+  let target = path
+  if (!isRegisteredPath(target) && path === '/monitor/operlog' && isRegisteredPath('/system/log/operlog')) {
+    target = '/system/log/operlog'
+  }
+  if (!isRegisteredPath(target)) {
+    Message.warning(t('dashboard.menuNotReady'))
+    return
+  }
+  router.push(target).catch(() => {
     Message.warning(t('dashboard.menuNotReady'))
   })
 }

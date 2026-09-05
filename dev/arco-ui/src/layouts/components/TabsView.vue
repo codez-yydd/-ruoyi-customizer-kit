@@ -7,7 +7,8 @@
           v-for="tab in tabs"
           :key="tab.path"
           trigger="contextMenu"
-          popup-container=".tabs-view"
+          align-point
+          position="bl"
           @select="(value: string | number | Record<string, string> | undefined) => onContextMenu(value, tab)"
         >
           <div
@@ -304,6 +305,7 @@ defineExpose({ includeNames })
   border-bottom: 1px solid var(--color-border);
   padding: 0 8px;
   gap: 4px;
+  overflow: visible;
 }
 
 .tabs-view :deep(.arco-scrollbar) {

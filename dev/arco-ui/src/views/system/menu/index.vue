@@ -66,8 +66,7 @@
         :loading="loading"
         :pagination="false"
         row-key="menuId"
-        :expanded-keys="expandedKeys"
-        @expanded-keys-change="onExpandedKeysChange"
+        v-model:expanded-keys="expandedKeys"
       >
         <template #columns>
           <a-table-column :title="t('system.menu.menuName')" :width="280">
@@ -210,7 +209,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, markRaw, nextTick, reactive, ref, shallowRef } from 'vue'
 import type { FieldRule, FormInstance, TableData, TreeFieldNames } from '@arco-design/web-vue'
 import type { TreeNodeKey } from '@arco-design/web-vue/es/tree/interface'
 import { Message, Modal } from '@arco-design/web-vue'
@@ -253,26 +252,39 @@ const queryParams = reactive<MenuQuery>({})
 /**
  * 平铺 -> 树结构兜底组装：
  * - 后端 /system/menu/list 实测返回平铺数组（children 恒为空数组，非树），
- *   仅当首项 children 非空时才视为后端已组装树并原样使用
+ *   仅当首项 children 非空时才视为后端已组装树；此时递归浅拷贝，不 mutate 入参
  * - 按 parentId 关联组装；父节点不在当前集合（按名称搜索后父被排除）时提升为根，
  *   保证搜索结果可见；空 children 清理掉，避免树表渲染空展开箭头
+ * - 每个节点浅拷贝后 markRaw，禁止写回原 list 项的 children，避免深层响应式脏检查
  */
+function cloneMenuNode(item: SysMenu): SysMenu {
+  const node: SysMenu = { ...item }
+  if (Array.isArray(item.children) && item.children.length > 0) {
+    node.children = item.children.map(cloneMenuNode)
+  } else {
+    delete node.children
+  }
+  return markRaw(node)
+}
+
 function buildMenuTree(list: SysMenu[]): SysMenu[] {
   if (list.length > 0 && Array.isArray(list[0].children) && list[0].children.length > 0) {
-    return list
+    return list.map(cloneMenuNode)
   }
   const nodeMap = new Map<number, SysMenu>()
   for (const item of list) {
-    item.children = []
-    nodeMap.set(item.menuId, item)
+    const node: SysMenu = { ...item }
+    node.children = []
+    nodeMap.set(item.menuId, markRaw(node))
   }
   const roots: SysMenu[] = []
   for (const item of list) {
+    const node = nodeMap.get(item.menuId)!
     const parent = item.parentId != null ? nodeMap.get(item.parentId) : undefined
-    if (parent && parent !== item) {
-      parent.children?.push(item)
+    if (parent && parent !== node) {
+      parent.children?.push(node)
     } else {
-      roots.push(item)
+      roots.push(node)
     }
   }
   const cleanup = (nodes: SysMenu[]): SysMenu[] => {
@@ -288,13 +300,15 @@ function buildMenuTree(list: SysMenu[]): SysMenu[] {
   return cleanup(roots)
 }
 
-const menuTree = computed<SysMenu[]>(() => buildMenuTree(rows.value))
+const menuTree = shallowRef<SysMenu[]>([])
 
 async function getList(): Promise<void> {
   loading.value = true
   try {
-    rows.value = (await listMenu({ ...queryParams })) ?? []
-    expandAll()
+    const list = (await listMenu({ ...queryParams })) ?? []
+    rows.value = list
+    menuTree.value = buildMenuTree(list)
+    expandFirstLevel()
   } finally {
     loading.value = false
   }
@@ -311,7 +325,22 @@ function asMenu(record: TableData): SysMenu {
 }
 
 /* ---------- 展开状态（受控） ---------- */
-const expandedKeys = ref<TreeNodeKey[]>([])
+const expandedKeys = shallowRef<TreeNodeKey[]>([])
+
+/** 默认只展目录层，避免 F 按钮行一次性铺开导致卡顿 */
+function collectFirstLevelExpandKeys(nodes: SysMenu[]): TreeNodeKey[] {
+  const keys: TreeNodeKey[] = []
+  for (const node of nodes) {
+    if (node.children && node.children.length > 0) {
+      keys.push(node.menuId)
+    }
+  }
+  return keys
+}
+
+function expandFirstLevel(): void {
+  expandedKeys.value = collectFirstLevelExpandKeys(menuTree.value)
+}
 
 /** 收集全部含子级的 menuId 作为展开键 */
 function collectExpandKeys(nodes: SysMenu[]): TreeNodeKey[] {
@@ -331,10 +360,6 @@ function expandAll(): void {
 
 function collapseAll(): void {
   expandedKeys.value = []
-}
-
-function onExpandedKeysChange(keys: TreeNodeKey[]): void {
-  expandedKeys.value = keys
 }
 
 /* ---------- 新增/编辑弹窗 ---------- */

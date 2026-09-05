@@ -66,8 +66,7 @@
         :loading="loading"
         :pagination="false"
         row-key="deptId"
-        :expanded-keys="expandedKeys"
-        @expanded-keys-change="onExpandedKeysChange"
+        v-model:expanded-keys="expandedKeys"
       >
         <template #columns>
           <a-table-column :title="t('system.dept.deptName')" data-index="deptName" :width="260" />
@@ -173,7 +172,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref } from 'vue'
+import { computed, markRaw, nextTick, reactive, ref, shallowRef } from 'vue'
 import type { FieldRule, FormInstance, TableData, TreeFieldNames } from '@arco-design/web-vue'
 import type { TreeNodeKey } from '@arco-design/web-vue/es/tree/interface'
 import { Message, Modal } from '@arco-design/web-vue'
@@ -223,26 +222,39 @@ const queryParams = reactive<DeptQuery>({})
 /**
  * 平铺 -> 树结构兜底组装：
  * - 后端 /system/dept/list 实测返回平铺数组（children 恒为空数组，非树），
- *   仅当首项 children 非空时才视为后端已组装树并原样使用
+ *   仅当首项 children 非空时才视为后端已组装树；此时递归浅拷贝，不 mutate 入参
  * - 按 parentId 关联组装；父节点不在当前集合（搜索过滤后父被排除）时提升为根，
  *   保证搜索结果可见；空 children 清理掉，避免树表渲染空展开箭头
+ * - 每个节点浅拷贝后 markRaw，禁止写回原 list 项的 children，避免深层响应式脏检查
  */
+function cloneDeptNode(item: SysDept): SysDept {
+  const node: SysDept = { ...item }
+  if (Array.isArray(item.children) && item.children.length > 0) {
+    node.children = item.children.map(cloneDeptNode)
+  } else {
+    delete node.children
+  }
+  return markRaw(node)
+}
+
 function buildDeptTree(list: SysDept[]): SysDept[] {
   if (list.length > 0 && Array.isArray(list[0].children) && list[0].children.length > 0) {
-    return list
+    return list.map(cloneDeptNode)
   }
   const nodeMap = new Map<number, SysDept>()
   for (const item of list) {
-    item.children = []
-    nodeMap.set(item.deptId, item)
+    const node: SysDept = { ...item }
+    node.children = []
+    nodeMap.set(item.deptId, markRaw(node))
   }
   const roots: SysDept[] = []
   for (const item of list) {
+    const node = nodeMap.get(item.deptId)!
     const parent = item.parentId != null ? nodeMap.get(item.parentId) : undefined
-    if (parent && parent !== item) {
-      parent.children?.push(item)
+    if (parent && parent !== node) {
+      parent.children?.push(node)
     } else {
-      roots.push(item)
+      roots.push(node)
     }
   }
   const cleanup = (nodes: SysDept[]): SysDept[] => {
@@ -258,13 +270,15 @@ function buildDeptTree(list: SysDept[]): SysDept[] {
   return cleanup(roots)
 }
 
-const deptTree = computed<SysDept[]>(() => buildDeptTree(rows.value))
+const deptTree = shallowRef<SysDept[]>([])
 
 async function getList(): Promise<void> {
   loading.value = true
   try {
-    rows.value = (await listDept({ ...queryParams })) ?? []
-    expandAll()
+    const list = (await listDept({ ...queryParams })) ?? []
+    rows.value = list
+    deptTree.value = buildDeptTree(list)
+    expandFirstLevel()
   } finally {
     loading.value = false
   }
@@ -281,7 +295,22 @@ function asDept(record: TableData): SysDept {
 }
 
 /* ---------- 展开状态（受控） ---------- */
-const expandedKeys = ref<TreeNodeKey[]>([])
+const expandedKeys = shallowRef<TreeNodeKey[]>([])
+
+/** 默认只展第一层有 children 的根节点，与菜单页对称，避免一次性铺开全部子行 */
+function collectFirstLevelExpandKeys(nodes: SysDept[]): TreeNodeKey[] {
+  const keys: TreeNodeKey[] = []
+  for (const node of nodes) {
+    if (node.children && node.children.length > 0) {
+      keys.push(node.deptId)
+    }
+  }
+  return keys
+}
+
+function expandFirstLevel(): void {
+  expandedKeys.value = collectFirstLevelExpandKeys(deptTree.value)
+}
 
 function collectExpandKeys(nodes: SysDept[]): TreeNodeKey[] {
   const keys: TreeNodeKey[] = []
@@ -300,10 +329,6 @@ function expandAll(): void {
 
 function collapseAll(): void {
   expandedKeys.value = []
-}
-
-function onExpandedKeysChange(keys: TreeNodeKey[]): void {
-  expandedKeys.value = keys
 }
 
 /* ---------- 新增/编辑弹窗 ---------- */

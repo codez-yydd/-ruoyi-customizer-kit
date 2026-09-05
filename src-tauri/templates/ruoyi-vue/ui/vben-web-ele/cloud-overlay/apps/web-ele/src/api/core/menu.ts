@@ -134,6 +134,15 @@ function toExternalRoutePath(url: string): string {
 }
 
 /**
+ * Cloud 官方日志菜单 component 为 system/operlog|logininfor，
+ * vben 页面在 monitor/ 下。已是 monitor/ 时映射为 no-op。
+ */
+const VIEW_COMPONENT_ALIASES: Record<string, string> = {
+  'system/operlog/index': 'monitor/operlog/index',
+  'system/logininfor/index': 'monitor/logininfor/index',
+};
+
+/**
  * 将若依菜单转换为 vben 的 RouteRecordStringComponent 结构。
  *
  * 核心转换：
@@ -163,6 +172,9 @@ function transformRuoYiMenu(
       mappedComponent = undefined;
     } else if (isInnerLink) {
       mappedComponent = 'IFrameView';
+    } else if (component) {
+      // Cloud 官方日志菜单 component 在 system/，vben 页面在 monitor/；已是 monitor/ 时为 no-op
+      mappedComponent = VIEW_COMPONENT_ALIASES[component] ?? component;
     }
 
     // query 解析（若依用 JSON 字符串，如 {"id": 1}）
