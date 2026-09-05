@@ -612,6 +612,34 @@ pub fn plan(
         });
     }
 
+    // 生成业务模块空骨架：Rename 之后前缀已改，Trim 之后裁剪完成，GenerateDevScripts 之前以便扫到 run-{name}
+    let new_mods = crate::core::new_module::normalize_new_module_names(&params.new_modules);
+    if !new_mods.is_empty() && info.template_dir != "ruoyi" {
+        let prefix = params.new_module_prefix.trim();
+        let mut created = Vec::new();
+        let mut dirs = Vec::new();
+        for name in &new_mods {
+            if is_cloud {
+                dirs.push(format!("{prefix}-modules/{prefix}-{name}"));
+                created.push(format!("{prefix}-modules/{prefix}-{name}/pom.xml"));
+            } else {
+                dirs.push(format!("{prefix}-{name}"));
+                created.push(format!("{prefix}-{name}/pom.xml"));
+            }
+        }
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: format!("生成业务模块：{}", new_mods.join("、")),
+            task_type: TaskType::GenerateNewModules,
+            risk_level: RiskLevel::High,
+            affected_files: vec![],
+            affected_dirs: dirs,
+            created_files: created,
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 管理员账号/昵称定制（可选，挂在 SQL 定制开关下）：
     // 修改 user_id=1 管理员种子行（账号/昵称），同步审计列、登录页预填、生成器模板。
     if params.enable_sql_customize && crate::core::admin_rename::needs_rename(params) {
@@ -839,6 +867,16 @@ pub fn plan(
             }
             files.push(format!("run-{suffix}.sh"));
             files.push(format!("run-{suffix}.bat"));
+        }
+        for name in crate::core::new_module::normalize_new_module_names(&params.new_modules) {
+            if removed.iter().any(|r| r == &name) {
+                continue;
+            }
+            if crate::core::detector::cloud_runnable_leaf_suffixes().contains(&name.as_str()) {
+                continue;
+            }
+            files.push(format!("run-{name}.sh"));
+            files.push(format!("run-{name}.bat"));
         }
         (
             "生成开发脚本（根 run.sh/run.bat/run.ps1 方向键勾选菜单，排除 run-ui；以及各模块 run-<suffix>.sh/.bat，按模块端口）".into(),

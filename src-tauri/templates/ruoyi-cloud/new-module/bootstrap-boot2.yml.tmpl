@@ -1,0 +1,22 @@
+# Tomcat
+# 官方核实 2026-09-06：RuoYi-Cloud springboot2 分支 ruoyi-modules/ruoyi-system/bootstrap.yml
+# 使用 shared-configs 加载 application-{profile}.yml；服务自身 {app}-{profile}.yml
+# 由 Nacos 默认 dataId（spring.application.name）加载。服务配置以 Nacos 为准，不写本地 datasource。
+server:
+  port: {{PORT}}
+
+# Spring
+spring:
+  application:
+    name: {{PREFIX}}-{{NAME}}
+  profiles:
+    active: dev
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+        file-extension: yml
+        shared-configs:
+          - application-${spring.profiles.active}.${spring.cloud.nacos.config.file-extension}

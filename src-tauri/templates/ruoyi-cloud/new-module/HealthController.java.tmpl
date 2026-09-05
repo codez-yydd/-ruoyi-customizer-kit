@@ -1,0 +1,22 @@
+package {{PACKAGE}}.{{PKG_SEGMENT}}.controller;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import {{PACKAGE}}.common.core.web.domain.AjaxResult;
+
+/**
+ * 新业务模块健康检查（空骨架）。
+ * 映射 GET /ping；经网关 StripPrefix=1 后外网路径为 /{{NAME}}/ping。
+ *
+ * AjaxResult Cloud 路径官方核实 2026-09-06：common.core.web.domain.AjaxResult
+ * （禁止 common.core.domain）。
+ */
+@RestController
+public class HealthController
+{
+    @GetMapping("/ping")
+    public AjaxResult ping()
+    {
+        return AjaxResult.success("pong");
+    }
+}

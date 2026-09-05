@@ -43,6 +43,7 @@ function isDisabled(feature: keyof CustomizeParams): boolean {
 }
 
 const isCloud = computed(() => templateDir.value === 'ruoyi-cloud')
+const isVue = computed(() => templateDir.value === 'ruoyi-vue')
 
 /** 源仓是否已有独立前端目录（无则可用预置模板生成 {prefix}-ui） */
 const hasSourceFrontend = computed(() => (projectInfo.value?.frontend_dirs?.length ?? 0) > 0)
@@ -63,6 +64,8 @@ function sanitizeDisabledFeatures() {
     for (const key of disabled) {
       if (key === 'db_type') {
         form.db_type = 'mysql'
+      } else if (key === 'new_modules') {
+        form.new_modules = []
       } else {
         ;(form[key] as unknown as boolean) = false
       }
@@ -145,6 +148,7 @@ const defaults = (): CustomizeParams => ({
   db_password: '',
   config_db_name: '',
   remove_modules: [] as string[],
+  new_modules: [] as string[],
   enable_cloud_custom_ports: false,
   cloud_port_auth: 0,
   cloud_port_system: 0,
@@ -204,6 +208,7 @@ if (typeof form.db_port !== 'number' || form.db_port === 0) {
 if (!form.db_username) form.db_username = 'root'
 if (form.db_password == null) form.db_password = ''
 if (!Array.isArray(form.remove_modules)) form.remove_modules = []
+if (!Array.isArray(form.new_modules)) form.new_modules = []
 if (form.enable_cloud_custom_ports == null) form.enable_cloud_custom_ports = false
 if (typeof form.cloud_port_auth !== 'number') form.cloud_port_auth = 0
 if (typeof form.cloud_port_system !== 'number') form.cloud_port_system = 0
@@ -267,6 +272,19 @@ const cloudPortPreview = computed(() => {
       }
     }
     rows.push({ suffix: mod.suffix, label: mod.label, port, auto })
+    idx += 1
+  }
+  const seen = new Set(rows.map((r) => r.suffix))
+  for (const raw of form.new_modules || []) {
+    const suffix = String(raw).trim().toLowerCase()
+    if (!suffix || isCloudModuleRemoved(suffix) || seen.has(suffix)) continue
+    seen.add(suffix)
+    rows.push({
+      suffix,
+      label: `${suffix} 新模块`,
+      port: form.server_port + idx,
+      auto: true
+    })
     idx += 1
   }
   return rows
@@ -392,8 +410,8 @@ const sectionCounts = computed(() => ({
     form.enable_uniapp
   ]),
   security: countTrue([form.enable_security, form.enable_sql_customize]),
-  cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0),
-  structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]),
+  cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0) + (Array.isArray(form.new_modules) ? form.new_modules.length : 0),
+  structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]) + (isVue.value && Array.isArray(form.new_modules) ? form.new_modules.length : 0),
   oss: countTrue([form.enable_oss]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
   deploy: countTrue([form.enable_nginx_config, form.enable_startup_scripts]),
@@ -1060,6 +1078,21 @@ function generateRandomSecret(): string {
                   </el-select>
                   <span class="inline-hint muted">不可裁 gateway / auth / system / common / api</span>
                 </el-form-item>
+                <el-form-item label="新增业务模块">
+                  <el-select
+                    v-model="form.new_modules"
+                    multiple
+                    filterable
+                    allow-create
+                    default-first-option
+                    collapse-tags
+                    collapse-tags-tooltip
+                    placeholder="输入短名后回车，如 order"
+                    style="width: 100%"
+                    @change="onSwitchChange"
+                  />
+                  <span class="inline-hint muted">生成可启动空骨架（pom / 启动类 / Health / Nacos / 网关），不生成业务 CRUD</span>
+                </el-form-item>
                 <el-form-item label="自定义模块端口">
                   <el-switch v-model="form.enable_cloud_custom_ports" @change="onSwitchChange" />
                   <span class="inline-hint muted">关闭时从网关端口起按 gateway → auth → system → gen → job → file → monitor 依次 +1，已裁剪模块不占号</span>
@@ -1084,7 +1117,7 @@ function generateRandomSecret(): string {
               </div>
               <div v-if="errors.cloud_ports" class="detail-tip" style="color: var(--el-color-danger)">{{ errors.cloud_ports }}</div>
               <div class="detail-tip muted">
-                没填新数据库名：业务库 ry-cloud、配置库 ry-config 都不改。填了：业务库用该名，配置库用 `{库名}-config`。业务库名在「安全 &amp; SQL」里。裁剪会删目录、根 pom、Nacos 条目、网关路由、相关菜单。开发时双击 run.bat 后用方向键选择、空格勾选、回车启动；默认全选（与下方「启动脚本」生成的 jar start/stop 不是同一套）。菜单按项目根 `run-*.bat` / `run-*.sh` 自动识别，排除 `run-ui`；新模块复制一份 `run-xxx.bat`（改模块路径）再跑根脚本即可。
+                没填新数据库名：业务库 ry-cloud、配置库 ry-config 都不改。填了：业务库用该名，配置库用 `{库名}-config`。业务库名在「安全 &amp; SQL」里。裁剪会删目录、根 pom、Nacos 条目、网关路由、相关菜单。开发时双击 run.bat 后用方向键选择、空格勾选、回车启动；默认全选（与下方「启动脚本」生成的 jar start/stop 不是同一套）。根菜单会自动识别已生成的 `run-{短名}.bat` / `run-{短名}.sh`（排除 `run-ui`），无需手抄。
               </div>
             </div>
           </el-collapse-item>
@@ -1104,6 +1137,24 @@ function generateRandomSecret(): string {
                 <div class="switch-item__hint muted">
                   {{ form.enable_frontend_split ? `前端将移至 ${form.new_module_prefix || 'demo'}-ui-frontend` : '前端目录拆出，与后端平级' }}
                 </div>
+              </div>
+              <div v-if="isVue" class="switch-item" style="grid-column: 1 / -1">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">新增业务模块</span>
+                </div>
+                <el-select
+                  v-model="form.new_modules"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  collapse-tags
+                  collapse-tags-tooltip
+                  placeholder="输入短名后回车，如 order"
+                  style="width: 100%; margin-top: 8px"
+                  @change="onSwitchChange"
+                />
+                <div class="switch-item__hint muted">生成 Maven 空骨架（pom / Health），由 admin 聚合启动；不生成业务 CRUD</div>
               </div>
               <div class="switch-item">
                 <div class="switch-item__head">

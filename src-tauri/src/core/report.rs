@@ -36,6 +36,23 @@ pub fn generate_report(
         None => "未识别".to_string(),
     };
     md.push_str(&format!("- Spring Boot 大版本：{}\n", boot_label));
+    let new_mods = crate::core::new_module::normalize_new_module_names(&params.new_modules);
+    if !new_mods.is_empty() {
+        md.push_str(&format!(
+            "- 新增业务模块（空骨架，不含 CRUD/SQL/菜单/feign）：{}\n",
+            new_mods.join("、")
+        ));
+        let ports = crate::core::cloud_ports::resolve_cloud_module_ports(params);
+        if crate::core::detector::is_cloud_template(&info.template_dir)
+            || crate::core::detector::is_cloud_layout(Path::new(&info.root_path))
+        {
+            let port_list: Vec<String> = ports
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect();
+            md.push_str(&format!("- Cloud 模块端口表：{}\n", port_list.join("、")));
+        }
+    }
 
     // 改造参数
     md.push_str("\n## 改造参数\n\n");

@@ -18,6 +18,7 @@ pub const CLOUD_RUNNABLE_ORDER: &[&str] = &["gateway", "auth", "system", "gen", 
 /// - gateway 永远 = `params.server_port`
 /// - 其余：开启自定义且该字段 > 0 用自定义，否则 `server_port + 当前已分配序号`（从 0 开始，gateway 占 0）
 /// - 被裁模块不占号，后面的模块紧排
+/// - 官方 7 后缀循环结束后，对 `params.new_modules` **继续 idx 紧排**（不要用官方空档 9204）
 pub fn resolve_cloud_module_ports(params: &CustomizeParams) -> BTreeMap<String, i32> {
     let removed = removed_set(params);
     let mut out = BTreeMap::new();
@@ -40,6 +41,34 @@ pub fn resolve_cloud_module_ports(params: &CustomizeParams) -> BTreeMap<String, 
         };
         out.insert((*suffix).to_string(), port);
         idx += 1;
+    }
+    for name in extra_new_module_suffixes(params) {
+        if out.contains_key(&name) {
+            continue;
+        }
+        out.insert(name, params.server_port + idx);
+        idx += 1;
+    }
+    out
+}
+
+/// 官方 7 后缀之外、经去重且未与 remove_modules 同名的 new_modules 短名（保持输入顺序）。
+pub fn extra_new_module_suffixes(params: &CustomizeParams) -> Vec<String> {
+    let removed = removed_set(params);
+    let official: HashSet<&str> = detector::cloud_runnable_leaf_suffixes()
+        .iter()
+        .copied()
+        .collect();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for raw in &params.new_modules {
+        let n = raw.trim().to_ascii_lowercase();
+        if n.is_empty() || removed.contains(&n) || official.contains(n.as_str()) {
+            continue;
+        }
+        if seen.insert(n.clone()) {
+            out.push(n);
+        }
     }
     out
 }
@@ -171,31 +200,55 @@ fn apply_bootstrap_ports(
         let Some(module) = detector::find_module_by_leaf_suffix(root, &dirs, suffix) else {
             continue;
         };
-        let resources = root.join(&module).join("src/main/resources");
-        let yml = resources.join("bootstrap.yml");
-        let yaml = resources.join("bootstrap.yaml");
-        let path = if yml.is_file() {
-            yml
-        } else if yaml.is_file() {
-            yaml
-        } else {
+        if apply_one_bootstrap(root, suffix, port, &module, log)? {
+            changed += 1;
+        }
+    }
+    for name in extra_new_module_suffixes(params) {
+        let Some(&port) = ports.get(&name) else {
             continue;
         };
-        let content = crate::utils::file::read_text(&path).ok_or_else(|| {
-            format!("读取 {} 失败（UTF-8/GBK 均无法识别）", path.display())
-        })?;
-        let new_content = upsert_yaml_server_port(&content, port);
-        if new_content != content {
-            std::fs::write(&path, new_content)
-                .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+        let Some(module) = detector::find_module_by_leaf_suffix(root, &dirs, &name) else {
+            continue;
+        };
+        if apply_one_bootstrap(root, &name, port, &module, log)? {
             changed += 1;
-            log(&format!(
-                "Cloud bootstrap 已写入 {suffix} server.port={port}：{}",
-                path.display()
-            ));
         }
     }
     Ok(changed)
+}
+
+fn apply_one_bootstrap(
+    root: &Path,
+    suffix: &str,
+    port: i32,
+    module: &str,
+    log: &dyn Fn(&str),
+) -> Result<bool, String> {
+    let resources = root.join(module).join("src/main/resources");
+    let yml = resources.join("bootstrap.yml");
+    let yaml = resources.join("bootstrap.yaml");
+    let path = if yml.is_file() {
+        yml
+    } else if yaml.is_file() {
+        yaml
+    } else {
+        return Ok(false);
+    };
+    let content = crate::utils::file::read_text(&path).ok_or_else(|| {
+        format!("读取 {} 失败（UTF-8/GBK 均无法识别）", path.display())
+    })?;
+    let new_content = upsert_yaml_server_port(&content, port);
+    if new_content != content {
+        std::fs::write(&path, new_content)
+            .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
+        log(&format!(
+            "Cloud bootstrap 已写入 {suffix} server.port={port}：{}",
+            path.display()
+        ));
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 fn apply_console_urls(
@@ -358,6 +411,30 @@ mod tests {
         assert_eq!(map.get("file"), Some(&8085));
         assert_eq!(map.get("monitor"), Some(&8086));
         assert_eq!(map.len(), 7);
+    }
+
+    #[test]
+    fn new_modules_continue_idx_after_official() {
+        let mut p = base();
+        p.new_modules = vec!["order".into(), "member".into(), "order".into()];
+        let map = resolve_cloud_module_ports(&p);
+        assert_eq!(map.get("monitor"), Some(&8086));
+        assert_eq!(map.get("order"), Some(&8087));
+        assert_eq!(map.get("member"), Some(&8088));
+        assert_eq!(map.len(), 9);
+        assert!(!map.values().any(|&p| p == 9204), "不要用官方空档 9204：{map:?}");
+    }
+
+    #[test]
+    fn new_modules_skip_removed_and_do_not_use_official_gap() {
+        let mut p = base();
+        p.remove_modules = vec!["gen".into(), "job".into()];
+        p.new_modules = vec!["order".into()];
+        let map = resolve_cloud_module_ports(&p);
+        assert!(map.get("gen").is_none());
+        assert_eq!(map.get("file"), Some(&8083));
+        assert_eq!(map.get("monitor"), Some(&8084));
+        assert_eq!(map.get("order"), Some(&8085));
     }
 
     #[test]

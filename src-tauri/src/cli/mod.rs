@@ -93,6 +93,7 @@ pub fn default_params() -> CustomizeParams {
         ui_template: "vben-web-ele".into(),
         config_db_name: String::new(),
         remove_modules: Vec::new(),
+        new_modules: Vec::new(),
         enable_cloud_custom_ports: false,
         cloud_port_auth: 0,
         cloud_port_system: 0,
@@ -679,6 +680,13 @@ mod tests {
         let mut p = default_params();
         let err = apply_set_list(&mut p, &["enable_uniapp=1".into()]).unwrap_err();
         assert!(err.contains("类型不符"), "{err}");
+    }
+
+    #[test]
+    fn apply_set_new_modules_json_array() {
+        let mut p = default_params();
+        apply_set_list(&mut p, &["new_modules=[\"order\",\"member\"]".into()]).unwrap();
+        assert_eq!(p.new_modules, vec!["order".to_string(), "member".to_string()]);
     }
 
     #[test]

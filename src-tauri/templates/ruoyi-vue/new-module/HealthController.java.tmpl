@@ -1,0 +1,22 @@
+package {{PACKAGE}}.{{PKG_SEGMENT}}.controller;
+
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RestController;
+import {{PACKAGE}}.common.core.domain.AjaxResult;
+
+/**
+ * 新业务模块健康检查（空骨架）。
+ * 映射 GET /ping。
+ *
+ * AjaxResult 分离版路径官方核实 2026-09-06：common.core.domain.AjaxResult
+ * （对照 templates/ruoyi-vue/java/WebInfoController.java.tmpl）。
+ */
+@RestController
+public class HealthController
+{
+    @GetMapping("/ping")
+    public AjaxResult ping()
+    {
+        return AjaxResult.success("pong");
+    }
+}

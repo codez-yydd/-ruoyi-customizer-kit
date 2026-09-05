@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <!-- 官方核实 2026-09-06：分离版 RuoYi-Vue（dev/ruoyi-backend/ruoyi-system/pom.xml）
+         parent 为根 ruoyi，依赖 ruoyi-common；业务模块由 ruoyi-admin 聚合启动（对照 quartz/generator）。 -->
+    <parent>
+        <groupId>{{PACKAGE}}</groupId>
+        <artifactId>{{PREFIX}}</artifactId>
+        <version>{{VERSION}}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>{{PREFIX}}-{{NAME}}</artifactId>
+
+    <description>
+        {{NAME}} 业务模块（空骨架，不含业务 CRUD）
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>{{PACKAGE}}</groupId>
+            <artifactId>{{PREFIX}}-common</artifactId>
+        </dependency>
+    </dependencies>
+</project>

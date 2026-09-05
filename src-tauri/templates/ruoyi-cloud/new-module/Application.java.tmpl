@@ -1,0 +1,25 @@
+package {{PACKAGE}}.{{PKG_SEGMENT}};
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+import {{PACKAGE}}.common.security.annotation.EnableCustomConfig;
+import {{PACKAGE}}.common.security.annotation.EnableRyFeignClients;
+
+/**
+ * {{CLASS_NAME}} 业务模块启动类（空骨架，不含业务 CRUD）。
+ *
+ * 官方核实 2026-09-06，来源 github.com/yangzongzhuan/RuoYi-Cloud master
+ * ruoyi-modules/ruoyi-system/src/main/java/com/ruoyi/system/RuoYiSystemApplication.java：
+ * 注解仅为 EnableCustomConfig + EnableRyFeignClients + SpringBootApplication，
+ * 不要加 EnableCustomSwagger2。
+ */
+@EnableCustomConfig
+@EnableRyFeignClients
+@SpringBootApplication
+public class {{CLASS_NAME}}Application
+{
+    public static void main(String[] args)
+    {
+        SpringApplication.run({{CLASS_NAME}}Application.class, args);
+    }
+}

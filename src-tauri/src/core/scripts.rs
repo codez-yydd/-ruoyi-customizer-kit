@@ -247,11 +247,31 @@ fn generate_cloud_module_run_scripts(
             log(&format!("模块 {suffix} 已裁剪，跳过 run-{suffix} 脚本"));
             continue;
         }
+        write_one_cloud_run_script(output_dir, params, template_dir, suffix, &dirs, log, created, summary)?;
+    }
+    for name in crate::core::cloud_ports::extra_new_module_suffixes(params) {
+        write_one_cloud_run_script(output_dir, params, template_dir, &name, &dirs, log, created, summary)?;
+    }
+    Ok(())
+}
+
+fn write_one_cloud_run_script(
+    output_dir: &Path,
+    params: &CustomizeParams,
+    template_dir: &Path,
+    suffix: &str,
+    dirs: &[String],
+    log: &dyn Fn(&str),
+    created: &mut usize,
+    summary: &mut Vec<String>,
+) -> Result<(), String> {
+    let sh_tmpl = template_dir.join("run-module.cloud.sh.tmpl");
+    let bat_tmpl = template_dir.join("run-module.cloud.bat.tmpl");
         let Some(service_dir) =
-            crate::core::detector::find_module_by_leaf_suffix(output_dir, &dirs, suffix)
+            crate::core::detector::find_module_by_leaf_suffix(output_dir, dirs, suffix)
         else {
             log(&format!("未找到 {suffix} 模块，跳过 run-{suffix} 脚本"));
-            continue;
+            return Ok(());
         };
 
         let service_dir_win = service_dir.replace('/', "\\");
@@ -291,7 +311,6 @@ fn generate_cloud_module_run_scripts(
             summary.push(out_name);
             log(&format!("已生成开发脚本：{}", out_path.display()));
         }
-    }
     Ok(())
 }
 
@@ -545,14 +564,19 @@ pub fn set_admin_pom_final_name(
 /// 不再查找 `*-admin`。
 pub fn set_cloud_service_final_names(
     root: &Path,
-    _params: &CustomizeParams,
+    params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<usize, String> {
     let mut n = 0usize;
     let dummy_modules = collect_pom_rel_dirs(root);
-    for suffix in crate::core::detector::cloud_runnable_leaf_suffixes() {
+    let mut suffixes: Vec<String> = crate::core::detector::cloud_runnable_leaf_suffixes()
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+    suffixes.extend(crate::core::cloud_ports::extra_new_module_suffixes(params));
+    for suffix in suffixes {
         let Some(module) =
-            crate::core::detector::find_module_by_leaf_suffix(root, &dummy_modules, suffix)
+            crate::core::detector::find_module_by_leaf_suffix(root, &dummy_modules, &suffix)
         else {
             continue;
         };

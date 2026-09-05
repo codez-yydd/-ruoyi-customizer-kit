@@ -26,6 +26,7 @@ pub mod site_settings;
 pub mod db_dialect;
 pub mod nacos_config;
 pub mod cloud_ports;
+pub mod new_module;
 pub mod pipeline;
 
 // 以下模块为后续阶段预留，本轮仅声明，避免范围过大
@@ -229,6 +230,10 @@ pub struct CustomizeParams {
     /// Cloud 裁剪微服务模块，合法值仅 gen / job / file / monitor
     #[serde(default)]
     pub remove_modules: Vec<String>,
+    /// 改造时新增业务模块短名（如 order / member）。空骨架，不含 CRUD / SQL / 菜单 / feign。
+    /// 单体 ruoyi 禁用；Cloud 落 {prefix}-modules/，分离版落根目录。
+    #[serde(default)]
+    pub new_modules: Vec<String>,
     /// 是否开启 Cloud 自定义模块端口（关闭则从网关端口起依次 +1）
     #[serde(default)]
     pub enable_cloud_custom_ports: bool,
@@ -399,6 +404,7 @@ impl Default for CustomizeParams {
             db_password: String::new(),
             config_db_name: String::new(),
             remove_modules: Vec::new(),
+            new_modules: Vec::new(),
             enable_cloud_custom_ports: false,
             cloud_port_auth: 0,
             cloud_port_system: 0,
@@ -499,6 +505,10 @@ impl CustomizeParams {
             }
         }
         if let Some(err) = validate_remove_modules(&self.remove_modules) {
+            return Some(err);
+        }
+        let mut new_mods = self.new_modules.clone();
+        if let Some(err) = crate::core::new_module::validate_new_modules(&mut new_mods, &self.remove_modules) {
             return Some(err);
         }
         if let Some(err) = crate::core::cloud_ports::validate_cloud_ports(self) {
@@ -888,5 +898,12 @@ mod tests {
         assert!(p.validate().is_some());
         p.remove_modules = vec!["file".into()];
         assert!(p.validate().is_none());
+        p.new_modules = vec!["1order".into()];
+        assert!(p.validate().is_some());
+        p.new_modules = vec!["order".into()];
+        assert!(p.validate().is_none());
+        p.remove_modules = vec!["gen".into()];
+        p.new_modules = vec!["gen".into()];
+        assert!(p.validate().unwrap().contains("冲突"));
     }
 }

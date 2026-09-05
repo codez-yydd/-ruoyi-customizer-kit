@@ -337,6 +337,8 @@ pub fn validate(
     // 12. Cloud 失败级检查（官方核实 2026-09-05）
     if is_cloud {
         items.extend(validate_cloud(root, params, &scan));
+    } else if !crate::core::new_module::normalize_new_module_names(&params.new_modules).is_empty() {
+        items.extend(validate_vue_new_modules(root, params));
     }
 
     items
@@ -577,7 +579,213 @@ fn validate_cloud(
         });
     }
 
+    let new_mods = crate::core::new_module::normalize_new_module_names(&params.new_modules);
+    if !new_mods.is_empty() {
+        items.extend(validate_generated_modules(root, params, &new_mods, true));
+    }
+
     items
+}
+
+/// 分离版新模块：目录、根 pom 声明、admin 依赖、HealthController（AjaxResult 走 common.core.domain）。
+fn validate_vue_new_modules(
+    root: &Path,
+    params: &crate::core::CustomizeParams,
+) -> Vec<CheckItem> {
+    let new_mods = crate::core::new_module::normalize_new_module_names(&params.new_modules);
+    if new_mods.is_empty() {
+        return Vec::new();
+    }
+    validate_generated_modules(root, params, &new_mods, false)
+}
+
+fn validate_generated_modules(
+    root: &Path,
+    params: &crate::core::CustomizeParams,
+    names: &[String],
+    is_cloud: bool,
+) -> Vec<CheckItem> {
+    let mut items = Vec::new();
+    let prefix = params.new_module_prefix.trim();
+    let root_pom = read_text_plain(&root.join("pom.xml")).unwrap_or_default();
+    let modules_pom = read_text_plain(&root.join(format!("{prefix}-modules/pom.xml"))).unwrap_or_default();
+    let admin_pom = read_text_plain(&root.join(format!("{prefix}-admin/pom.xml"))).unwrap_or_default();
+    let cfg_sql = crate::core::detector::find_ry_config_sql(root)
+        .and_then(|p| read_text_plain(&p));
+
+    for name in names {
+        let dir = if is_cloud {
+            root.join(format!("{prefix}-modules/{prefix}-{name}"))
+        } else {
+            root.join(format!("{prefix}-{name}"))
+        };
+        let module_tag = format!("<module>{prefix}-{name}</module>");
+        let health = dir
+            .join("src/main/java")
+            .join(crate::utils::path::package_to_path(&params.new_package))
+            .join(name.replace('-', ""))
+            .join("controller/HealthController.java");
+        let health_src = read_text_plain(&health).unwrap_or_default();
+
+        let mut missing = Vec::new();
+        if !dir.is_dir() {
+            missing.push("目录");
+        }
+        if is_cloud {
+            if !modules_pom.contains(&module_tag) {
+                missing.push("modules/pom.xml 声明");
+            }
+            if root_pom.contains(&module_tag) {
+                missing.push("根 pom 不应含叶子 module");
+            }
+            let data_id = format!("{prefix}-{name}-dev.yml");
+            let cfg_ok = cfg_sql.as_ref().is_some_and(|c| c.contains(&data_id));
+            if !cfg_ok {
+                missing.push("Nacos data_id");
+            }
+            let gw_ok = cfg_sql.as_ref().is_some_and(|c| {
+                c.contains(&format!("- id: {prefix}-{name}"))
+                    || c.contains(&format!("id: {prefix}-{name}"))
+            });
+            if !gw_ok {
+                missing.push("网关 - id:");
+            }
+            if !health.is_file() {
+                missing.push("HealthController");
+            } else if !health_src.contains("common.core.web.domain.AjaxResult") {
+                missing.push("Health AjaxResult 路径");
+            }
+            let boot = dir.join("src/main/resources/bootstrap.yml");
+            let boot_src = read_text_plain(&boot).unwrap_or_default();
+            let nacos_ok = boot_src.contains("shared-configs")
+                || boot_src.contains("nacos:")
+                || boot_src.contains("spring.cloud.nacos");
+            if !nacos_ok {
+                missing.push("bootstrap nacos 锚点");
+            }
+            let logback = dir.join("src/main/resources/logback.xml");
+            let logback_src = read_text_plain(&logback).unwrap_or_default();
+            if !logback.is_file() {
+                missing.push("logback.xml");
+            } else if !(logback_src.contains("log.path") && logback_src.contains("logs"))
+                && !logback_src.contains(r#"value="logs""#)
+            {
+                missing.push("logback log.path=logs");
+            }
+        } else {
+            if !root_pom.contains(&module_tag) {
+                missing.push("根 pom 声明");
+            }
+            if !admin_pom.contains(&format!("<artifactId>{prefix}-{name}</artifactId>")) {
+                missing.push("admin 依赖");
+            }
+            if !health.is_file() {
+                missing.push("HealthController");
+            } else if !health_src.contains("common.core.domain.AjaxResult") {
+                missing.push("Health AjaxResult 路径");
+            }
+        }
+
+        items.push(CheckItem {
+            item: format!("新业务模块 {name}"),
+            result: if missing.is_empty() {
+                CheckResult::Pass
+            } else {
+                CheckResult::Fail
+            },
+            message: if missing.is_empty() {
+                "空骨架目录 / pom / Health 已齐备".into()
+            } else {
+                format!("缺失：{}", missing.join("、"))
+            },
+        });
+
+        if is_cloud {
+            items.push(validate_new_module_gateway_whitelist(root, name));
+        }
+    }
+    items
+}
+
+/// Cloud 新模块：gateway yml 的 `security.ignore.whites` 须含 `/{name}/ping`。
+/// 找不到 gateway 条目则告警，不把整次校验打成失败。
+fn validate_new_module_gateway_whitelist(root: &Path, name: &str) -> CheckItem {
+    let ping = format!("/{name}/ping");
+    let item = format!("新模块 {name} 网关白名单");
+    let Some(sql_path) = crate::core::detector::find_ry_config_sql(root) else {
+        return CheckItem {
+            item,
+            result: CheckResult::Warn,
+            message: "未找到 ry_config SQL，无法校验网关白名单".into(),
+        };
+    };
+    let Ok(configs) = crate::core::nacos_config::parse_config_sql(&sql_path) else {
+        return CheckItem {
+            item,
+            result: CheckResult::Warn,
+            message: "ry_config SQL 无法解析，跳过网关白名单校验".into(),
+        };
+    };
+    let gateways: Vec<_> = configs
+        .iter()
+        .filter(|c| crate::core::nacos_config::is_gateway_yml(&c.data_id))
+        .collect();
+    if gateways.is_empty() {
+        return CheckItem {
+            item,
+            result: CheckResult::Warn,
+            message: "未找到 gateway yml 条目，跳过白名单校验".into(),
+        };
+    }
+    let missing: Vec<&str> = gateways
+        .iter()
+        .filter(|c| !yaml_whites_contain(&c.content, &ping))
+        .map(|c| c.data_id.as_str())
+        .collect();
+    if missing.is_empty() {
+        CheckItem {
+            item,
+            result: CheckResult::Pass,
+            message: format!("gateway whites 已含 {ping}"),
+        }
+    } else {
+        CheckItem {
+            item,
+            result: CheckResult::Fail,
+            message: format!("gateway whites 缺少 {ping}：{}", missing.join("、")),
+        }
+    }
+}
+
+fn yaml_whites_contain(yaml: &str, path: &str) -> bool {
+    let mut in_whites = false;
+    let mut whites_indent = 0usize;
+    for line in yaml.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if key == "whites" {
+            in_whites = true;
+            whites_indent = indent;
+            continue;
+        }
+        if in_whites {
+            if trimmed.starts_with('-') {
+                let item = trimmed.trim_start_matches('-').trim();
+                if item == path {
+                    return true;
+                }
+                continue;
+            }
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if indent <= whites_indent {
+                in_whites = false;
+            }
+        }
+    }
+    false
 }
 
 /// MyBatis-Plus jsqlparser 分页模块（失败级）。

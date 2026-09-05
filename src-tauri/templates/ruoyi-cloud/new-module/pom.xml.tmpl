@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <!-- 官方核实 2026-09-06：github.com/yangzongzhuan/RuoYi-Cloud springboot3 / master
+         ruoyi-modules/ruoyi-system/pom.xml 与 ruoyi-modules/ruoyi-gen/pom.xml
+         parent 均为 ruoyi-modules（二级聚合），不是根 pom；根 pom 只声明 ruoyi-modules 目录。
+         common-security 只依赖 spring-webmvc，没有嵌入式 Tomcat；官方 system/gen/job 靠
+         common-swagger 引入嵌入式 Tomcat；file 直接声明 starter-web；空骨架两者都写，
+         避免只有 common-security 的 spring-webmvc。否则 Boot 判定为 servlet web app 却无
+         ServletWebServerFactory，无法启动。
+         依赖精简到可编译启动：nacos discovery/config、actuator、starter-web、common-swagger、
+         mysql、common-security（启动类注解）。 -->
+    <parent>
+        <groupId>{{PACKAGE}}</groupId>
+        <artifactId>{{PREFIX}}-modules</artifactId>
+        <version>{{VERSION}}</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>{{PREFIX}}-{{NAME}}</artifactId>
+
+    <description>
+        {{NAME}} 业务模块（空骨架，不含业务 CRUD）
+    </description>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>{{PACKAGE}}</groupId>
+            <artifactId>{{PREFIX}}-common-swagger</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>{{MYSQL_GROUP}}</groupId>
+            <artifactId>{{MYSQL_ARTIFACT}}</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>{{PACKAGE}}</groupId>
+            <artifactId>{{PREFIX}}-common-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>{{PACKAGE}}</groupId>
+            <artifactId>{{PREFIX}}-common-log</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

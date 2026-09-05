@@ -661,3 +661,285 @@ fn cloud_boot4_full_pipeline() {
 fn cloud_boot4_trim_gen_job() {
     run_cloud(false, true);
 }
+
+#[test]
+fn cloud_boot4_new_module_order() {
+    let dir = build_cloud_fixture(false);
+    let root = dir.path();
+    let template = load_cloud_template();
+    let mut info = detector::detect(root, &template);
+    info.template_dir = "ruoyi-cloud".into();
+    let mut params = cloud_params(root, false);
+    params.new_modules = vec!["order".into()];
+
+    let tasks = planner::plan(&info, &params, &template);
+    assert!(
+        tasks.iter().any(|t| t.task_type == TaskType::GenerateNewModules),
+        "应规划生成业务模块"
+    );
+    let gen_idx = tasks
+        .iter()
+        .position(|t| t.task_type == TaskType::GenerateNewModules)
+        .unwrap();
+    let rename_idx = tasks
+        .iter()
+        .position(|t| t.task_type == TaskType::RenameMavenModule)
+        .unwrap();
+    let dev_idx = tasks
+        .iter()
+        .position(|t| t.task_type == TaskType::GenerateDevScripts)
+        .unwrap();
+    assert!(rename_idx < gen_idx && gen_idx < dev_idx, "插入顺序应为 Rename < GenerateNewModules < GenerateDevScripts");
+
+    let results = execute_all(root, &info, &tasks, &params, &template, |_| {});
+    for r in &results {
+        if matches!(r.status, TaskStatus::Failed) {
+            panic!("任务 {} 失败：{}", r.task_name, r.message);
+        }
+    }
+
+    assert!(
+        root.join("demo-modules/demo-order").is_dir(),
+        "应生成 demo-modules/demo-order"
+    );
+    let app = root.join(
+        "demo-modules/demo-order/src/main/java/com/company/project/order/OrderApplication.java",
+    );
+    assert!(app.is_file(), "应有启动类：{}", app.display());
+    let app_src = fs::read_to_string(&app).unwrap();
+    assert!(app_src.contains("@EnableCustomConfig"), "{app_src}");
+    assert!(app_src.contains("@EnableRyFeignClients"), "{app_src}");
+    assert!(!app_src.contains("@EnableCustomSwagger2"), "{app_src}");
+
+    let cfg = fs::read_to_string(root.join("sql/ry_config_20260905.sql")).unwrap();
+    assert!(
+        cfg.contains("demo-order-dev.yml"),
+        "Nacos 应有 demo-order-dev.yml：{cfg}"
+    );
+    assert!(
+        cfg.contains("jdbc:mysql"),
+        "ry_config SQL 须含 jdbc:mysql"
+    );
+    assert!(
+        !cfg.contains("demo-order-prod.yml"),
+        "不应无中生有写 prod：{cfg}"
+    );
+    assert!(
+        cfg.contains("Path=/order/**"),
+        "网关应有 Path=/order/**：{cfg}"
+    );
+    assert!(
+        cfg.contains("StripPrefix=1"),
+        "网关新路由须含 StripPrefix=1：{cfg}"
+    );
+    assert!(
+        cfg.contains("/order/ping"),
+        "Nacos/gateway 应含 /order/ping 白名单：{cfg}"
+    );
+    let configs = ruoyi_forge_lib::core::nacos_config::parse_config_sql(
+        &root.join("sql/ry_config_20260905.sql"),
+    )
+    .expect("应能解析改写后的 ry_config SQL");
+    let gw = configs
+        .iter()
+        .find(|c| ruoyi_forge_lib::core::nacos_config::is_gateway_yml(&c.data_id))
+        .expect("应有 gateway yml");
+    let whites = gateway_whitelist_paths(&gw.content);
+    assert!(
+        whites.iter().any(|p| p == "/order/ping"),
+        "whites 应含 /order/ping：{whites:?}\n{}",
+        gw.content
+    );
+    assert!(
+        !whites.iter().any(|p| p == "/order/**"),
+        "whites 不得整段放行 /order/**：{whites:?}\n{}",
+        gw.content
+    );
+    assert!(
+        gw.content.contains("Path=/order/**"),
+        "路由 Path=/order/** 仍须保留：{}",
+        gw.content
+    );
+
+    let ports = ruoyi_forge_lib::core::cloud_ports::resolve_cloud_module_ports(&params);
+    assert_eq!(ports.get("order"), Some(&8087), "未裁剪时 order 应从 8087 起：{ports:?}");
+
+    assert!(root.join("run-order.sh").is_file(), "应生成 run-order.sh");
+    assert!(root.join("run-order.bat").is_file(), "应生成 run-order.bat");
+
+    let modules_pom = fs::read_to_string(root.join("demo-modules/pom.xml")).unwrap();
+    assert!(
+        modules_pom.contains("<module>demo-order</module>"),
+        "二级聚合应声明 demo-order：{modules_pom}"
+    );
+    let root_pom = fs::read_to_string(root.join("pom.xml")).unwrap();
+    assert!(
+        !root_pom.contains("<module>demo-order</module>"),
+        "根 pom 不应声明 Cloud 叶子：{root_pom}"
+    );
+
+    let health = root.join(
+        "demo-modules/demo-order/src/main/java/com/company/project/order/controller/HealthController.java",
+    );
+    let health_src = fs::read_to_string(&health).unwrap();
+    assert!(
+        health_src.contains("common.core.web.domain.AjaxResult"),
+        "Cloud Health 须用 common.core.web.domain.AjaxResult：{health_src}"
+    );
+    assert!(!health_src.contains("common.core.domain.AjaxResult"));
+
+    let boot = fs::read_to_string(
+        root.join("demo-modules/demo-order/src/main/resources/bootstrap.yml"),
+    )
+    .unwrap();
+    assert!(boot.contains("127.0.0.1:8848"), "{boot}");
+    assert!(boot.contains("nacos:") || boot.contains("shared-configs"), "{boot}");
+    assert!(
+        boot.contains("${spring.application.name}"),
+        "bootstrap 须含服务自身 nacos import：{boot}"
+    );
+    assert!(
+        !boot.contains("optional:nacos:"),
+        "bootstrap 不得使用 optional:nacos：{boot}"
+    );
+    assert!(
+        boot.contains("nacos:${spring.application.name}"),
+        "bootstrap 须含非 optional 的服务配置 import：{boot}"
+    );
+
+    let app_yml_path = root.join("demo-modules/demo-order/src/main/resources/application.yml");
+    assert!(
+        !app_yml_path.is_file(),
+        "不得生成本地 application.yml：{}",
+        app_yml_path.display()
+    );
+    let order_nacos = configs
+        .iter()
+        .find(|c| c.data_id == "demo-order-dev.yml")
+        .expect("应有 demo-order-dev.yml");
+    assert!(
+        order_nacos.content.contains("jdbc:mysql"),
+        "Nacos demo-order-dev.yml 须含 jdbc:mysql"
+    );
+
+    assert!(
+        !cfg.contains("DELETE FROM config_info WHERE data_id = 'demo-order-dev.yml'"),
+        "新生成的 ry_config 不得含 DELETE demo-order-dev.yml"
+    );
+    assert!(
+        !cfg.contains("RUOIY-FORGE-NEW-MODULES-NACOS-BEGIN"),
+        "新生成的 ry_config 不得含覆盖块标记"
+    );
+    assert!(
+        !root.join("sql/demo-order-dev.yml").is_file(),
+        "sql 目录不得写 yaml"
+    );
+    assert!(
+        !root.join("sql/nacos-new-modules.sql").is_file(),
+        "不得单独写 nacos-new-modules.sql"
+    );
+
+    let logback_path = root.join("demo-modules/demo-order/src/main/resources/logback.xml");
+    assert!(
+        logback_path.is_file(),
+        "应生成 logback.xml：{}",
+        logback_path.display()
+    );
+    let logback = fs::read_to_string(&logback_path).unwrap();
+    assert!(
+        logback.contains(r#"value="logs""#),
+        "logback log.path 须为 logs：{logback}"
+    );
+    assert!(
+        logback.contains("console.pattern"),
+        "logback 须含彩色控制台 console.pattern：{logback}"
+    );
+
+    let order_pom = fs::read_to_string(root.join("demo-modules/demo-order/pom.xml")).unwrap();
+    assert!(
+        order_pom.contains("<artifactId>spring-boot-starter-web</artifactId>"),
+        "新模块 pom 须显式含 spring-boot-starter-web（common-security 只有 webmvc）：{order_pom}"
+    );
+    assert!(
+        order_pom.contains("<artifactId>demo-common-swagger</artifactId>"),
+        "新模块 pom 须含 demo-common-swagger（官方 system/gen/job 靠它引入嵌入式 Tomcat）：{order_pom}"
+    );
+    assert!(
+        order_pom.contains("<artifactId>mysql-connector-j</artifactId>"),
+        "Boot4 新模块 pom 应为 mysql-connector-j：{order_pom}"
+    );
+    assert!(
+        !order_pom.contains("<artifactId>mysql-connector-java</artifactId>"),
+        "Boot4 新模块 pom 不应是 mysql-connector-java：{order_pom}"
+    );
+}
+
+fn gateway_whitelist_paths(yaml: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut in_whites = false;
+    let mut whites_indent = 0usize;
+    for line in yaml.lines() {
+        let indent = line.len() - line.trim_start().len();
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("whites:") {
+            in_whites = true;
+            whites_indent = indent;
+            continue;
+        }
+        if in_whites {
+            if trimmed.starts_with('-') {
+                out.push(trimmed.trim_start_matches('-').trim().to_string());
+                continue;
+            }
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if indent <= whites_indent {
+                in_whites = false;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn cloud_boot2_new_module_mysql_artifact() {
+    let dir = build_cloud_fixture(true);
+    let root = dir.path();
+    let template = load_cloud_template();
+    let mut info = detector::detect(root, &template);
+    info.template_dir = "ruoyi-cloud".into();
+    let mut params = cloud_params(root, false);
+    params.new_modules = vec!["order".into()];
+
+    let tasks = planner::plan(&info, &params, &template);
+    let results = execute_all(root, &info, &tasks, &params, &template, |_| {});
+    for r in &results {
+        if matches!(r.status, TaskStatus::Failed) {
+            panic!("任务 {} 失败：{}", r.task_name, r.message);
+        }
+    }
+
+    let order_pom = fs::read_to_string(root.join("demo-modules/demo-order/pom.xml"))
+        .expect("应生成 demo-modules/demo-order/pom.xml");
+    assert!(
+        order_pom.contains("<artifactId>spring-boot-starter-web</artifactId>"),
+        "新模块 pom 须显式含 spring-boot-starter-web（common-security 只有 webmvc）：{order_pom}"
+    );
+    assert!(
+        order_pom.contains("<artifactId>demo-common-swagger</artifactId>"),
+        "新模块 pom 须含 demo-common-swagger（官方 system/gen/job 靠它引入嵌入式 Tomcat）：{order_pom}"
+    );
+    assert!(
+        order_pom.contains("<artifactId>mysql-connector-java</artifactId>"),
+        "Boot2 新模块 pom 应为 mysql-connector-java：{order_pom}"
+    );
+    assert!(
+        !order_pom.contains("<artifactId>mysql-connector-j</artifactId>"),
+        "Boot2 新模块 pom 不应是 mysql-connector-j：{order_pom}"
+    );
+    assert!(
+        order_pom.contains("<groupId>mysql</groupId>"),
+        "Boot2 mysql 驱动 groupId 应为 mysql：{order_pom}"
+    );
+}

@@ -7,7 +7,7 @@ use ruoyi_forge_lib::core::planner;
 use ruoyi_forge_lib::core::report;
 use ruoyi_forge_lib::core::validator;
 use ruoyi_forge_lib::core::CustomizeParams;
-use ruoyi_forge_lib::core::task::TaskStatus;
+use ruoyi_forge_lib::core::task::{TaskStatus, TaskType};
 use ruoyi_forge_lib::rules::template::TemplateSet;
 use std::fs;
 use std::path::PathBuf;
@@ -232,4 +232,66 @@ fn full_pipeline_end_to_end() {
     assert!(report_content.contains("# 若依锻造台 执行报告"));
     assert!(report_content.contains("任务执行结果"));
     assert!(report_content.contains("校验结果"));
+}
+
+#[test]
+fn vue_new_module_order() {
+    let dir = build_full_project();
+    let root = dir.path();
+    write(
+        root.join("ruoyi-admin/pom.xml"),
+        "<project>\n<parent>\n<groupId>com.ruoyi</groupId>\n<artifactId>ruoyi</artifactId>\n</parent>\n<artifactId>ruoyi-admin</artifactId>\n<dependencies>\n</dependencies>\n</project>\n",
+    );
+    let template = load_template();
+    let mut info = detector::detect(root, &template);
+    info.template_dir = "ruoyi-vue".into();
+    let mut params = full_params();
+    params.new_modules = vec!["order".into()];
+    params.enable_report = false;
+
+    let tasks = planner::plan(&info, &params, &template);
+    assert!(
+        tasks.iter().any(|t| t.task_type == TaskType::GenerateNewModules),
+        "应规划生成业务模块"
+    );
+
+    let results = execute_all(root, &info, &tasks, &params, &template, |_| {});
+    for r in &results {
+        if matches!(r.status, TaskStatus::Failed) {
+            panic!("任务 {} 失败：{}", r.task_name, r.message);
+        }
+    }
+
+    assert!(root.join("demo-order").is_dir(), "应生成 demo-order 目录");
+    assert!(root.join("demo-order/pom.xml").is_file());
+    let root_pom = fs::read_to_string(root.join("pom.xml")).unwrap();
+    assert!(
+        root_pom.contains("<module>demo-order</module>"),
+        "根 pom 应声明 demo-order：{root_pom}"
+    );
+    let admin_pom = fs::read_to_string(root.join("demo-admin/pom.xml")).unwrap();
+    assert!(
+        admin_pom.contains("<artifactId>demo-order</artifactId>"),
+        "admin 应依赖 demo-order：{admin_pom}"
+    );
+    let health = root.join(
+        "demo-order/src/main/java/com/company/project/order/controller/HealthController.java",
+    );
+    assert!(health.is_file(), "应有 HealthController：{}", health.display());
+    let health_src = fs::read_to_string(&health).unwrap();
+    assert!(
+        health_src.contains("common.core.domain.AjaxResult"),
+        "分离版 Health 须用 common.core.domain.AjaxResult：{health_src}"
+    );
+    assert!(!health_src.contains("common.core.web.domain.AjaxResult"));
+    assert!(
+        !root
+            .join("demo-order/src/main/java/com/company/project/order/OrderApplication.java")
+            .is_file(),
+        "分离版不应生成 Application"
+    );
+    assert!(
+        !root.join("demo-order/src/main/resources/bootstrap.yml").is_file(),
+        "分离版不应生成 bootstrap.yml"
+    );
 }

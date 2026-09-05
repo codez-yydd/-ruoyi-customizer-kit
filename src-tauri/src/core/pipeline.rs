@@ -173,6 +173,18 @@ pub fn run_transform(
             output_dir: root.to_string_lossy().to_string(),
         });
     }
+    if let Some(err) = crate::core::new_module::validate_against_project(&info, params) {
+        log(&LogEvent::error(err.clone()));
+        return Ok(ExecuteResponse {
+            success: false,
+            message: err,
+            task_results: vec![],
+            checks: vec![],
+            report_path: String::new(),
+            failed_count: 0,
+            output_dir: root.to_string_lossy().to_string(),
+        });
+    }
 
     // 5. 规划任务
     let tasks = planner::plan(&info, params, &template);

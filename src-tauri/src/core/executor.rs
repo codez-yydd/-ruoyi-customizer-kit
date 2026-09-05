@@ -103,6 +103,7 @@ where
         TaskType::RewriteApplicationProfiles => do_rewrite_config(root, info, params, template, &mut r, log),
         TaskType::RewriteNacosConfig => do_rewrite_nacos_config(root, params, &mut r, log),
         TaskType::TrimCloudModules => do_trim_cloud_modules(root, params, &mut r, log),
+        TaskType::GenerateNewModules => do_generate_new_modules(root, info, params, &mut r, log),
         TaskType::RewriteLogbackPath => do_rewrite_logback(root, &engine, &mut r, log),
         TaskType::InjectColoredConsolePattern => do_inject_colored_console(root, &engine, &mut r, log),
         TaskType::AddMybatisPlusDependency => do_add_mp_dependency(root, info, params, &mut r, log),
@@ -1466,6 +1467,23 @@ fn trim_business_sql_menus(
         }
     }
     Ok(modified)
+}
+
+fn do_generate_new_modules<F>(
+    root: &Path,
+    info: &crate::core::ProjectInfo,
+    params: &CustomizeParams,
+    r: &mut TaskResult,
+    log: &F,
+) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let outcome = crate::core::new_module::generate(root, info, params, &|m| log(m))?;
+    r.created_files = outcome.created_files;
+    r.modified_files = outcome.modified_files;
+    r.message = outcome.message;
+    Ok(())
 }
 
 /// 12l. 生成 Nginx 反向代理配置到 output_dir/nginx/

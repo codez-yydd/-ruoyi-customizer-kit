@@ -1,0 +1,23 @@
+# Tomcat
+# 官方核实 2026-09-06，来源用户包/官方 system bootstrap。
+# 服务配置以 Nacos {app}-dev.yml 为准，与官方 system 一致（必选双 import，不用 optional）。
+server:
+  port: {{PORT}}
+
+# Spring
+spring:
+  application:
+    name: {{PREFIX}}-{{NAME}}
+  profiles:
+    active: dev
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 127.0.0.1:8848
+      config:
+        server-addr: 127.0.0.1:8848
+  config:
+    file-extension: yml
+    import:
+      - nacos:application-${spring.profiles.active}.${spring.config.file-extension}
+      - nacos:${spring.application.name}-${spring.profiles.active}.${spring.config.file-extension}

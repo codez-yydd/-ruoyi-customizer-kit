@@ -38,6 +38,15 @@ pub fn preview_tasks(
             project: None,
         };
     }
+    if let Some(err) = crate::core::new_module::validate_against_project(&project_info, &params) {
+        return PreviewResponse {
+            success: false,
+            message: err,
+            tasks: vec![],
+            summary: empty_summary(),
+            project: None,
+        };
+    }
 
     // 2. 加载模板（优先用识别阶段命中的 template_dir；旧数据为空则回退 ruoyi-vue）
     let tpl_name = if project_info.template_dir.is_empty() {

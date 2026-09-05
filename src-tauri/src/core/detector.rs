@@ -255,6 +255,8 @@ pub fn find_module_by_leaf_suffix(root: &Path, modules: &[String], leaf_suffix: 
 }
 
 /// Cloud 可运行服务叶子后缀（gateway / auth / system / gen / job / file / monitor）。
+/// 新业务模块不在此表；由 `cloud_ports::extra_new_module_suffixes` 在官方循环之后追加，
+/// 以免打乱现有 7 后缀顺序与裁剪测试断言。
 pub fn cloud_runnable_leaf_suffixes() -> &'static [&'static str] {
     &["gateway", "auth", "system", "gen", "job", "file", "monitor"]
 }

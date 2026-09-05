@@ -27,6 +27,7 @@ use crate::core::{
 };
 use md5::{Digest, Md5};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// 一条 Nacos 服务配置（content 已反转义为 yaml 原文）
 #[derive(Debug, Clone)]
@@ -164,9 +165,10 @@ pub fn trim_removed_modules(
 // ---------- 解析 / 写回 ----------
 
 fn parse_config_sql_text(sql: &str) -> Result<Vec<NacosServiceConfig>, String> {
+    let sql = strip_new_module_nacos_block(sql);
     let mut out = Vec::new();
     let mut search = 0usize;
-    while let Some((stmt_start, stmt_end)) = find_insert_span(sql, "config_info", search) {
+    while let Some((stmt_start, stmt_end)) = find_insert_span(&sql, "config_info", search) {
         let stmt = &sql[stmt_start..stmt_end];
         out.extend(parse_insert_statement(stmt)?);
         search = stmt_end;
@@ -175,8 +177,9 @@ fn parse_config_sql_text(sql: &str) -> Result<Vec<NacosServiceConfig>, String> {
 }
 
 fn write_back_text(sql: &str, configs: &[NacosServiceConfig]) -> Result<String, String> {
+    let sql = strip_new_module_nacos_block(sql);
     let mut search = 0usize;
-    if let Some((stmt_start, stmt_end)) = find_insert_span(sql, "config_info", search) {
+    if let Some((stmt_start, stmt_end)) = find_insert_span(&sql, "config_info", search) {
         let stmt = &sql[stmt_start..stmt_end];
         let rebuilt = rebuild_insert_statement(stmt, configs)?;
         let mut out = String::with_capacity(sql.len() + rebuilt.len());
@@ -1570,6 +1573,647 @@ pub fn remove_gateway_routes(yaml: &str, keys: &[String]) -> String {
     s
 }
 
+/// 新增 Nacos 服务条目 `{prefix}-{name}-dev.yml`，并在 gateway 条目中追加路由。
+/// 官方核实 2026-09-06：官方 config SQL 只有 *-dev.yml，不要无中生有写 prod。
+/// 幂等：已有同 data_id 则更新内容而非重复插入。
+pub fn add_service_entry(
+    root: &Path,
+    params: &CustomizeParams,
+    name: &str,
+    port: i32,
+    log: &dyn Fn(&str),
+) -> Result<usize, String> {
+    let sql_path = match crate::core::detector::find_ry_config_sql(root) {
+        Some(p) => p,
+        None => {
+            log("未找到 ry_config SQL，跳过新模块 Nacos 条目");
+            return Ok(0);
+        }
+    };
+    let mut configs = parse_config_sql(&sql_path)?;
+    if configs.is_empty() {
+        log("ry_config SQL 无 config_info 条目，跳过新模块 Nacos");
+        return Ok(0);
+    }
+    let prefix = params.new_module_prefix.trim();
+    let data_id = format!("{prefix}-{name}-dev.yml");
+    let yaml = build_new_service_yaml(params, name, port);
+    if yaml.trim().is_empty() {
+        return Err(format!(
+            "生成器 bug：新模块 {data_id} 的 yaml content 为空"
+        ));
+    }
+    let mut changed = 0usize;
+
+    if let Some(existing) = configs.iter_mut().find(|c| c.data_id == data_id) {
+        if existing.content != yaml {
+            existing.content = yaml.clone();
+            existing.md5 = md5_hex(&yaml);
+            log(&format!("已更新 Nacos data_id：{data_id}"));
+            changed += 1;
+        } else {
+            log(&format!("Nacos {data_id} 已存在且内容相同，跳过"));
+        }
+    } else {
+        let template = pick_clone_template(&configs)
+            .cloned()
+            .ok_or_else(|| "config_info 为空，无法克隆新条目".to_string())?;
+        let next_id = next_numeric_id(&configs);
+        configs.push(duplicate_config_row(
+            &template,
+            data_id.clone(),
+            yaml,
+            next_id,
+        ));
+        log(&format!("已新增 Nacos data_id：{data_id}"));
+        changed += 1;
+    }
+
+    let service_id = format!("{prefix}-{name}");
+    let path = format!("/{name}/**");
+    let ping = format!("/{name}/ping");
+    for cfg in &mut configs {
+        if is_gateway_yml(&cfg.data_id) {
+            let before = cfg.content.clone();
+            cfg.content = add_gateway_route(&cfg.content, &service_id, &path);
+            if cfg.content != before {
+                log(&format!(
+                    "已为 {service_id} 追加网关路由 Path={path}（StripPrefix=1）"
+                ));
+            }
+            let after_route = cfg.content.clone();
+            cfg.content = append_whitelist(&cfg.content, &ping);
+            if cfg.content != after_route {
+                log(&format!("已为 {service_id} 追加网关白名单 {ping}"));
+            }
+            if cfg.content != before {
+                cfg.md5 = md5_hex(&cfg.content);
+                changed += 1;
+            }
+        }
+    }
+    write_back(&sql_path, &configs)?;
+    Ok(changed)
+}
+
+const NEW_MODULES_NACOS_BEGIN: &str = "-- RUOIY-FORGE-NEW-MODULES-NACOS-BEGIN";
+const NEW_MODULES_NACOS_END: &str = "-- RUOIY-FORGE-NEW-MODULES-NACOS-END";
+
+/// 剥掉旧生成物中 BEGIN/END 覆盖块（含 DELETE/重复 INSERT），避免解析与写回残留。
+fn strip_new_module_nacos_block(sql: &str) -> String {
+    let mut s = sql.to_string();
+    while let Some(begin) = s.find(NEW_MODULES_NACOS_BEGIN) {
+        let mut start = begin;
+        while start > 0 {
+            match s.as_bytes()[start - 1] {
+                b' ' | b'\t' | b'\n' | b'\r' => start -= 1,
+                _ => break,
+            }
+        }
+        let end = match s[begin..].find(NEW_MODULES_NACOS_END) {
+            Some(rel) => begin + rel + NEW_MODULES_NACOS_END.len(),
+            None => s.len(),
+        };
+        let mut end = end;
+        while end < s.len() {
+            match s.as_bytes()[end] {
+                b' ' | b'\t' | b'\n' | b'\r' => end += 1,
+                _ => break,
+            }
+        }
+        let mut out = String::with_capacity(s.len().saturating_sub(end.saturating_sub(start)));
+        out.push_str(&s[..start]);
+        if !out.is_empty() && !out.ends_with('\n') && end < s.len() {
+            out.push('\n');
+        }
+        out.push_str(&s[end..]);
+        s = out;
+    }
+    s
+}
+
+/// 运行中的 Nacos Open API（开发环境 127.0.0.1:8848，不要改端口）。
+/// 尽力发布；连不上 / 鉴权失败不得让生成任务失败。日志禁止 yaml 全文、jdbc 密码、token。
+const NACOS_OPENAPI_BASE: &str = "http://127.0.0.1:8848";
+const NACOS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const NACOS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 发布结果（中文原因，不含密钥）。
+#[derive(Debug, Clone)]
+pub struct LiveNacosPublishOutcome {
+    pub data_id: String,
+    pub success: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NacosNetErr {
+    Connect,
+    Timeout,
+    Http(u16),
+    Empty,
+    Other,
+}
+
+/// 登录表单：官方开发环境默认 nacos/nacos。
+pub fn nacos_login_fields() -> Vec<(&'static str, &'static str)> {
+    vec![("username", "nacos"), ("password", "nacos")]
+}
+
+/// 拼发布表单字段（不含 token）。`tenant` 为空则不带 tenant。
+pub fn nacos_publish_fields<'a>(
+    data_id: &'a str,
+    group: &'a str,
+    content: &'a str,
+    config_type: &'a str,
+    tenant: &'a str,
+) -> Vec<(&'a str, &'a str)> {
+    let mut fields = vec![
+        ("dataId", data_id),
+        ("group", group),
+        ("content", content),
+        ("type", config_type),
+    ];
+    if !tenant.is_empty() {
+        fields.push(("tenant", tenant));
+    }
+    fields
+}
+
+/// 开发环境 namespace：先 `public`，失败再空 tenant（兼容 Nacos 2 公共空间）。
+pub fn nacos_tenant_candidates() -> &'static [&'static str] {
+    &["public", ""]
+}
+
+/// 仅非连接类失败才改试空 tenant；连不上再试无意义。
+pub fn should_retry_empty_tenant(tried: &str, connect_or_timeout: bool) -> bool {
+    tried == "public" && !connect_or_timeout
+}
+
+/// application/x-www-form-urlencoded（空格为 +）。
+pub fn form_url_encode(pairs: &[(&str, &str)]) -> String {
+    fn encode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for &b in s.as_bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    out.push(b as char);
+                }
+                b' ' => out.push('+'),
+                _ => {
+                    out.push('%');
+                    out.push_str(&format!("{b:02X}"));
+                }
+            }
+        }
+        out
+    }
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", encode(k), encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+pub fn parse_nacos_access_token(body: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let t = v.get("accessToken")?.as_str()?.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
+fn skip_live_nacos() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    std::thread::current()
+        .name()
+        .is_some_and(|n| n.contains("cloud_pipeline"))
+}
+
+fn classify_nacos_err(err: &NacosNetErr) -> String {
+    match err {
+        NacosNetErr::Connect => "无法连接".into(),
+        NacosNetErr::Timeout => "连接超时".into(),
+        NacosNetErr::Http(401) => "鉴权失败（401）".into(),
+        NacosNetErr::Http(403) => "无权限（403）".into(),
+        NacosNetErr::Http(s) => format!("HTTP {s}"),
+        NacosNetErr::Empty => "发布后内容仍为空".into(),
+        NacosNetErr::Other => "请求失败".into(),
+    }
+}
+
+fn live_nacos_fail_msg(data_id: &str, err: &NacosNetErr) -> String {
+    format!(
+        "未能写入运行中的 Nacos，请把 ry_config SQL 导入配置库或在控制台粘贴 {data_id}（{}）",
+        classify_nacos_err(err)
+    )
+}
+
+fn map_reqwest_err(e: &reqwest::Error) -> NacosNetErr {
+    if e.is_timeout() {
+        NacosNetErr::Timeout
+    } else if e.is_connect() {
+        NacosNetErr::Connect
+    } else {
+        NacosNetErr::Other
+    }
+}
+
+fn build_nacos_client() -> Result<reqwest::blocking::Client, NacosNetErr> {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(NACOS_CONNECT_TIMEOUT)
+        .timeout(NACOS_REQUEST_TIMEOUT)
+        .no_proxy()
+        .build()
+        .map_err(|_| NacosNetErr::Other)
+}
+
+fn nacos_login(client: &reqwest::blocking::Client) -> Result<String, NacosNetErr> {
+    let body = form_url_encode(&nacos_login_fields());
+    let resp = client
+        .post(format!("{NACOS_OPENAPI_BASE}/nacos/v1/auth/login"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .map_err(|e| map_reqwest_err(&e))?;
+    if !resp.status().is_success() {
+        return Ok(String::new());
+    }
+    let text = resp.text().map_err(|_| NacosNetErr::Other)?;
+    Ok(parse_nacos_access_token(&text).unwrap_or_default())
+}
+
+fn post_nacos_config(
+    client: &reqwest::blocking::Client,
+    data_id: &str,
+    group: &str,
+    content: &str,
+    token: &str,
+    tenant: &str,
+) -> Result<(), NacosNetErr> {
+    let mut fields = nacos_publish_fields(data_id, group, content, "yaml", tenant);
+    if !token.is_empty() {
+        fields.push(("accessToken", token));
+    }
+    let body = form_url_encode(&fields);
+    let resp = client
+        .post(format!("{NACOS_OPENAPI_BASE}/nacos/v1/cs/configs"))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .map_err(|e| map_reqwest_err(&e))?;
+    let status = resp.status().as_u16();
+    if status == 401 {
+        return Err(NacosNetErr::Http(401));
+    }
+    if status == 403 {
+        return Err(NacosNetErr::Http(403));
+    }
+    if !resp.status().is_success() {
+        return Err(NacosNetErr::Http(status));
+    }
+    let text = resp.text().map_err(|_| NacosNetErr::Other)?;
+    let trimmed = text.trim();
+    let ok = trimmed.eq_ignore_ascii_case("true") || trimmed == "\"true\"";
+    if ok {
+        Ok(())
+    } else {
+        Err(NacosNetErr::Other)
+    }
+}
+
+fn get_nacos_content_len(
+    client: &reqwest::blocking::Client,
+    data_id: &str,
+    group: &str,
+    token: &str,
+    tenant: &str,
+) -> Result<usize, NacosNetErr> {
+    let mut query: Vec<(&str, &str)> = vec![("dataId", data_id), ("group", group)];
+    if !tenant.is_empty() {
+        query.push(("tenant", tenant));
+    }
+    if !token.is_empty() {
+        query.push(("accessToken", token));
+    }
+    let resp = client
+        .get(format!("{NACOS_OPENAPI_BASE}/nacos/v1/cs/configs"))
+        .query(&query)
+        .send()
+        .map_err(|e| map_reqwest_err(&e))?;
+    let status = resp.status().as_u16();
+    if status == 401 {
+        return Err(NacosNetErr::Http(401));
+    }
+    if status == 403 {
+        return Err(NacosNetErr::Http(403));
+    }
+    if !resp.status().is_success() {
+        return Err(NacosNetErr::Http(status));
+    }
+    let text = resp.text().map_err(|_| NacosNetErr::Other)?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed == "config data not exist" {
+        return Err(NacosNetErr::Empty);
+    }
+    Ok(text.len())
+}
+
+fn publish_one_live(
+    client: &reqwest::blocking::Client,
+    data_id: &str,
+    group: &str,
+    content: &str,
+    token: &str,
+    verify_get: bool,
+) -> Result<(), NacosNetErr> {
+    let mut last = NacosNetErr::Other;
+    for tenant in nacos_tenant_candidates() {
+        match post_nacos_config(client, data_id, group, content, token, tenant) {
+            Ok(()) => {
+                if verify_get {
+                    match get_nacos_content_len(client, data_id, group, token, tenant) {
+                        Ok(_) => return Ok(()),
+                        Err(e) => return Err(e),
+                    }
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                let connect_fail = matches!(e, NacosNetErr::Connect | NacosNetErr::Timeout);
+                last = e;
+                if !should_retry_empty_tenant(tenant, connect_fail) {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
+/// 尽力把若干配置发布到运行中的 Nacos。不抛错；结果与日志均不含 yaml/密码/token。
+pub fn publish_live_nacos_entries(
+    entries: &[(String, String, String)],
+    verify_get: bool,
+    log: &dyn Fn(&str),
+) -> Vec<LiveNacosPublishOutcome> {
+    let mut out = Vec::with_capacity(entries.len());
+    if entries.is_empty() {
+        return out;
+    }
+    let client = match build_nacos_client() {
+        Ok(c) => c,
+        Err(e) => {
+            for (id, _, _) in entries {
+                let msg = live_nacos_fail_msg(id, &e);
+                log(&msg);
+                out.push(LiveNacosPublishOutcome {
+                    data_id: id.clone(),
+                    success: false,
+                    reason: msg,
+                });
+            }
+            return out;
+        }
+    };
+    let token = match nacos_login(&client) {
+        Ok(t) => t,
+        Err(e) => {
+            for (id, _, _) in entries {
+                let msg = live_nacos_fail_msg(id, &e);
+                log(&msg);
+                out.push(LiveNacosPublishOutcome {
+                    data_id: id.clone(),
+                    success: false,
+                    reason: msg,
+                });
+            }
+            return out;
+        }
+    };
+    for (data_id, group, content) in entries {
+        match publish_one_live(&client, data_id, group, content, &token, verify_get) {
+            Ok(()) => {
+                log(&format!("已发布到运行中的 Nacos：{data_id}"));
+                out.push(LiveNacosPublishOutcome {
+                    data_id: data_id.clone(),
+                    success: true,
+                    reason: "已发布".into(),
+                });
+            }
+            Err(e) => {
+                let msg = live_nacos_fail_msg(data_id, &e);
+                log(&msg);
+                out.push(LiveNacosPublishOutcome {
+                    data_id: data_id.clone(),
+                    success: false,
+                    reason: msg,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// 从 ry_config SQL 取出指定 dataId（及可选 gateway）发布到运行中的 Nacos。
+pub fn publish_sql_data_ids_to_live_nacos(
+    sql_path: &Path,
+    data_ids: &[&str],
+    include_gateway: bool,
+    log: &dyn Fn(&str),
+) -> Result<Vec<LiveNacosPublishOutcome>, String> {
+    let configs = parse_config_sql(sql_path)?;
+    let mut wanted: Vec<String> = data_ids.iter().map(|s| (*s).to_string()).collect();
+    if include_gateway {
+        for c in &configs {
+            if is_gateway_yml(&c.data_id) && !wanted.iter().any(|id| id == &c.data_id) {
+                wanted.push(c.data_id.clone());
+            }
+        }
+    }
+    let mut missing = Vec::new();
+    let mut entries = Vec::new();
+    for id in &wanted {
+        match configs.iter().find(|c| c.data_id == *id) {
+            Some(c) => entries.push((c.data_id.clone(), c.group_id.clone(), c.content.clone())),
+            None => missing.push(LiveNacosPublishOutcome {
+                data_id: id.clone(),
+                success: false,
+                reason: format!("SQL 中未找到 dataId：{id}"),
+            }),
+        }
+    }
+    let mut out = missing;
+    out.extend(publish_live_nacos_entries(&entries, true, log));
+    Ok(out)
+}
+
+fn build_new_service_yaml(params: &CustomizeParams, name: &str, port: i32) -> String {
+    let host = resolve_db_host(params);
+    let db_port = resolve_db_port(params);
+    let biz_db = resolve_cloud_biz_db_name(params);
+    let user = resolve_db_username(params);
+    let pass = &params.db_password;
+    let pkg_seg = name.replace('-', "");
+    let mut yaml = format!(
+        "server:\n  port: {port}\nspring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: {user}\n    password: {pass}\n"
+    );
+    yaml = replace_jdbc_mysql_connection(&yaml, &host, db_port, &biz_db);
+    if params.enable_mybatis_plus {
+        yaml.push_str(&format!(
+            "mybatis-plus:\n  typeAliasesPackage: {}.{pkg_seg}\n  mapperLocations: classpath*:mapper/**/*.xml\n",
+            params.new_package
+        ));
+    }
+    yaml
+}
+
+/// 新模块 Nacos 行的克隆来源：优先 `-dev.yml` 服务 yaml（排除 sentinel / gateway），
+/// 再任意非 sentinel 的 yml/yaml，最后才 `last()`。官方 SQL 末条常是 sentinel JSON。
+fn pick_clone_template(configs: &[NacosServiceConfig]) -> Option<&NacosServiceConfig> {
+    configs
+        .iter()
+        .find(|c| {
+            let id = c.data_id.to_ascii_lowercase();
+            id.ends_with("-dev.yml") && !id.contains("sentinel") && !is_gateway_yml(&c.data_id)
+        })
+        .or_else(|| {
+            configs.iter().find(|c| {
+                let id = c.data_id.to_ascii_lowercase();
+                (id.ends_with(".yml") || id.ends_with(".yaml")) && !id.contains("sentinel")
+            })
+        })
+        .or_else(|| configs.last())
+}
+
+fn next_numeric_id(configs: &[NacosServiceConfig]) -> Option<String> {
+    let mut max = 0i64;
+    let mut found = false;
+    for c in configs {
+        if let Some(SqlValue::Number(n)) = c.values.first() {
+            if let Ok(v) = n.parse::<i64>() {
+                found = true;
+                max = max.max(v);
+            }
+        }
+    }
+    found.then_some((max + 1).to_string())
+}
+
+fn duplicate_config_row(
+    template: &NacosServiceConfig,
+    data_id: String,
+    content: String,
+    next_id: Option<String>,
+) -> NacosServiceConfig {
+    let mut values = template.values.clone();
+    if let Some(id) = next_id {
+        if let Some(slot) = values.first_mut() {
+            if matches!(slot, SqlValue::Number(_)) {
+                *slot = SqlValue::Number(id);
+            }
+        }
+    }
+    if let Some(slot) = values.get_mut(template.data_id_idx) {
+        *slot = SqlValue::String(data_id.clone());
+    }
+    let md5 = md5_hex(&content);
+    if let Some(slot) = values.get_mut(template.content_idx) {
+        *slot = SqlValue::String(content.clone());
+    }
+    if let Some(slot) = values.get_mut(template.md5_idx) {
+        *slot = SqlValue::String(md5.clone());
+    }
+    NacosServiceConfig {
+        data_id,
+        group_id: template.group_id.clone(),
+        content,
+        md5,
+        values,
+        data_id_idx: template.data_id_idx,
+        content_idx: template.content_idx,
+        md5_idx: template.md5_idx,
+    }
+}
+
+/// 在 gateway yaml 追加路由（Boot2 `spring.cloud.gateway.routes` 与
+/// Boot4 `spring.cloud.gateway.server.webflux.routes` 均按 `- id:` 块处理）。
+/// 官方核实 2026-09-06：邻居块含 `filters: - StripPrefix=1`；无 order。
+/// 已有同 id 或同 Path 则跳过（幂等）。
+pub fn add_gateway_route(yaml: &str, service_id: &str, path: &str) -> String {
+    let id_needle = format!("id: {service_id}");
+    let path_needle = format!("Path={path}");
+    if yaml.contains(&id_needle) || yaml.contains(&path_needle) {
+        return yaml.to_string();
+    }
+
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut last_block_end: Option<usize> = None;
+    let mut sample = None;
+    let mut i = 0usize;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("- id:") || trimmed.starts_with("-id:") {
+            let item_indent = indent_width(line);
+            i += 1;
+            let mut field_indent = item_indent + 2;
+            while i < lines.len() {
+                let nxt = lines[i];
+                let ni = indent_width(nxt);
+                let nt = nxt.trim_start();
+                if nt.starts_with("- id:") && ni <= item_indent {
+                    break;
+                }
+                if !nt.is_empty() && !nt.starts_with('#') && ni <= item_indent && !nt.starts_with('-')
+                {
+                    break;
+                }
+                if nt.starts_with("uri:") {
+                    field_indent = ni;
+                }
+                i += 1;
+            }
+            last_block_end = Some(i);
+            let step = field_indent.saturating_sub(item_indent).max(2);
+            sample = Some((item_indent, field_indent, field_indent + step));
+            continue;
+        }
+        i += 1;
+    }
+
+    let Some(end) = last_block_end else {
+        return yaml.to_string();
+    };
+    let (item_i, field_i, pred_i) = sample.unwrap_or((8, 10, 12));
+    let item_pad = " ".repeat(item_i);
+    let field_pad = " ".repeat(field_i);
+    let pred_pad = " ".repeat(pred_i);
+    let block = format!(
+        "{item_pad}- id: {service_id}\n{field_pad}uri: lb://{service_id}\n{field_pad}predicates:\n{pred_pad}- Path={path}\n{field_pad}filters:\n{pred_pad}- StripPrefix=1\n"
+    );
+
+    let mut out = String::new();
+    for (idx, line) in lines.iter().enumerate() {
+        if idx == end {
+            out.push_str(&block);
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if end == lines.len() {
+        out.push_str(&block);
+    }
+    if !yaml.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
 fn remove_sentinel_resources(content: &str, keys: &[String]) -> String {
     let trimmed = content.trim();
     if !trimmed.starts_with('[') {
@@ -1623,6 +2267,61 @@ mod tests {
         assert!(escaped.contains("\\\\="), "connectionProperties 的 = 应写成 \\\\=：{escaped}");
         let back = unescape_nacos_content(&escaped);
         assert_eq!(back, yaml);
+    }
+
+    #[test]
+    fn nacos_form_and_tenant_selection_are_pure() {
+        let login = form_url_encode(&nacos_login_fields());
+        assert_eq!(login, "username=nacos&password=nacos");
+
+        let yaml = "server:\n  port: 8087\n";
+        let with_public = nacos_publish_fields(
+            "demo-order-dev.yml",
+            "DEFAULT_GROUP",
+            yaml,
+            "yaml",
+            "public",
+        );
+        let encoded = form_url_encode(&with_public);
+        assert!(encoded.contains("dataId=demo-order-dev.yml"), "{encoded}");
+        assert!(encoded.contains("group=DEFAULT_GROUP"), "{encoded}");
+        assert!(encoded.contains("type=yaml"), "{encoded}");
+        assert!(encoded.contains("tenant=public"), "{encoded}");
+        assert!(encoded.contains("content="), "{encoded}");
+        assert!(
+            encoded.contains("%0A"),
+            "yaml 换行应 percent-encode：{encoded}"
+        );
+        assert!(
+            !encoded.to_ascii_lowercase().contains("accesstoken"),
+            "发布字段默认不得带 token：{encoded}"
+        );
+
+        let no_tenant = nacos_publish_fields(
+            "demo-order-dev.yml",
+            "DEFAULT_GROUP",
+            yaml,
+            "yaml",
+            "",
+        );
+        let encoded2 = form_url_encode(&no_tenant);
+        assert!(
+            !encoded2.contains("tenant="),
+            "空 tenant 不得出现在表单：{encoded2}"
+        );
+
+        assert_eq!(nacos_tenant_candidates(), &["public", ""]);
+        assert!(should_retry_empty_tenant("public", false));
+        assert!(
+            !should_retry_empty_tenant("public", true),
+            "连接失败不应改试空 tenant"
+        );
+        assert!(!should_retry_empty_tenant("", false));
+
+        let tok = parse_nacos_access_token(r#"{"accessToken":"dummy-token","tokenTtl":18000}"#);
+        assert_eq!(tok.as_deref(), Some("dummy-token"));
+        assert!(parse_nacos_access_token("not-json").is_none());
+        assert!(parse_nacos_access_token(r#"{"accessToken":""}"#).is_none());
     }
 
     #[test]
@@ -1697,6 +2396,191 @@ mod tests {
         let out = remove_gateway_routes(yaml, &["file".into()]);
         assert!(out.contains("ruoyi-auth"));
         assert!(!out.contains("/file/**"));
+    }
+
+    #[test]
+    fn add_gateway_route_boot2_inserts_strip_prefix_and_is_idempotent() {
+        let yaml = "spring:\n  cloud:\n    gateway:\n      routes:\n        - id: ruoyi-system\n          uri: lb://ruoyi-system\n          predicates:\n            - Path=/system/**\n          filters:\n            - StripPrefix=1\nsecurity:\n  ignore:\n    whites:\n      - /auth/login\n";
+        let once = add_gateway_route(yaml, "demo-order", "/order/**");
+        assert!(once.contains("- id: demo-order"), "{once}");
+        assert!(once.contains("uri: lb://demo-order"), "{once}");
+        assert!(once.contains("- Path=/order/**"), "{once}");
+        assert!(once.contains("filters:"), "{once}");
+        assert!(once.contains("- StripPrefix=1"), "{once}");
+        assert!(once.contains("ruoyi-system"), "{once}");
+        assert!(once.contains("security:"), "{once}");
+        let twice = add_gateway_route(&once, "demo-order", "/order/**");
+        assert_eq!(once.matches("- id: demo-order").count(), 1);
+        assert_eq!(twice, once);
+    }
+
+    #[test]
+    fn add_gateway_route_boot4_inserts_strip_prefix_and_is_idempotent() {
+        let yaml = "spring:\n  cloud:\n    gateway:\n      server:\n        webflux:\n          routes:\n            - id: ruoyi-auth\n              uri: lb://ruoyi-auth\n              predicates:\n                - Path=/auth/**\n            - id: ruoyi-system\n              uri: lb://ruoyi-system\n              predicates:\n                - Path=/system/**\n";
+        let once = add_gateway_route(yaml, "demo-order", "/order/**");
+        assert!(once.contains("- id: demo-order"), "{once}");
+        assert!(once.contains("lb://demo-order"), "{once}");
+        assert!(once.contains("Path=/order/**"), "{once}");
+        assert!(once.contains("StripPrefix=1"), "{once}");
+        let twice = add_gateway_route(&once, "demo-order", "/order/**");
+        assert_eq!(once.matches("- id: demo-order").count(), 1);
+        assert_eq!(twice, once);
+    }
+
+    fn whitelist_paths(yaml: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut in_whites = false;
+        let mut whites_indent = 0usize;
+        for line in yaml.lines() {
+            let indent = line.len() - line.trim_start().len();
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("whites:") {
+                in_whites = true;
+                whites_indent = indent;
+                continue;
+            }
+            if in_whites {
+                if trimmed.starts_with('-') {
+                    out.push(trimmed.trim_start_matches('-').trim().to_string());
+                    continue;
+                }
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if indent <= whites_indent {
+                    in_whites = false;
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn add_gateway_route_then_whitelist_ping_not_star() {
+        let yaml = "spring:\n  cloud:\n    gateway:\n      routes:\n        - id: ruoyi-system\n          uri: lb://ruoyi-system\n          predicates:\n            - Path=/system/**\n          filters:\n            - StripPrefix=1\nsecurity:\n  ignore:\n    whites:\n      - /auth/login\n";
+        let routed = add_gateway_route(yaml, "demo-order", "/order/**");
+        let out = append_whitelist(&routed, "/order/ping");
+        assert!(out.contains("Path=/order/**"), "{out}");
+        assert!(out.contains("/order/ping"), "{out}");
+        let whites = whitelist_paths(&out);
+        assert!(
+            whites.iter().any(|p| p == "/order/ping"),
+            "whites 应含 /order/ping：{whites:?}\n{out}"
+        );
+        assert!(
+            !whites.iter().any(|p| p == "/order/**"),
+            "whites 不得整段放行 /order/**：{whites:?}\n{out}"
+        );
+        let twice = append_whitelist(&out, "/order/ping");
+        assert_eq!(
+            out.matches("/order/ping").count(),
+            twice.matches("/order/ping").count()
+        );
+    }
+
+    fn insert_config_row(id: i32, data_id: &str, content: &str, typ: &str, desc: &str) -> String {
+        let escaped = escape_nacos_content(content);
+        let md5 = md5_hex(content);
+        format!(
+            "({id},'{data_id}','DEFAULT_GROUP','{escaped}','{md5}','2020-01-01 00:00:00','2020-01-01 00:00:00',NULL,'127.0.0.1','','','{desc}','','','{typ}','','')"
+        )
+    }
+
+    #[test]
+    fn add_service_entry_clones_yaml_not_trailing_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sql")).unwrap();
+        let system = "server:\n  port: 9201\n";
+        let gateway = "spring:\n  cloud:\n    gateway:\n      routes:\n        - id: ruoyi-system\n          uri: lb://ruoyi-system\n          predicates:\n            - Path=/system/**\n          filters:\n            - StripPrefix=1\nsecurity:\n  ignore:\n    whites:\n      - /auth/login\n";
+        let sentinel = r#"[{"resource":"/auth/**","limitApp":"default"}]"#;
+        let sql = format!(
+            "CREATE DATABASE `ry-config`;\nUSE `ry-config`;\ninsert into config_info(id, data_id, group_id, content, md5, gmt_create, gmt_modified, src_user, src_ip, app_name, tenant_id, c_desc, c_use, effect, type, c_schema, encrypted_data_key) values {},{},{};\n",
+            insert_config_row(1, "ruoyi-system-dev.yml", system, "yaml", "系统配置"),
+            insert_config_row(2, "ruoyi-gateway-dev.yml", gateway, "yaml", "网关配置"),
+            insert_config_row(3, "sentinel-ruoyi-gateway", sentinel, "json", "sentinel网关流控"),
+        );
+        std::fs::write(root.join("sql/ry_config_20260905.sql"), sql).unwrap();
+
+        let mut params = CustomizeParams::default();
+        params.new_module_prefix = "demo".into();
+        params.new_package = "com.demo".into();
+        params.db_password = "x".into();
+        add_service_entry(root, &params, "order", 8087, &|_| {}).unwrap();
+
+        let configs = parse_config_sql(&root.join("sql/ry_config_20260905.sql")).unwrap();
+        let added = configs
+            .iter()
+            .find(|c| c.data_id == "demo-order-dev.yml")
+            .expect("应新增 demo-order-dev.yml");
+        assert!(
+            added.content.starts_with("server:"),
+            "新行 content 应是 yaml：{}",
+            added.content
+        );
+        assert_eq!(
+            string_at(&added.values, 14).as_deref(),
+            Some("yaml"),
+            "克隆来源不得是末条 sentinel（type 应为 yaml）"
+        );
+        assert_ne!(
+            string_at(&added.values, 11).as_deref(),
+            Some("sentinel网关流控"),
+            "c_desc 不得来自 sentinel"
+        );
+
+        let gw = configs
+            .iter()
+            .find(|c| is_gateway_yml(&c.data_id))
+            .expect("应有 gateway");
+        let whites = whitelist_paths(&gw.content);
+        assert!(
+            whites.iter().any(|p| p == "/order/ping"),
+            "gateway whites 应含 /order/ping：{whites:?}"
+        );
+        assert!(
+            !whites.iter().any(|p| p == "/order/**"),
+            "gateway whites 不得含 /order/**：{whites:?}"
+        );
+        assert!(gw.content.contains("Path=/order/**"), "{}", gw.content);
+
+        let sql_path = root.join("sql/ry_config_20260905.sql");
+        let sql_text = std::fs::read_to_string(&sql_path).unwrap();
+        assert!(
+            !sql_text.contains("DELETE FROM config_info WHERE data_id = 'demo-order-dev.yml'"),
+            "新生成的 ry_config 不得含 DELETE demo-order-dev.yml"
+        );
+        assert!(
+            !sql_text.contains("RUOIY-FORGE-NEW-MODULES-NACOS-BEGIN"),
+            "新生成的 ry_config 不得含覆盖块标记"
+        );
+        assert!(
+            added.content.contains("jdbc:mysql"),
+            "主 INSERT 解析后 demo-order-dev.yml 须含 jdbc:mysql"
+        );
+        assert!(
+            !sql_text.contains("DELETE FROM config_info WHERE data_id = 'ruoyi-gateway-dev.yml'"),
+            "全文不得对 gateway 做 DELETE"
+        );
+        assert!(
+            !root.join("sql/demo-order-dev.yml").is_file(),
+            "sql 目录不得写 yaml"
+        );
+        assert!(
+            !root.join("sql/nacos-new-modules.sql").is_file(),
+            "不得单独写 nacos-new-modules.sql"
+        );
+
+        add_service_entry(root, &params, "order", 8087, &|_| {}).unwrap();
+        let parsed_again = parse_config_sql(&sql_path).unwrap();
+        assert_eq!(
+            parsed_again
+                .iter()
+                .filter(|c| c.data_id == "demo-order-dev.yml")
+                .count(),
+            1,
+            "重复调用后 demo-order-dev.yml 仍只有 1 条"
+        );
     }
 
     #[test]

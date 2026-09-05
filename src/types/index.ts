@@ -168,6 +168,8 @@ export interface CustomizeParams {
   config_db_name: string
   /** Cloud 裁剪模块：仅 gen / job / file / monitor */
   remove_modules: string[]
+  /** 改造时新增业务模块短名（空骨架）；单体 ruoyi 禁用 */
+  new_modules: string[]
   /** 是否开启 Cloud 自定义模块端口（关闭则从网关端口起依次 +1） */
   enable_cloud_custom_ports: boolean
   /** Cloud auth 端口；0 = 走自动递增 */
@@ -267,6 +269,7 @@ export type TaskType =
   | 'InjectSnowflakeId'
   | 'RewriteNacosConfig'
   | 'TrimCloudModules'
+  | 'GenerateNewModules'
   | 'CustomizeWebFooter'
   | 'CustomizeSiteSettings'
   | 'SwitchDatabaseDialect'
