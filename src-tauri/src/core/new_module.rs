@@ -5,8 +5,7 @@
 //
 // Cloud：{prefix}-modules/{prefix}-{name}/（pom / 启动类 / bootstrap / Health）
 //        + modules 聚合 pom + Nacos *-dev.yml + 网关路由 + 端口表 + run-{name}
-// 分离版：根目录 {prefix}-{name}/（pom / Health）+ 根 pom + admin 依赖
-// 单体 ruoyi：不生成（DISABLED_FEATURES）
+// 分离版 ruoyi-vue / 单体 ruoyi：不生成（DISABLED_FEATURES）
 
 use crate::core::cloud_ports;
 use crate::core::detector;
@@ -70,8 +69,9 @@ pub fn validate_new_modules(modules: &mut Vec<String>, remove_modules: &[String]
 }
 
 /// 规划/执行前：规范化短名不得与识别到的后端模块短名/目录冲突。
+/// 非 Cloud（分离版 / 单体）直接跳过，不报错中断。
 pub fn validate_against_project(info: &ProjectInfo, params: &CustomizeParams) -> Option<String> {
-    if info.template_dir == "ruoyi" {
+    if !detector::is_cloud_project(Path::new(&info.root_path), &info.template_dir) {
         return None;
     }
     let names = normalize_new_module_names(&params.new_modules);
@@ -125,11 +125,12 @@ pub fn generate(
     params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<GenerateOutcome, String> {
-    if info.template_dir == "ruoyi" {
+    let is_cloud = detector::is_cloud_project(root, &info.template_dir);
+    if !is_cloud {
         return Ok(GenerateOutcome {
             created_files: 0,
             modified_files: 0,
-            message: "单体 ruoyi 不支持新增业务模块，已跳过".into(),
+            message: "分离版/单体不支持新增业务模块，已跳过".into(),
         });
     }
     if let Some(err) = validate_against_project(info, params) {
@@ -144,7 +145,6 @@ pub fn generate(
         });
     }
 
-    let is_cloud = detector::is_cloud_project(root, &info.template_dir);
     let prefix = params.new_module_prefix.trim();
     if prefix.is_empty() {
         return Err("生成业务模块时新模块前缀不能为空".into());

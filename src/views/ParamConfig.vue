@@ -43,7 +43,6 @@ function isDisabled(feature: keyof CustomizeParams): boolean {
 }
 
 const isCloud = computed(() => templateDir.value === 'ruoyi-cloud')
-const isVue = computed(() => templateDir.value === 'ruoyi-vue')
 
 /** 源仓是否已有独立前端目录（无则可用预置模板生成 {prefix}-ui） */
 const hasSourceFrontend = computed(() => (projectInfo.value?.frontend_dirs?.length ?? 0) > 0)
@@ -436,7 +435,7 @@ const sectionCounts = computed(() => ({
   ]),
   security: countTrue([form.enable_security, form.enable_sql_customize]),
   cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0) + (Array.isArray(form.new_modules) ? form.new_modules.length : 0),
-  structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]) + (isVue.value && Array.isArray(form.new_modules) ? form.new_modules.length : 0),
+  structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]),
   oss: countTrue([form.enable_oss]),
   enhance: countTrue([form.enable_sms_login, form.enable_captcha_slider, form.enable_api_encrypt]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
@@ -1178,24 +1177,6 @@ function generateAesSecret(): string {
                 <div class="switch-item__hint muted">
                   {{ form.enable_frontend_split ? `前端将移至 ${form.new_module_prefix || 'demo'}-ui-frontend` : '前端目录拆出，与后端平级' }}
                 </div>
-              </div>
-              <div v-if="isVue" class="switch-item" style="grid-column: 1 / -1">
-                <div class="switch-item__head">
-                  <span class="switch-item__label">新增业务模块</span>
-                </div>
-                <el-select
-                  v-model="form.new_modules"
-                  multiple
-                  filterable
-                  allow-create
-                  default-first-option
-                  collapse-tags
-                  collapse-tags-tooltip
-                  placeholder="输入短名后回车，如 order"
-                  style="width: 100%; margin-top: 8px"
-                  @change="onSwitchChange"
-                />
-                <div class="switch-item__hint muted">生成 Maven 空骨架（pom / Health），由 admin 聚合启动；不生成业务 CRUD</div>
               </div>
               <div class="switch-item">
                 <div class="switch-item__head">

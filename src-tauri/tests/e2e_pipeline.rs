@@ -251,8 +251,8 @@ fn vue_new_module_order() {
 
     let tasks = planner::plan(&info, &params, &template);
     assert!(
-        tasks.iter().any(|t| t.task_type == TaskType::GenerateNewModules),
-        "应规划生成业务模块"
+        !tasks.iter().any(|t| t.task_type == TaskType::GenerateNewModules),
+        "分离版不应规划生成业务模块"
     );
 
     let results = execute_all(root, &info, &tasks, &params, &template, |_| {});
@@ -262,36 +262,8 @@ fn vue_new_module_order() {
         }
     }
 
-    assert!(root.join("demo-order").is_dir(), "应生成 demo-order 目录");
-    assert!(root.join("demo-order/pom.xml").is_file());
-    let root_pom = fs::read_to_string(root.join("pom.xml")).unwrap();
     assert!(
-        root_pom.contains("<module>demo-order</module>"),
-        "根 pom 应声明 demo-order：{root_pom}"
-    );
-    let admin_pom = fs::read_to_string(root.join("demo-admin/pom.xml")).unwrap();
-    assert!(
-        admin_pom.contains("<artifactId>demo-order</artifactId>"),
-        "admin 应依赖 demo-order：{admin_pom}"
-    );
-    let health = root.join(
-        "demo-order/src/main/java/com/company/project/order/controller/HealthController.java",
-    );
-    assert!(health.is_file(), "应有 HealthController：{}", health.display());
-    let health_src = fs::read_to_string(&health).unwrap();
-    assert!(
-        health_src.contains("common.core.domain.AjaxResult"),
-        "分离版 Health 须用 common.core.domain.AjaxResult：{health_src}"
-    );
-    assert!(!health_src.contains("common.core.web.domain.AjaxResult"));
-    assert!(
-        !root
-            .join("demo-order/src/main/java/com/company/project/order/OrderApplication.java")
-            .is_file(),
-        "分离版不应生成 Application"
-    );
-    assert!(
-        !root.join("demo-order/src/main/resources/bootstrap.yml").is_file(),
-        "分离版不应生成 bootstrap.yml"
+        !root.join("demo-order").exists(),
+        "分离版即使填写 new_modules 也不应生成 demo-order"
     );
 }

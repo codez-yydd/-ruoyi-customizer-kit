@@ -337,8 +337,6 @@ pub fn validate(
     // 12. Cloud 失败级检查（官方核实 2026-09-05）
     if is_cloud {
         items.extend(validate_cloud(root, params, &scan));
-    } else if !crate::core::new_module::normalize_new_module_names(&params.new_modules).is_empty() {
-        items.extend(validate_vue_new_modules(root, params));
     }
 
     items
@@ -587,18 +585,6 @@ fn validate_cloud(
     items
 }
 
-/// 分离版新模块：目录、根 pom 声明、admin 依赖、HealthController（AjaxResult 走 common.core.domain）。
-fn validate_vue_new_modules(
-    root: &Path,
-    params: &crate::core::CustomizeParams,
-) -> Vec<CheckItem> {
-    let new_mods = crate::core::new_module::normalize_new_module_names(&params.new_modules);
-    if new_mods.is_empty() {
-        return Vec::new();
-    }
-    validate_generated_modules(root, params, &new_mods, false)
-}
-
 fn validate_generated_modules(
     root: &Path,
     params: &crate::core::CustomizeParams,
@@ -609,7 +595,6 @@ fn validate_generated_modules(
     let prefix = params.new_module_prefix.trim();
     let root_pom = read_text_plain(&root.join("pom.xml")).unwrap_or_default();
     let modules_pom = read_text_plain(&root.join(format!("{prefix}-modules/pom.xml"))).unwrap_or_default();
-    let admin_pom = read_text_plain(&root.join(format!("{prefix}-admin/pom.xml"))).unwrap_or_default();
     let cfg_sql = crate::core::detector::find_ry_config_sql(root)
         .and_then(|p| read_text_plain(&p));
 
@@ -671,18 +656,6 @@ fn validate_generated_modules(
                 && !logback_src.contains(r#"value="logs""#)
             {
                 missing.push("logback log.path=logs");
-            }
-        } else {
-            if !root_pom.contains(&module_tag) {
-                missing.push("根 pom 声明");
-            }
-            if !admin_pom.contains(&format!("<artifactId>{prefix}-{name}</artifactId>")) {
-                missing.push("admin 依赖");
-            }
-            if !health.is_file() {
-                missing.push("HealthController");
-            } else if !health_src.contains("common.core.domain.AjaxResult") {
-                missing.push("Health AjaxResult 路径");
             }
         }
 

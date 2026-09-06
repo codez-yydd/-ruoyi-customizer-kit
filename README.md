@@ -14,7 +14,7 @@
 - **模块重命名** — 后端模块 + 前端目录统一按前缀替换（如 `ruoyi-admin` → `demo-admin`）
 - **Maven 坐标修改** — groupId / artifactId / modules 依赖引用批量替换
 - **配置文件重构** — 分离版将 `application.yml` + `application-druid.yml` 改为 `application.yaml` + `application-dev.yaml` + `application-prod.yaml` 三件套；Cloud 改写 Nacos `sql/ry_config*.sql`，不生成 application.yaml 三件套
-- **RuoYi-Cloud** — 改写 Nacos 数据源 / Redis / Token、各微服务端口（含 bootstrap.yml）；可裁剪 gen / job / file / monitor；替换 UI 时叠加 cloud-overlay（登录 `/auth/login`、任务 `/schedule/**`、代码生成 `/code/**`、日志 / 在线等）
+- **RuoYi-Cloud** — 改写 Nacos 数据源 / Redis / Token、各微服务端口（含 bootstrap.yml）；可裁剪 gen / job / file / monitor；替换 UI 时叠加 cloud-overlay（登录 `/auth/login`、任务 `/schedule/**`、代码生成 `/code/**`、日志 / 在线等）；可新增业务模块短名（仅 Cloud），生成 `{prefix}-modules/{prefix}-{name}` 空骨架（pom / 启动类 / Health / Nacos `*-dev.yml` / 网关路由 / `run-{name}`），不生成 CRUD/SQL/菜单/feign
 - **MyBatis-Plus 集成** — 自动添加依赖、生成分页配置类、改造现有 Mapper/Service/ServiceImpl 继承体系、适配代码生成器模板
 - **PostgreSQL 方言** — RuoYi-Vue 可将数据源、驱动、分页、初始化脚本、代码生成器查询切换为 PostgreSQL（单体 / 微服务本期不支持）
 - **Long ID 精度修复** — Long 主键自动添加 `@JsonSerialize(using = ToStringSerializer.class)`
@@ -25,7 +25,8 @@
 - **替换后台 UI** — 可选 Vben Admin（Element Plus，pnpm monorepo）或 Arco Design（Arco Design Vue，npm 单包）预置模板整体替换原 `ruoyi-ui`，标题 / 端口 / 版权经占位符自动写入；`ruoyi-vue` 与 `ruoyi-cloud` 可用，单体 `ruoyi` 禁用
 - **OSS** — 阿里云 / 腾讯云 / MinIO / 七牛。分离版接口 `POST /common/oss/upload`；Cloud 接口 `POST /system/oss/upload`（走网关 `/system/**`，需登录）。不改官方本地上传 `/common/upload` 或 Cloud `/file/upload`
 - **JWT** — 分离版写 yaml `token.*`；Cloud 写 Java `TokenConstants` / `CacheConstants`
-- **UniApp 小程序生成** — 可选生成 `{模块前缀}-uniapp` 基础骨架，含请求封装、登录框架、环境配置，后端自动追加微信配置占位
+- **UniApp 小程序生成** — 可选生成 `{模块前缀}-uniapp` 基础骨架，含请求封装、登录框架、环境配置，后端自动追加微信配置占位。开启 UniApp 时生成 `AppAuthController`（微信 `jscode2session` + Token）。分离版 `/app/{prefix}/auth/wechat-login`；Cloud `/system/app/{prefix}/auth/wechat-login`
+- **增强件** — 短信登录 / 滑块验证码 / 接口 AES（默认全关；单体 `ruoyi` 禁用）。微信小程序登录后端跟随 UniApp
 - **官方源码拉取** — 首页可从 Gitee（git 浅克隆，无需登录）/ GitHub（archive zip）选择 Spring Boot 档与 RuoYi-Vue / RuoYi-Cloud，一键拉取官方后端仓并进入识别
 - **延迟解压** — zip 压缩包在执行时才解压到用户指定的输出目录，不修改原始文件
 - **执行预览** — 改造前展示任务清单、影响范围、高风险项
@@ -39,7 +40,7 @@
 
 开启替换 UI 时，日志菜单的 component 才会从 `system/operlog`、`system/logininfor` 改为 `monitor/...`，perms 不改。
 
-网关端口即 `server_port`；可裁剪 gen / job / file / monitor，不可裁 gateway / auth / system。
+网关端口即 `server_port`；可裁剪 gen / job / file / monitor，不可裁 gateway / auth / system。`new_modules` 端口在官方 7 个服务之后紧排，被 `remove_modules` 裁掉的不占号；开发 `run.bat` 会扫到 `run-{短名}`。
 
 开发请先启动 Nacos，再双击项目根目录 `run.bat`（或 `run.sh`）勾选服务启动。生产 / 打包 jar 使用 `scripts/start.bat`（需开启「启动脚本」）。
 
@@ -191,6 +192,7 @@ forge-cli run --config forge.json [--source <zip或目录>] [--set k=v ...] [--j
 --set jwt_expire_minutes=60
 --set ui_template=arco
 --set enable_cloud_custom_ports=true
+--set 'new_modules=["order","member"]'
 ```
 
 完整流程示例（`init-config` → `preview` → `run --set db_type=postgresql --set db_name=demo_db`）：
@@ -274,6 +276,7 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 | db_password | string | `""` | 数据库密码，可空 |
 | config_db_name | string | `""` | Cloud 配置库名；空则有 `db_name` 用 `{db_name}-config`，否则 `ry-config` |
 | remove_modules | string[] | `[]` | Cloud 裁剪模块，仅 `gen` / `job` / `file` / `monitor` |
+| new_modules | string[] | `[]` | 仅 Cloud。新增业务模块短名（小写字母开头，`a-z0-9-`）。分离版 / 单体禁用 |
 | enable_cloud_custom_ports | boolean | `false` | Cloud 自定义模块端口。关闭则从网关端口依次 +1，已裁模块不占号 |
 | cloud_port_auth | number | `0` | Cloud auth 端口；`0` = 自动递增 |
 | cloud_port_system | number | `0` | Cloud system 端口；`0` = 自动递增 |
@@ -310,6 +313,18 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 | enable_startup_scripts | boolean | `false` | 是否生成 jar 部署脚本 `scripts/start.bat`（及 `.sh`）。与项目根开发脚本 `run.bat` / `run.sh` 不是同一套 |
 | enable_replace_ui | boolean | `false` | 是否用预置后台模板替换原 `ruoyi-ui`（`ruoyi-vue` 与 `ruoyi-cloud` 可用，单体 `ruoyi` 禁用） |
 | ui_template | string | `vben-web-ele` | 后台 UI 模板：`vben-web-ele` 或 `arco` |
+| enable_sms_login | boolean | `false` | 短信验证码登录。分离版 `/smsCode` `/smsLogin`；Cloud 落 auth，网关 `/auth/smsCode` `/auth/smsLogin`。发码前过图形验证码（开滑块则走 `/captcha/check`）。单体禁用 |
+| sms_provider | string | `aliyun` | `aliyun` / `tencent` |
+| sms_sign_name | string | `""` | 短信签名 |
+| sms_access_key | string | `""` | AK |
+| sms_secret_key | string | `""` | SK；报告与 CLI 输出脱敏 |
+| sms_template_code | string | `""` | 阿里 TemplateCode / 腾讯 TemplateId |
+| sms_sdk_app_id | string | `""` | 腾讯云短信 SdkAppId（仅 tencent） |
+| sms_code_expire_minutes | number | `5` | 验证码有效期（分钟） |
+| sms_daily_limit_per_phone | number | `10` | 单号每日发送上限 |
+| enable_captcha_slider | boolean | `false` | AJ-Captcha 滑块 `/captcha/get` `/captcha/check`；保留原图形验证码。Boot3/4 用 core 包手动装配。单体禁用 |
+| enable_api_encrypt | boolean | `false` | 接口 AES/ECB 加解密。登录/验证码/短信/微信登录等公开路径不加密。单体禁用 |
+| aes_secret | string | `""` | 16 字节可打印密钥；空则执行时随机生成。明文不进报告，只写长度与写入位置。前端密钥随包分发，属传输混淆，不能替代 HTTPS |
 
 配置文件里还有 `_comment`、`_source`（非 `CustomizeParams` 字段，供 CLI 记录说明与来源路径）。
 
@@ -321,6 +336,11 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 - Cloud 保持官方 `ruoyi-*` dataId / 注册名
 - Nacos `8848`、Sentinel `8718` 不改
 - `remove_modules` 仅允许 `gen` / `job` / `file` / `monitor`，非法值拒绝
+- `new_modules` 仅 Cloud；短名须 `^[a-z][a-z0-9-]*$`；不可与 `remove_modules` 或现有模块短名冲突
+- 三个增强件开关默认关；关则零改动
+- `ruoyi` 禁用短信 / 滑块 / AES
+- AES 不能替代 HTTPS
+- `sms_secret_key` / `aes_secret` 不出现在报告与 CLI 明文
 - 配置里的密码 / 密钥为明文属预期
 - GUI 的 `save_config_json` 会脱敏；CLI `init-config` 不脱敏
 

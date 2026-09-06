@@ -12,7 +12,7 @@ A desktop tool for rapid initialization and customization of **RuoYi-Vue** (sepa
 - **Module Restructuring** — Backend modules + frontend directories renamed by prefix (e.g. `ruoyi-admin` → `demo-admin`)
 - **Maven Coordinate Update** — Batch replacement of groupId / artifactId / module dependency references
 - **Config File Refactoring** — For the separated edition, splits `application.yml` + `application-druid.yml` into `application.yaml` + `application-dev.yaml` + `application-prod.yaml`. For Cloud, rewrites Nacos `sql/ry_config*.sql` and does not generate the application.yaml trio
-- **RuoYi-Cloud** — Rewrites Nacos datasource / Redis / Token and per-service ports (including bootstrap.yml); optional trim of gen / job / file / monitor; replacing the UI applies a cloud-overlay (login `/auth/login`, jobs `/schedule/**`, code gen `/code/**`, logs / online users, etc.)
+- **RuoYi-Cloud** — Rewrites Nacos datasource / Redis / Token and per-service ports (including bootstrap.yml); optional trim of gen / job / file / monitor; replacing the UI applies a cloud-overlay (login `/auth/login`, jobs `/schedule/**`, code gen `/code/**`, logs / online users, etc.); optional new business-module short names (Cloud only), generating empty `{prefix}-modules/{prefix}-{name}` skeletons (pom / startup class / Health / Nacos `*-dev.yml` / gateway routes / `run-{name}`), without CRUD/SQL/menus/feign
 - **MyBatis-Plus Integration** — Adds dependency, generates pagination config, refactors existing Mapper/Service/ServiceImpl to inherit MP base classes, adapts code generator templates
 - **PostgreSQL Dialect** — For RuoYi-Vue, switch datasource, driver, pagination, init scripts, and code-generator queries to PostgreSQL (standalone / microservice not supported in this release)
 - **Long ID Precision Fix** — Adds `@JsonSerialize(using = ToStringSerializer.class)` to Long primary key fields
@@ -20,7 +20,8 @@ A desktop tool for rapid initialization and customization of **RuoYi-Vue** (sepa
 - **Replace Admin UI** — Optionally replace original `ruoyi-ui` with a preset Vben Admin (Element Plus, pnpm monorepo) or Arco Design (Arco Design Vue, npm single package) template; title / port / copyright are filled via placeholders. Available for `ruoyi-vue` and `ruoyi-cloud`; disabled for standalone `ruoyi`
 - **OSS** — Aliyun / Tencent Cloud / MinIO / Qiniu. Separated edition: `POST /common/oss/upload`. Cloud: `POST /system/oss/upload` (via gateway `/system/**`, login required). Does not replace the official local upload `/common/upload` or Cloud `/file/upload`
 - **JWT** — Separated edition writes yaml `token.*`; Cloud writes Java `TokenConstants` / `CacheConstants`
-- **UniApp Scaffolding** — Optionally generates `{prefix}-uniapp` project with request utilities, login framework, env config; auto-appends WeChat config to backend application files
+- **UniApp Scaffolding** — Optionally generates `{prefix}-uniapp` project with request utilities, login framework, env config; auto-appends WeChat config to backend application files. When UniApp is enabled, generates `AppAuthController` (WeChat `jscode2session` + Token). Separated edition: `/app/{prefix}/auth/wechat-login`; Cloud: `/system/app/{prefix}/auth/wechat-login`
+- **Add-ons** — SMS login / slider captcha / API AES (all off by default; disabled for standalone `ruoyi`). WeChat mini-program login backend follows UniApp
 - **Official Source Fetch** — From the home screen, pull official RuoYi-Vue or RuoYi-Cloud backends via Gitee (shallow git clone, no login) or GitHub (archive zip) and continue into detection
 - **Deferred Extraction** — ZIP archives are extracted at execution time to a user-chosen output directory; original files are never modified
 - **Execution Preview** — Preview task list, impact scope, and high-risk items before executing
@@ -34,7 +35,7 @@ Config rewriting goes through Nacos SQL, not the admin application.yaml trio. Th
 
 When Replace UI is enabled, log-menu `component` values are rewritten from `system/operlog` and `system/logininfor` to `monitor/...`; `perms` are left unchanged.
 
-The gateway port is `server_port`. You may trim gen / job / file / monitor; gateway / auth / system cannot be trimmed.
+The gateway port is `server_port`. You may trim gen / job / file / monitor; gateway / auth / system cannot be trimmed. `new_modules` ports are assigned immediately after the official 7 services; modules trimmed by `remove_modules` do not consume a port. The dev `run.bat` picks up `run-{short-name}`.
 
 For development, start Nacos first, then double-click `run.bat` (or `run.sh`) at the project root and select services. For production / packaged jars, use `scripts/start.bat` (requires “startup scripts”).
 
@@ -183,6 +184,7 @@ forge-cli run --config forge.json [--source <zip-or-dir>] [--set k=v ...] [--jso
 --set jwt_expire_minutes=60
 --set ui_template=arco
 --set enable_cloud_custom_ports=true
+--set 'new_modules=["order","member"]'
 ```
 
 Full workflow (`init-config` → `preview` → `run --set db_type=postgresql --set db_name=demo_db`):
@@ -266,6 +268,7 @@ Field names match `CustomizeParams` in `src/types/index.ts`. Defaults match CLI 
 | db_password | string | `""` | Database password; may be empty |
 | config_db_name | string | `""` | Cloud config-database name. Empty: `{db_name}-config` if `db_name` is set, otherwise `ry-config` |
 | remove_modules | string[] | `[]` | Cloud modules to trim; only `gen` / `job` / `file` / `monitor` |
+| new_modules | string[] | `[]` | Cloud only. New business-module short names (start with a lowercase letter, `a-z0-9-`). Disabled for separated / standalone editions |
 | enable_cloud_custom_ports | boolean | `false` | Custom Cloud module ports. Off: increment from the gateway port; trimmed modules do not consume a port |
 | cloud_port_auth | number | `0` | Cloud auth port; `0` = auto-increment |
 | cloud_port_system | number | `0` | Cloud system port; `0` = auto-increment |
@@ -302,6 +305,18 @@ Field names match `CustomizeParams` in `src/types/index.ts`. Defaults match CLI 
 | enable_startup_scripts | boolean | `false` | Generate jar deploy scripts `scripts/start.bat` (and `.sh`). Not the same as the project-root dev scripts `run.bat` / `run.sh` |
 | enable_replace_ui | boolean | `false` | Replace original `ruoyi-ui` with a preset admin UI (`ruoyi-vue` and `ruoyi-cloud`; disabled for standalone `ruoyi`) |
 | ui_template | string | `vben-web-ele` | Admin UI template: `vben-web-ele` or `arco` |
+| enable_sms_login | boolean | `false` | SMS-code login. Separated edition: `/smsCode` `/smsLogin`. Cloud: lives on auth; gateway `/auth/smsCode` `/auth/smsLogin`. Image captcha is required before sending (slider uses `/captcha/check`). Disabled for standalone |
+| sms_provider | string | `aliyun` | `aliyun` / `tencent` |
+| sms_sign_name | string | `""` | SMS signature |
+| sms_access_key | string | `""` | AK |
+| sms_secret_key | string | `""` | SK; redacted in reports and CLI output |
+| sms_template_code | string | `""` | Aliyun TemplateCode / Tencent TemplateId |
+| sms_sdk_app_id | string | `""` | Tencent Cloud SMS SdkAppId (tencent only) |
+| sms_code_expire_minutes | number | `5` | Code TTL (minutes) |
+| sms_daily_limit_per_phone | number | `10` | Daily send cap per phone number |
+| enable_captcha_slider | boolean | `false` | AJ-Captcha slider `/captcha/get` `/captcha/check`; keeps the original image captcha. Boot3/4 uses the core package with manual wiring. Disabled for standalone |
+| enable_api_encrypt | boolean | `false` | API AES/ECB encrypt/decrypt. Public paths (login / captcha / SMS / WeChat login, etc.) are not encrypted. Disabled for standalone |
+| aes_secret | string | `""` | 16-byte printable key; empty generates a random one at execute time. Plaintext is not written to the report — only length and write location. The frontend key ships with the bundle (transport obfuscation, not a substitute for HTTPS) |
 
 The config file may also contain `_comment` and `_source` (not `CustomizeParams` fields; CLI uses them to record notes and the source path).
 
@@ -313,6 +328,11 @@ Constraints:
 - Cloud keeps official `ruoyi-*` dataIds / registration names
 - Nacos `8848` and Sentinel `8718` are not changed
 - `remove_modules` accepts only `gen` / `job` / `file` / `monitor`; illegal values are rejected
+- `new_modules` is Cloud only; short names must match `^[a-z][a-z0-9-]*$`; must not collide with `remove_modules` or existing module short names
+- The three add-on switches default to off; off means zero changes
+- Standalone `ruoyi` disables SMS / slider / AES
+- AES is not a substitute for HTTPS
+- `sms_secret_key` / `aes_secret` never appear in plaintext in reports or CLI output
 - Passwords / secrets in the config are plaintext by design
 - GUI `save_config_json` redacts secrets; CLI `init-config` does not
 

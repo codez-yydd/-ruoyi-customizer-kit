@@ -251,7 +251,7 @@ pub struct CustomizeParams {
     #[serde(default)]
     pub remove_modules: Vec<String>,
     /// 改造时新增业务模块短名（如 order / member）。空骨架，不含 CRUD / SQL / 菜单 / feign。
-    /// 单体 ruoyi 禁用；Cloud 落 {prefix}-modules/，分离版落根目录。
+    /// 仅 RuoYi-Cloud 开放，落 {prefix}-modules/；分离版 ruoyi-vue 与单体 ruoyi 禁用。
     #[serde(default)]
     pub new_modules: Vec<String>,
     /// 是否开启 Cloud 自定义模块端口（关闭则从网关端口起依次 +1）

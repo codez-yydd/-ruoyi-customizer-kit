@@ -3,7 +3,7 @@
 // 设计：
 // - 以「模板目录名」(template_dir) 为 key，列出该项目类型「不支持」的开关字段。
 // - ParamConfig 据此隐藏/禁用对应开关项，避免用户误选无效功能。
-// - 未列出的模板（如 ruoyi-vue / ruoyi-cloud）默认支持全部功能。
+// - 未列出的模板默认支持全部功能。
 //
 // template_dir 取自识别结果 ProjectInfo.template_dir（ruoyi-vue / ruoyi / ruoyi-cloud）。
 
@@ -21,7 +21,7 @@ export interface TemplateMeta {
 export const TEMPLATE_META: Record<string, TemplateMeta> = {
   'ruoyi-vue': {
     label: 'RuoYi-Vue',
-    desc: '前后端分离版（Spring Security + Vue），支持全部功能，可一键生成新业务模块空骨架'
+    desc: '前后端分离版（Spring Security + Vue）'
   },
   ruoyi: {
     label: 'RuoYi',
@@ -39,6 +39,9 @@ export const TEMPLATE_META: Record<string, TemplateMeta> = {
  * 故前端品牌化、前后端分离、UniApp 小程序、Nginx 反代等依赖独立前端目录的功能均不适用。
  */
 export const DISABLED_FEATURES: Record<string, (keyof CustomizeParams)[]> = {
+  'ruoyi-vue': [
+    'new_modules' // 新增业务模块仅对 RuoYi-Cloud 开放
+  ],
   ruoyi: [
     'enable_clear_home', // 清空若依默认首页仪表盘（Vue views/index.vue）
     'enable_remove_github', // 移除顶部栏 Vue 组件外链

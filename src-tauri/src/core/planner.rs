@@ -667,20 +667,15 @@ pub fn plan(
         });
     }
 
-    // 生成业务模块空骨架：Rename 之后前缀已改，Trim 之后裁剪完成，GenerateDevScripts 之前以便扫到 run-{name}
+    // 生成业务模块空骨架：仅 Cloud。Rename 之后前缀已改，Trim 之后裁剪完成，GenerateDevScripts 之前以便扫到 run-{name}
     let new_mods = crate::core::new_module::normalize_new_module_names(&params.new_modules);
-    if !new_mods.is_empty() && info.template_dir != "ruoyi" {
+    if is_cloud && !new_mods.is_empty() {
         let prefix = params.new_module_prefix.trim();
         let mut created = Vec::new();
         let mut dirs = Vec::new();
         for name in &new_mods {
-            if is_cloud {
-                dirs.push(format!("{prefix}-modules/{prefix}-{name}"));
-                created.push(format!("{prefix}-modules/{prefix}-{name}/pom.xml"));
-            } else {
-                dirs.push(format!("{prefix}-{name}"));
-                created.push(format!("{prefix}-{name}/pom.xml"));
-            }
+            dirs.push(format!("{prefix}-modules/{prefix}-{name}"));
+            created.push(format!("{prefix}-modules/{prefix}-{name}/pom.xml"));
         }
         tasks.push(Task {
             id: next_id(&tasks),
