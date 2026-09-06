@@ -705,6 +705,10 @@ fn rewrite_one_yaml(
                 &crate::core::sms_login::sms_yaml_child_block(params),
             );
         }
+        if params.enable_mail {
+            // 通用邮件能力落在 system（业务侧发信）；auth 的邮箱登录见下方 is_auth
+            *yaml = upsert_mail_yaml(yaml, params);
+        }
     }
     // 短信在 auth 模块消费，Nacos 必须写入 auth 的 *-dev.yml（2026-09-06）。
     // write_shared 只写 system 不够。
@@ -715,6 +719,10 @@ fn rewrite_one_yaml(
             "sms",
             &crate::core::sms_login::sms_yaml_child_block(params),
         );
+    }
+    // 邮箱验证码登录在 auth 模块消费，同短信：auth 条目必须自带 spring.mail 与 {prefix}.mail
+    if params.enable_mail && params.enable_email_login && is_auth {
+        *yaml = upsert_mail_yaml(yaml, params);
     }
     if params.enable_captcha_slider && is_auth {
         *yaml = crate::core::enhance_util::append_marked_block(
@@ -747,6 +755,10 @@ fn rewrite_one_yaml(
     if is_gw && params.enable_sms_login {
         *yaml = append_whitelist(yaml, "/auth/smsCode");
         *yaml = append_whitelist(yaml, "/auth/smsLogin");
+    }
+    if is_gw && params.enable_mail && params.enable_email_login {
+        *yaml = append_whitelist(yaml, "/auth/emailCode");
+        *yaml = append_whitelist(yaml, "/auth/emailLogin");
     }
     if is_gw && params.enable_captcha_slider {
         *yaml = append_whitelist(yaml, "/auth/captcha/get");
@@ -1459,6 +1471,25 @@ fn upsert_ruoyi_block(yaml: &str, year: &str) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// 注入邮件配置（幂等）：`spring.mail.*` 与 `{prefix}.mail.*`。
+///
+/// 两处子键同名 `mail`，必须用 `upsert_top_level_child` 做块内判重，
+/// 否则 `upsert_prefix_child` 的全局 `  mail:` 判重会把第二处漏写。
+fn upsert_mail_yaml(yaml: &str, params: &CustomizeParams) -> String {
+    let out = crate::core::enhance_util::upsert_top_level_child(
+        yaml,
+        "spring",
+        "mail",
+        &crate::core::mail::spring_mail_yaml_child(params),
+    );
+    crate::core::enhance_util::upsert_top_level_child(
+        &out,
+        &params.new_module_prefix,
+        "mail",
+        &crate::core::mail::mail_yaml_child_block(params),
+    )
 }
 
 /// 向 `security.ignore.whites` 追加路径（幂等）。
@@ -2436,6 +2467,28 @@ mod tests {
         assert!(is_sentinel_gateway("sentinel-ruoyi-gateway"));
         assert!(is_sentinel_gateway("sentinel-demo-gateway"));
         assert!(!is_system_yml("application-dev.yml"));
+    }
+
+    /// 方案 D：spring.mail 与 {prefix}.mail 是两个不同顶层块下的同名子键，
+    /// 必须都写进去，且重复调用不产生第二份。
+    #[test]
+    fn mail_yaml_injected_under_both_spring_and_prefix() {
+        let mut p = CustomizeParams::default();
+        p.new_module_prefix = "demo".into();
+        p.enable_mail = true;
+        p.mail_host = "smtp.exmail.qq.com".into();
+        p.mail_port = 465;
+        p.mail_username = "no-reply@example.com".into();
+        p.mail_password = "mail-secret".into();
+        let yaml = "spring:\n  redis:\n    host: localhost\ndemo:\n  sms:\n    enabled: true\n";
+        // 只数缩进两格的顶层子键，避开 spring.mail.properties.mail
+        let count = |s: &str| s.lines().filter(|l| l.trim_end() == "  mail:").count();
+        let once = upsert_mail_yaml(yaml, &p);
+        assert_eq!(count(&once), 2, "{once}");
+        assert!(once.contains("host: 'smtp.exmail.qq.com'"), "{once}");
+        assert!(once.contains("from-name:"), "{once}");
+        let twice = upsert_mail_yaml(&once, &p);
+        assert_eq!(count(&once), count(&twice), "重复注入不得追加：{twice}");
     }
 
     #[test]

@@ -143,7 +143,9 @@ fn add_sms_deps(
     Ok(n)
 }
 
-fn is_redis_service(root: &Path) -> bool {
+/// Redis 门面风格：Cloud / 新版为 RedisService，分离版为 RedisCache。
+/// 方案 D 的邮件增强件复用同一判定，避免两套口径。
+pub fn is_redis_service(root: &Path) -> bool {
     crate::core::detector::is_cloud_layout(root)
         || (enhance_util::find_java_file_in_project(root, "RedisService.java").is_some()
             && enhance_util::find_java_file_in_project(root, "RedisCache.java").is_none())
@@ -507,6 +509,15 @@ fn patch_cloud_phone_lookup(
             return Err(format!("补丁 RemoteUserService 失败：{e}"));
         }
     }
+    if enhance_util::patch_remote_user_fallback(
+        root,
+        &remote,
+        "getUserInfoByPhonenumber",
+        PHONE_FALLBACK_OVERRIDE,
+        log,
+    )? {
+        created += 1;
+    }
 
     let system = crate::core::detector::find_module_by_leaf_suffix(root, backend_modules, "system")
         .ok_or("Cloud 未找到 system 模块，无法放置手机号查询内部接口")?;
@@ -526,10 +537,19 @@ fn patch_cloud_phone_lookup(
     Ok(created)
 }
 
+/// RemoteUserFallbackFactory 匿名类覆盖：getUserInfoByPhonenumber
+const PHONE_FALLBACK_OVERRIDE: &str = r#"
+            @Override
+            public R<LoginUser> getUserInfoByPhonenumber(String phonenumber, String source)
+            {
+                return R.fail("获取用户失败:" + throwable.getMessage());
+            }
+"#;
+
 fn render_phone_inner_controller(params: &CustomizeParams, phone_method: &str) -> String {
     let pkg = &params.new_package;
     format!(
-        "package {pkg}.system.controller;\n\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.RestController;\nimport {pkg}.common.core.domain.R;\nimport {pkg}.common.core.domain.entity.SysUser;\nimport {pkg}.common.core.domain.model.LoginUser;\nimport {pkg}.common.core.enums.UserStatus;\nimport {pkg}.common.core.exception.ServiceException;\nimport {pkg}.common.security.annotation.InnerAuth;\nimport {pkg}.system.service.ISysPermissionService;\nimport {pkg}.system.service.ISysUserService;\n\n/**\n * 内部接口：按手机号取 LoginUser，供 auth 短信登录 Feign 调用。\n */\n@RestController\npublic class SysPhoneInnerController\n{{\n    @Autowired\n    private ISysUserService userService;\n\n    @Autowired(required = false)\n    private ISysPermissionService permissionService;\n\n    @InnerAuth\n    @GetMapping(\"/user/info/phone/{{phonenumber}}\")\n    public R<LoginUser> infoByPhone(@PathVariable(\"phonenumber\") String phonenumber)\n    {{\n        SysUser sysUser = userService.{phone_method}(phonenumber);\n        if (sysUser == null)\n        {{\n            return R.fail(\"用户不存在\");\n        }}\n        if (UserStatus.DELETED.getCode().equals(sysUser.getDelFlag()))\n        {{\n            throw new ServiceException(\"对不起，您的账号已被删除\");\n        }}\n        if (UserStatus.DISABLE.getCode().equals(sysUser.getStatus()))\n        {{\n            throw new ServiceException(\"对不起，您的账号已停用\");\n        }}\n        LoginUser loginUser = new LoginUser();\n        loginUser.setSysUser(sysUser);\n        loginUser.setUserid(sysUser.getUserId());\n        loginUser.setUsername(sysUser.getUserName());\n        if (permissionService != null)\n        {{\n            loginUser.setPermissions(permissionService.getMenuPermission(sysUser.getUserId()));\n        }}\n        return R.ok(loginUser);\n    }}\n}}\n"
+        "package {pkg}.system.controller;\n\nimport org.springframework.beans.factory.annotation.Autowired;\nimport org.springframework.web.bind.annotation.GetMapping;\nimport org.springframework.web.bind.annotation.PathVariable;\nimport org.springframework.web.bind.annotation.RestController;\nimport {pkg}.common.core.domain.R;\nimport {pkg}.common.core.domain.entity.SysUser;\nimport {pkg}.common.core.domain.model.LoginUser;\nimport {pkg}.common.core.enums.UserStatus;\nimport {pkg}.common.core.exception.ServiceException;\nimport {pkg}.common.security.annotation.InnerAuth;\nimport {pkg}.system.service.ISysPermissionService;\nimport {pkg}.system.service.ISysUserService;\n\n/**\n * 内部接口：按手机号取 LoginUser，供 auth 短信登录 Feign 调用。\n */\n@RestController\npublic class SysPhoneInnerController\n{{\n    @Autowired\n    private ISysUserService userService;\n\n    @Autowired(required = false)\n    private ISysPermissionService permissionService;\n\n    @InnerAuth\n    @GetMapping(\"/user/info/phone/{{phonenumber}}\")\n    public R<LoginUser> infoByPhone(@PathVariable(\"phonenumber\") String phonenumber)\n    {{\n        SysUser sysUser = userService.{phone_method}(phonenumber);\n        if (sysUser == null)\n        {{\n            return R.fail(\"用户不存在\");\n        }}\n        if (UserStatus.DELETED.getCode().equals(sysUser.getDelFlag()))\n        {{\n            throw new ServiceException(\"对不起，您的账号已被删除\");\n        }}\n        if (UserStatus.DISABLE.getCode().equals(sysUser.getStatus()))\n        {{\n            throw new ServiceException(\"对不起，您的账号已停用\");\n        }}\n        LoginUser loginUser = new LoginUser();\n        loginUser.setSysUser(sysUser);\n        loginUser.setUserid(sysUser.getUserId());\n        loginUser.setUsername(sysUser.getUserName());\n        if (permissionService != null)\n        {{\n            loginUser.setPermissions(permissionService.getMenuPermission(sysUser));\n            loginUser.setRoles(permissionService.getRolePermission(sysUser));\n        }}\n        return R.ok(loginUser);\n    }}\n}}\n"
     )
 }
 
@@ -538,15 +558,79 @@ pub mod frontend {
     use super::*;
     use std::path::Path;
 
+    /// 验证码登录 tab 的输入类型（方案 D：邮箱验证码登录复用短信 tab，不新增 tab）。
+    ///
+    /// - `PhoneOnly`：仅短信登录开启，产物与 B2 现状逐字节一致；
+    /// - `Dual`：短信 + 邮箱都开启，输入框按是否含 `@` 自动分流；
+    /// - `EmailOnly`：仅邮箱验证码登录开启，只走邮箱接口。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum LoginInputMode {
+        PhoneOnly,
+        Dual,
+        EmailOnly,
+    }
+
+    impl LoginInputMode {
+        pub fn from_params(params: &CustomizeParams) -> Self {
+            match (params.enable_sms_login, params.enable_email_login) {
+                (true, true) => Self::Dual,
+                (false, true) => Self::EmailOnly,
+                _ => Self::PhoneOnly,
+            }
+        }
+
+        /// 是否需要短信（手机号）通道
+        fn phone(self) -> bool {
+            self != Self::EmailOnly
+        }
+
+        /// tab 文案
+        fn tab_label(self) -> &'static str {
+            match self {
+                Self::PhoneOnly => "短信登录",
+                Self::Dual => "手机/邮箱登录",
+                Self::EmailOnly => "邮箱登录",
+            }
+        }
+
+        /// 账号输入框提示语
+        fn account_placeholder(self) -> &'static str {
+            match self {
+                Self::PhoneOnly => "手机号",
+                Self::Dual => "手机号或邮箱",
+                Self::EmailOnly => "邮箱",
+            }
+        }
+
+        /// 验证码输入框提示语
+        fn code_placeholder(self) -> &'static str {
+            match self {
+                Self::PhoneOnly => "短信验证码",
+                Self::Dual => "验证码",
+                Self::EmailOnly => "邮箱验证码",
+            }
+        }
+
+        /// 账号为空时的提示语
+        fn empty_hint(self) -> &'static str {
+            match self {
+                Self::PhoneOnly => "请填写手机号",
+                Self::Dual => "请填写手机号或邮箱",
+                Self::EmailOnly => "请填写邮箱",
+            }
+        }
+    }
+
     pub fn patch_frontends(
         root: &Path,
         params: &CustomizeParams,
         cloud: bool,
         log: &dyn Fn(&str),
     ) -> Result<usize, String> {
+        let mode = LoginInputMode::from_params(params);
         let mut n = 0usize;
         for dir in enhance_util::collect_frontend_dirs(root) {
-            n += patch_one_ui(&dir, params, cloud, log)?;
+            n += patch_one_ui(&dir, params, cloud, mode, log)?;
         }
         Ok(n)
     }
@@ -555,20 +639,21 @@ pub mod frontend {
         ui: &Path,
         params: &CustomizeParams,
         cloud: bool,
+        mode: LoginInputMode,
         log: &dyn Fn(&str),
     ) -> Result<usize, String> {
         let mut n = 0usize;
         let name = ui.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if name.ends_with("-uniapp") {
-            n += patch_uniapp(ui, cloud, log)?;
+            n += patch_uniapp(ui, cloud, mode, log)?;
             return Ok(n);
         }
         // 经典 ruoyi-ui
         let classic_login = ui.join("src/views/login.vue");
         let classic_api = ui.join("src/api/login.js");
         if classic_login.is_file() && ui.join("src/settings.js").is_file() {
-            n += patch_classic_login(&classic_login, params, log)?;
-            if classic_api.is_file() {
+            n += patch_classic_login(&classic_login, params, mode, log)?;
+            if classic_api.is_file() && mode.phone() {
                 n += patch_classic_api(&classic_api, cloud, log)?;
             }
         }
@@ -576,27 +661,31 @@ pub mod frontend {
         let vben_auth = ui.join("apps/web-ele/src/api/core/auth.ts");
         let vben_auth_overlay = ui.join("cloud-overlay/apps/web-ele/src/api/core/auth.ts");
         if vben_auth.is_file() {
-            n += patch_vben_auth(&vben_auth, cloud, log)?;
+            if mode.phone() {
+                n += patch_vben_auth(&vben_auth, cloud, log)?;
+            }
             let login = ui.join("apps/web-ele/src/views/_core/authentication/login.vue");
             if login.is_file() {
-                n += patch_vben_login(&login, log)?;
+                n += patch_vben_login(&login, mode, log)?;
             }
             let store = ui.join("apps/web-ele/src/store/auth.ts");
             if store.is_file() {
-                n += patch_vben_auth_store(&store, log)?;
+                n += patch_vben_auth_store(&store, mode, log)?;
             }
         }
-        if vben_auth_overlay.is_file() {
+        if vben_auth_overlay.is_file() && mode.phone() {
             n += patch_vben_auth(&vben_auth_overlay, cloud, log)?;
         }
         // arco
         let arco_api = ui.join("src/api/login.ts");
         let arco_api_overlay = ui.join("cloud-overlay/src/api/login.ts");
         if arco_api.is_file() && ui.join("src/views/login/index.vue").is_file() {
-            n += patch_arco_api(&arco_api, cloud, log)?;
-            n += patch_arco_login(&ui.join("src/views/login/index.vue"), log)?;
+            if mode.phone() {
+                n += patch_arco_api(&arco_api, cloud, log)?;
+            }
+            n += patch_arco_login(&ui.join("src/views/login/index.vue"), mode, log)?;
         }
-        if arco_api_overlay.is_file() {
+        if arco_api_overlay.is_file() && mode.phone() {
             n += patch_arco_api(&arco_api_overlay, cloud, log)?;
         }
         Ok(n)
@@ -624,9 +713,23 @@ pub mod frontend {
         })
     }
 
+    /// 经典 login.vue 的登录调用表达式（PhoneOnly/Dual/EmailOnly 共用 handleLogin 落 token）
+    fn classic_login_call(mode: LoginInputMode) -> String {
+        let sms = "smsLogin({ phone: this.loginForm.phone || \"\", smsCode: this.loginForm.smsCode || \"\" })";
+        let email = "emailLogin({ email: this.loginForm.phone || \"\", emailCode: this.loginForm.smsCode || \"\" })";
+        match mode {
+            LoginInputMode::PhoneOnly => sms.to_string(),
+            LoginInputMode::Dual => format!(
+                "((this.loginForm.phone || \"\").indexOf(\"@\") > -1 ? {email} : {sms})"
+            ),
+            LoginInputMode::EmailOnly => email.to_string(),
+        }
+    }
+
     fn patch_classic_login(
         path: &Path,
         params: &CustomizeParams,
+        mode: LoginInputMode,
         log: &dyn Fn(&str),
     ) -> Result<usize, String> {
         enhance_util::read_write(path, |c| {
@@ -639,18 +742,40 @@ pub mod frontend {
             } else {
                 "需先填写图形验证码"
             };
+            // 导入清单按模式取舍：仅邮箱时不引入短信 API，避免调用不存在的后端接口
+            let imports = match mode {
+                LoginInputMode::PhoneOnly => "getCodeImg, getSmsCode, smsLogin",
+                LoginInputMode::Dual => "getCodeImg, getSmsCode, smsLogin, getEmailCode, emailLogin",
+                LoginInputMode::EmailOnly => "getCodeImg, getEmailCode, emailLogin",
+            };
             let mut out = c.replace(
                 "import { getCodeImg } from \"@/api/login\"",
-                "import { getCodeImg, getSmsCode, smsLogin } from \"@/api/login\"",
+                &format!("import {{ {imports} }} from \"@/api/login\""),
             );
             if out == c {
                 out = c.replace(
                     "import { getCodeImg } from '@/api/login'",
-                    "import { getCodeImg, getSmsCode, smsLogin } from '@/api/login'",
+                    &format!("import {{ {imports} }} from '@/api/login'"),
                 );
             }
+            if !out.contains("setToken") {
+                for needle in [
+                    "import { getCodeImg",
+                    "from \"@/api/login\"",
+                    "from '@/api/login'",
+                ] {
+                    if let Some(idx) = out.find(needle) {
+                        let line_start = out[..idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                        out.insert_str(line_start, "import { setToken } from '@/utils/auth'\n");
+                        break;
+                    }
+                }
+            }
             let phone_item = format!(
-                "      <!-- FORGE_SMS_LOGIN -->\n      <div style=\"margin-bottom:12px;font-size:13px;\">\n        <span :style=\"loginMode==='pwd' ? 'font-weight:bold' : ''\" @click=\"loginMode='pwd'\">账号登录</span>\n        &nbsp;|&nbsp;\n        <span :style=\"loginMode==='sms' ? 'font-weight:bold' : ''\" @click=\"loginMode='sms'\">短信登录</span>\n      </div>\n      <el-form-item v-if=\"loginMode==='sms'\" prop=\"phone\">\n        <el-input v-model=\"loginForm.phone\" placeholder=\"手机号\" auto-complete=\"off\">\n          <svg-icon slot=\"prefix\" icon-class=\"phone\" class=\"el-input__icon input-icon\" />\n        </el-input>\n      </el-form-item>\n      <el-form-item v-if=\"loginMode==='sms'\" prop=\"smsCode\">\n        <el-input v-model=\"loginForm.smsCode\" placeholder=\"短信验证码\" style=\"width:63%\">\n        </el-input>\n        <el-button size=\"mini\" :disabled=\"smsCooldown>0\" @click.native.prevent=\"handleSendSms\">{send_hint}</el-button>\n      </el-form-item>\n"
+                "      <!-- FORGE_SMS_LOGIN -->\n      <div style=\"margin-bottom:12px;font-size:13px;\">\n        <span :style=\"loginMode==='pwd' ? 'font-weight:bold' : ''\" @click=\"loginMode='pwd'\">账号登录</span>\n        &nbsp;|&nbsp;\n        <span :style=\"loginMode==='sms' ? 'font-weight:bold' : ''\" @click=\"loginMode='sms'\">{tab}</span>\n      </div>\n      <el-form-item v-if=\"loginMode==='sms'\" prop=\"phone\">\n        <el-input v-model=\"loginForm.phone\" placeholder=\"{account}\" auto-complete=\"off\">\n          <svg-icon slot=\"prefix\" icon-class=\"phone\" class=\"el-input__icon input-icon\" />\n        </el-input>\n      </el-form-item>\n      <el-form-item v-if=\"loginMode==='sms'\" prop=\"smsCode\">\n        <el-input v-model=\"loginForm.smsCode\" placeholder=\"{code}\" style=\"width:63%\">\n        </el-input>\n        <el-button size=\"mini\" :disabled=\"smsCooldown>0\" @click.native.prevent=\"handleSendSms\">{send_hint}</el-button>\n      </el-form-item>\n",
+                tab = mode.tab_label(),
+                account = mode.account_placeholder(),
+                code = mode.code_placeholder(),
             );
             if let Some(idx) = out.find("<el-form-item prop=\"username\">") {
                 out.insert_str(idx, &phone_item);
@@ -670,11 +795,14 @@ pub mod frontend {
                     "rememberMe: false,\n        phone: \"\",\n        smsCode: \"\"",
                 );
             }
-            if !out.contains("handleSendSms") {
+            // 判重必须认「方法定义」而不是「handleSendSms」字样：上面插入的模板里
+            // 已有 @click.native.prevent="handleSendSms"，用裸字符串会把方法体整段漏掉。
+            if !out.contains("handleSendSms() {") {
                 if let Some(idx) = out.find("methods:") {
                     if let Some(brace) = out[idx..].find('{') {
                         let at = idx + brace + 1;
-                        let methods = r#"
+                        let methods = match mode {
+                            LoginInputMode::PhoneOnly => r#"
     handleSendSms() {
       const phone = this.loginForm.phone
       if (!phone) { this.$modal.msgError("请填写手机号"); return }
@@ -685,21 +813,58 @@ pub mod frontend {
         const t = setInterval(() => { this.smsCooldown--; if (this.smsCooldown <= 0) clearInterval(t) }, 1000)
       })
     },
-"#;
-                        out.insert_str(at, methods);
+"#
+                            .to_string(),
+                            // phone 字段在双类型模式下同时承载手机号与邮箱，含 @ 即走邮箱通道
+                            LoginInputMode::Dual => format!(
+                                r#"
+    handleSendSms() {{
+      const account = (this.loginForm.phone || "").trim()
+      if (!account) {{ this.$modal.msgError("{empty}"); return }}
+      const base = {{ uuid: this.loginForm.uuid, code: this.loginForm.code, captchaVerification: this.loginForm.captchaVerification }}
+      const isEmail = account.indexOf("@") > -1
+      const request = isEmail ? getEmailCode({{ ...base, email: account }}) : getSmsCode({{ ...base, phone: account }})
+      request.then(() => {{
+        this.$modal.msgSuccess("验证码已发送")
+        this.smsCooldown = 60
+        const t = setInterval(() => {{ this.smsCooldown--; if (this.smsCooldown <= 0) clearInterval(t) }}, 1000)
+      }})
+    }},
+"#,
+                                empty = mode.empty_hint()
+                            ),
+                            LoginInputMode::EmailOnly => format!(
+                                r#"
+    handleSendSms() {{
+      const email = (this.loginForm.phone || "").trim()
+      if (!email || email.indexOf("@") < 0) {{ this.$modal.msgError("{empty}"); return }}
+      const payload = {{ email, uuid: this.loginForm.uuid, code: this.loginForm.code, captchaVerification: this.loginForm.captchaVerification }}
+      getEmailCode(payload).then(() => {{
+        this.$modal.msgSuccess("验证码已发送")
+        this.smsCooldown = 60
+        const t = setInterval(() => {{ this.smsCooldown--; if (this.smsCooldown <= 0) clearInterval(t) }}, 1000)
+      }})
+    }},
+"#,
+                                empty = mode.empty_hint()
+                            ),
+                        };
+                        out.insert_str(at, &methods);
                     }
                 }
             }
-            if !out.contains("loginMode==='sms'") {
+            // 同理：模板里有 v-if="loginMode==='sms'"，判重要认脚本里的分支写法
+            if !out.contains("this.loginMode === 'sms'") {
                 // handleLogin 分支：在原 handleLogin 开头插入
+                let call = classic_login_call(mode);
                 out = out.replace(
                     "handleLogin() {",
-                    "handleLogin() {\n      if (this.loginMode === 'sms') {\n        this.$refs.loginForm.validate(valid => {\n          if (!valid) return\n          this.loading = true\n          smsLogin({ phone: this.loginForm.phone, smsCode: this.loginForm.smsCode }).then(res => {\n            this.$store.dispatch(\"Login\", { ...this.loginForm, token: res.token }).catch(() => {})\n            this.$router.push({ path: this.redirect || \"/\" }).catch(() => {})\n          }).catch(() => { this.loading = false; this.getCode && this.getCode() })\n        })\n        return\n      }",
+                    &format!("handleLogin() {{\n      if (this.loginMode === 'sms') {{\n        this.$refs.loginForm.validate(valid => {{\n          if (!valid) return\n          this.loading = true\n          {call}.then(res => {{\n            setToken(res.token)\n            this.$store.commit('SET_TOKEN', res.token)\n            this.loading = false\n            this.$router.push({{ path: this.redirect || \"/\" }})\n          }}).catch(() => {{ this.loading = false; this.getCode && this.getCode() }})\n        }})\n        return\n      }}"),
                 );
                 if !out.contains("if (this.loginMode === 'sms')") {
                     out = out.replace(
                         "handleLogin() {",
-                        "handleLogin() {\n      if (this.loginMode === 'sms') { this.loading = true; smsLogin({ phone: this.loginForm.phone, smsCode: this.loginForm.smsCode }).finally(() => { this.loading = false }); return }",
+                        &format!("handleLogin() {{\n      if (this.loginMode === 'sms') {{ this.loading = true; {call}.finally(() => {{ this.loading = false }}); return }}"),
                     );
                 }
             }
@@ -707,7 +872,10 @@ pub mod frontend {
         })
         .map(|ok| {
             if ok {
-                log("已改造经典 login.vue 短信模式（Vue2）");
+                log(&format!(
+                    "已改造经典 login.vue 验证码登录（Vue2，{}）",
+                    mode.tab_label()
+                ));
                 1
             } else {
                 0
@@ -737,31 +905,19 @@ pub mod frontend {
         })
     }
 
-    fn patch_vben_login(path: &Path, log: &dyn Fn(&str)) -> Result<usize, String> {
-        enhance_util::read_write(path, |c| {
-            if c.contains("FORGE_SMS_LOGIN") && c.contains("loginMode") && c.contains("handleSendSms")
-            {
-                return None;
-            }
-            let mut out = c.to_string();
-            if out.contains("from '#/api'") {
-                out = out.replace(
-                    "import { getCaptchaApi } from '#/api';",
-                    "import { getCaptchaApi, getSmsCodeApi } from '#/api';",
-                );
-                if !out.contains("getSmsCodeApi") {
-                    out = out.replace(
-                        "import { getCaptchaApi,",
-                        "import { getCaptchaApi, getSmsCodeApi,",
-                    );
-                }
-            }
-            if !out.contains("getSmsCodeApi") {
-                out = format!("import {{ getSmsCodeApi }} from '#/api';\n{out}");
-            }
-            if !out.contains("const loginMode") {
-                if let Some(idx) = out.find("const captchaEnabled = ref(true);") {
-                    let insert = r#"
+    /// vben 登录页需要引入的发码 API 名（按模式取舍）
+    fn vben_code_apis(mode: LoginInputMode) -> &'static str {
+        match mode {
+            LoginInputMode::PhoneOnly => "getSmsCodeApi",
+            LoginInputMode::Dual => "getSmsCodeApi, getEmailCodeApi",
+            LoginInputMode::EmailOnly => "getEmailCodeApi",
+        }
+    }
+
+    /// vben 发码函数体（PhoneOnly 与 B2 现状逐字一致）
+    fn vben_send_code_fn(mode: LoginInputMode) -> String {
+        match mode {
+            LoginInputMode::PhoneOnly => r#"
 /** FORGE_SMS_LOGIN */
 const loginMode = ref<'pwd' | 'sms'>('pwd')
 const smsCooldown = ref(0)
@@ -779,39 +935,149 @@ async function handleSendSms() {
     smsTimer = setInterval(() => { smsCooldown.value--; if (smsCooldown.value <= 0 && smsTimer) { clearInterval(smsTimer); smsTimer = undefined } }, 1000)
   } catch (e: any) { ElMessage.error(e?.message || '发送失败') }
 }
-"#;
-                    out.insert_str(idx + "const captchaEnabled = ref(true);".len(), insert);
+"#
+            .to_string(),
+            // phone 字段同时承载手机号与邮箱：含 @ 走邮箱接口，否则走短信接口
+            LoginInputMode::Dual => r#"
+/** FORGE_SMS_LOGIN */
+const loginMode = ref<'pwd' | 'sms'>('pwd')
+const smsCooldown = ref(0)
+let smsTimer: ReturnType<typeof setInterval> | undefined
+/** 输入是否邮箱：决定走 /emailCode + /emailLogin 还是 /smsCode + /smsLogin */
+function forgeIsEmail(account: string) {
+  return account.includes('@')
+}
+async function handleSendSms() {
+  const api = loginRef.value?.getFormApi?.()
+  const values = ((await api?.getValues?.()) || {}) as Record<string, any>
+  const account = String(values.phone || '').trim()
+  const isEmail = forgeIsEmail(account)
+  if (!isEmail && !/^1\d{10}$/.test(account)) { ElMessage.error('请填写正确的手机号或邮箱'); return }
+  if (smsCooldown.value > 0) return
+  const base = { uuid: captchaUuid.value, code: values.code, captchaVerification: values.captchaVerification }
+  try {
+    await (isEmail
+      ? getEmailCodeApi({ ...base, email: account })
+      : getSmsCodeApi({ ...base, phone: account }))
+    ElMessage.success('验证码已发送')
+    smsCooldown.value = 60
+    smsTimer = setInterval(() => { smsCooldown.value--; if (smsCooldown.value <= 0 && smsTimer) { clearInterval(smsTimer); smsTimer = undefined } }, 1000)
+  } catch (e: any) { ElMessage.error(e?.message || '发送失败') }
+}
+"#
+            .to_string(),
+            LoginInputMode::EmailOnly => r#"
+/** FORGE_SMS_LOGIN */
+const loginMode = ref<'pwd' | 'sms'>('pwd')
+const smsCooldown = ref(0)
+let smsTimer: ReturnType<typeof setInterval> | undefined
+async function handleSendSms() {
+  const api = loginRef.value?.getFormApi?.()
+  const values = ((await api?.getValues?.()) || {}) as Record<string, any>
+  const email = String(values.phone || '').trim()
+  if (!email.includes('@')) { ElMessage.error('请填写正确邮箱'); return }
+  if (smsCooldown.value > 0) return
+  try {
+    await getEmailCodeApi({ email, uuid: captchaUuid.value, code: values.code, captchaVerification: values.captchaVerification })
+    ElMessage.success('验证码已发送')
+    smsCooldown.value = 60
+    smsTimer = setInterval(() => { smsCooldown.value--; if (smsCooldown.value <= 0 && smsTimer) { clearInterval(smsTimer); smsTimer = undefined } }, 1000)
+  } catch (e: any) { ElMessage.error(e?.message || '发送失败') }
+}
+"#
+            .to_string(),
+        }
+    }
+
+    /// vben 验证码登录表单字段（PhoneOnly 与 B2 现状逐字一致）
+    fn vben_code_fields(mode: LoginInputMode) -> String {
+        let account_rule = match mode {
+            LoginInputMode::PhoneOnly => {
+                "z.string().regex(/^1\\d{10}$/, { message: '请输入正确手机号' })".to_string()
+            }
+            LoginInputMode::Dual => {
+                "z.string().regex(/(^1\\d{10}$)|(^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$)/, { message: '请输入正确的手机号或邮箱' })".to_string()
+            }
+            LoginInputMode::EmailOnly => {
+                "z.string().regex(/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/, { message: '请输入正确邮箱' })".to_string()
+            }
+        };
+        let account = mode.account_placeholder();
+        let code = mode.code_placeholder();
+        format!(
+            r#"
+  if (loginMode.value === 'sms') {{
+    void smsCooldown.value
+    const smsFields: VbenFormSchema[] = [
+      {{ component: 'VbenInput', componentProps: {{ placeholder: '{account}' }}, fieldName: 'phone', label: '{account}', rules: {account_rule} }},
+      {{ component: 'VbenInput', componentProps: {{ placeholder: '{code}' }}, fieldName: 'smsCode', label: '{code}', rules: z.string().min(4, {{ message: '请输入{code}' }}), suffix: (() => h('button', {{ type: 'button', disabled: smsCooldown.value > 0, onClick: (e: Event) => {{ e.preventDefault(); void handleSendSms() }} }}, smsCooldown.value > 0 ? `${{smsCooldown.value}}s` : '发送验证码')) as any }},
+    ]
+    if (captchaEnabled.value) {{
+      smsFields.push({{ component: 'VbenInput', componentProps: {{ placeholder: '请输入验证码' }}, fieldName: 'code', label: '验证码', rules: z.string().min(1, {{ message: '请输入验证码' }}), suffix: renderCaptchaImage }})
+    }}
+    return smsFields
+  }}
+"#
+        )
+    }
+
+    /// vben handleSubmit 里的验证码登录分支（PhoneOnly 与 B2 现状逐字一致）
+    fn vben_submit_branch(mode: LoginInputMode) -> String {
+        match mode {
+            LoginInputMode::PhoneOnly => "if (loginMode.value === 'sms') {\n      await authStore.authLogin({ phone: values.phone, smsCode: values.smsCode, forgeSms: true } as any)\n      return\n    }\n    await authStore.authLogin({".to_string(),
+            LoginInputMode::Dual => "if (loginMode.value === 'sms') {\n      const account = String(values.phone || '').trim()\n      await (forgeIsEmail(account)\n        ? authStore.authLogin({ email: account, emailCode: values.smsCode, forgeEmail: true } as any)\n        : authStore.authLogin({ phone: account, smsCode: values.smsCode, forgeSms: true } as any))\n      return\n    }\n    await authStore.authLogin({".to_string(),
+            LoginInputMode::EmailOnly => "if (loginMode.value === 'sms') {\n      await authStore.authLogin({ email: String(values.phone || '').trim(), emailCode: values.smsCode, forgeEmail: true } as any)\n      return\n    }\n    await authStore.authLogin({".to_string(),
+        }
+    }
+
+    fn patch_vben_login(
+        path: &Path,
+        mode: LoginInputMode,
+        log: &dyn Fn(&str),
+    ) -> Result<usize, String> {
+        enhance_util::read_write(path, |c| {
+            if c.contains("FORGE_SMS_LOGIN") && c.contains("loginMode") && c.contains("handleSendSms")
+            {
+                return None;
+            }
+            let apis = vben_code_apis(mode);
+            let first_api = apis.split(',').next().unwrap_or(apis).trim().to_string();
+            let mut out = c.to_string();
+            if out.contains("from '#/api'") {
+                out = out.replace(
+                    "import { getCaptchaApi } from '#/api';",
+                    &format!("import {{ getCaptchaApi, {apis} }} from '#/api';"),
+                );
+                if !out.contains(&first_api) {
+                    out = out.replace(
+                        "import { getCaptchaApi,",
+                        &format!("import {{ getCaptchaApi, {apis},"),
+                    );
+                }
+            }
+            if !out.contains(&first_api) {
+                out = format!("import {{ {apis} }} from '#/api';\n{out}");
+            }
+            if !out.contains("const loginMode") {
+                if let Some(idx) = out.find("const captchaEnabled = ref(true);") {
+                    let insert = vben_send_code_fn(mode);
+                    out.insert_str(idx + "const captchaEnabled = ref(true);".len(), &insert);
                 }
             }
             if !out.contains("loginMode.value === 'sms'") {
                 if let Some(idx) = out.find("return fields;") {
-                    let insert = r#"
-  if (loginMode.value === 'sms') {
-    void smsCooldown.value
-    const smsFields: VbenFormSchema[] = [
-      { component: 'VbenInput', componentProps: { placeholder: '手机号' }, fieldName: 'phone', label: '手机号', rules: z.string().regex(/^1\d{10}$/, { message: '请输入正确手机号' }) },
-      { component: 'VbenInput', componentProps: { placeholder: '短信验证码' }, fieldName: 'smsCode', label: '短信验证码', rules: z.string().min(4, { message: '请输入短信验证码' }), suffix: (() => h('button', { type: 'button', disabled: smsCooldown.value > 0, onClick: (e: Event) => { e.preventDefault(); void handleSendSms() } }, smsCooldown.value > 0 ? `${smsCooldown.value}s` : '发送验证码')) as any },
-    ]
-    if (captchaEnabled.value) {
-      smsFields.push({ component: 'VbenInput', componentProps: { placeholder: '请输入验证码' }, fieldName: 'code', label: '验证码', rules: z.string().min(1, { message: '请输入验证码' }), suffix: renderCaptchaImage })
-    }
-    return smsFields
-  }
-"#;
-                    out.insert_str(idx, insert);
+                    let insert = vben_code_fields(mode);
+                    out.insert_str(idx, &insert);
                 }
             }
-            if !out.contains("forgeSms") {
-                out = out.replace(
-                    "await authStore.authLogin({",
-                    "if (loginMode.value === 'sms') {\n      await authStore.authLogin({ phone: values.phone, smsCode: values.smsCode, forgeSms: true } as any)\n      return\n    }\n    await authStore.authLogin({",
-                );
+            if !out.contains("forgeSms") && !out.contains("forgeEmail") {
+                out = out.replace("await authStore.authLogin({", &vben_submit_branch(mode));
             }
             if let Some(idx) = out.find("<AuthenticationLogin") {
                 if !out.contains("<!-- FORGE_SMS_LOGIN -->") {
                     out.insert_str(
                         idx,
-                        "<!-- FORGE_SMS_LOGIN -->\n  <div style=\"margin-bottom:12px;font-size:13px;text-align:center;\">\n    <span :style=\"loginMode==='pwd' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='pwd'\">账号登录</span>\n    &nbsp;|&nbsp;\n    <span :style=\"loginMode==='sms' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='sms'\">短信登录</span>\n  </div>\n  ",
+                        &format!("<!-- FORGE_SMS_LOGIN -->\n  <div style=\"margin-bottom:12px;font-size:13px;text-align:center;\">\n    <span :style=\"loginMode==='pwd' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='pwd'\">账号登录</span>\n    &nbsp;|&nbsp;\n    <span :style=\"loginMode==='sms' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='sms'\">{}</span>\n  </div>\n  ", mode.tab_label()),
                     );
                 }
             } else if !out.contains("<!-- FORGE_SMS_LOGIN -->") {
@@ -821,7 +1087,10 @@ async function handleSendSms() {
         })
         .map(|ok| {
             if ok {
-                log("已改造 vben 登录页短信模式（手机号+验证码+60s 发码）");
+                log(&format!(
+                    "已改造 vben 登录页验证码模式（{}+验证码+60s 发码）",
+                    mode.account_placeholder()
+                ));
                 1
             } else {
                 0
@@ -829,32 +1098,44 @@ async function handleSendSms() {
         })
     }
 
-    fn patch_vben_auth_store(path: &Path, log: &dyn Fn(&str)) -> Result<usize, String> {
+    fn patch_vben_auth_store(
+        path: &Path,
+        mode: LoginInputMode,
+        log: &dyn Fn(&str),
+    ) -> Result<usize, String> {
+        let apis: &str = match mode {
+            LoginInputMode::PhoneOnly => "smsLoginApi",
+            LoginInputMode::Dual => "smsLoginApi, emailLoginApi",
+            LoginInputMode::EmailOnly => "emailLoginApi",
+        };
+        let first_api = apis.split(',').next().unwrap_or(apis).trim().to_string();
+        let call = match mode {
+            LoginInputMode::PhoneOnly => "(params as any)?.forgeSms ? await smsLoginApi(params) : await loginApi(params)".to_string(),
+            LoginInputMode::Dual => "(params as any)?.forgeEmail ? await emailLoginApi(params) : ((params as any)?.forgeSms ? await smsLoginApi(params) : await loginApi(params))".to_string(),
+            LoginInputMode::EmailOnly => "(params as any)?.forgeEmail ? await emailLoginApi(params) : await loginApi(params)".to_string(),
+        };
         enhance_util::read_write(path, |c| {
-            if c.contains("smsLoginApi") && c.contains("forgeSms") {
+            if c.contains(&first_api) && (c.contains("forgeSms") || c.contains("forgeEmail")) {
                 return None;
             }
             let mut out = c.replace(
                 "import { getAccessCodesApi, getUserInfoApi, loginApi, logoutApi } from '#/api';",
-                "import { getAccessCodesApi, getUserInfoApi, loginApi, logoutApi, smsLoginApi } from '#/api';",
+                &format!("import {{ getAccessCodesApi, getUserInfoApi, loginApi, logoutApi, {apis} }} from '#/api';"),
             );
-            if !out.contains("smsLoginApi") {
-                out = out.replace(
-                    "from '#/api';",
-                    ", smsLoginApi } from '#/api';",
-                );
+            if !out.contains(&first_api) {
+                out = out.replace("from '#/api';", &format!(", {apis} }} from '#/api';"));
             }
-            if !out.contains("forgeSms") {
+            if !out.contains("forgeSms") && !out.contains("forgeEmail") {
                 out = out.replace(
                     "const { accessToken } = await loginApi(params);",
-                    "const { accessToken } = (params as any)?.forgeSms ? await smsLoginApi(params) : await loginApi(params);",
+                    &format!("const {{ accessToken }} = {call};"),
                 );
             }
             Some(out)
         })
         .map(|ok| {
             if ok {
-                log("已向 vben auth store 接入 smsLoginApi");
+                log(&format!("已向 vben auth store 接入 {apis}"));
                 1
             } else {
                 0
@@ -884,26 +1165,10 @@ async function handleSendSms() {
         })
     }
 
-    fn patch_arco_login(path: &Path, log: &dyn Fn(&str)) -> Result<usize, String> {
-        enhance_util::read_write(path, |c| {
-            if c.contains("FORGE_SMS_LOGIN") && c.contains("handleSendSms") && c.contains("smsPhone")
-            {
-                return None;
-            }
-            let mut out = c.to_string();
-            out = out.replace(
-                "import { getCaptchaImage } from '@/api/login'",
-                "import { getCaptchaImage, getSmsCode, smsLogin } from '@/api/login'",
-            );
-            if !out.contains("getSmsCode") {
-                out = format!("import {{ getSmsCode, smsLogin }} from '@/api/login'\n{out}");
-            }
-            if !out.contains("setToken") {
-                out = format!("import {{ setToken }} from '@/utils/auth'\n{out}");
-            }
-            if !out.contains("smsPhone") {
-                if let Some(idx) = out.find("const captchaEnabled = ref(false)") {
-                    let insert = r#"
+    /// arco 登录页脚本块（PhoneOnly 与 B2 现状逐字一致）
+    fn arco_script_block(mode: LoginInputMode) -> String {
+        match mode {
+            LoginInputMode::PhoneOnly => r#"
 /** FORGE_SMS_LOGIN */
 const loginMode = ref<'pwd' | 'sms'>('pwd')
 const smsPhone = ref('')
@@ -918,23 +1183,116 @@ async function handleSendSms() {
   smsCooldown.value = 60
   smsTimer = setInterval(() => { smsCooldown.value--; if (smsCooldown.value <= 0 && smsTimer) { clearInterval(smsTimer); smsTimer = undefined } }, 1000)
 }
-"#;
-                    out.insert_str(idx, insert);
+"#
+            .to_string(),
+            // smsPhone 同时承载手机号与邮箱：含 @ 走邮箱通道
+            LoginInputMode::Dual => r#"
+/** FORGE_SMS_LOGIN */
+const loginMode = ref<'pwd' | 'sms'>('pwd')
+const smsPhone = ref('')
+const smsCode = ref('')
+const smsCooldown = ref(0)
+let smsTimer: ReturnType<typeof setInterval> | undefined
+/** 输入是否邮箱：决定走 /emailCode + /emailLogin 还是 /smsCode + /smsLogin */
+function forgeIsEmail(account: string) {
+  return account.includes('@')
+}
+async function handleSendSms() {
+  const account = smsPhone.value.trim()
+  const isEmail = forgeIsEmail(account)
+  if (!isEmail && !/^1\d{10}$/.test(account)) return
+  if (isEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(account)) return
+  if (smsCooldown.value > 0) return
+  await (isEmail
+    ? getEmailCode({ email: account, uuid: form.uuid, code: form.code })
+    : getSmsCode({ phone: account, uuid: form.uuid, code: form.code }))
+  smsCooldown.value = 60
+  smsTimer = setInterval(() => { smsCooldown.value--; if (smsCooldown.value <= 0 && smsTimer) { clearInterval(smsTimer); smsTimer = undefined } }, 1000)
+}
+"#
+            .to_string(),
+            LoginInputMode::EmailOnly => r#"
+/** FORGE_SMS_LOGIN */
+const loginMode = ref<'pwd' | 'sms'>('pwd')
+const smsPhone = ref('')
+const smsCode = ref('')
+const smsCooldown = ref(0)
+let smsTimer: ReturnType<typeof setInterval> | undefined
+async function handleSendSms() {
+  const email = smsPhone.value.trim()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return
+  if (smsCooldown.value > 0) return
+  await getEmailCode({ email, uuid: form.uuid, code: form.code })
+  smsCooldown.value = 60
+  smsTimer = setInterval(() => { smsCooldown.value--; if (smsCooldown.value <= 0 && smsTimer) { clearInterval(smsTimer); smsTimer = undefined } }, 1000)
+}
+"#
+            .to_string(),
+        }
+    }
+
+    /// arco 登录调用表达式（PhoneOnly 与 B2 现状逐字一致）
+    fn arco_login_call(mode: LoginInputMode) -> String {
+        let sms = "smsLogin({ phone: smsPhone.value, smsCode: smsCode.value })";
+        let email = "emailLogin({ email: smsPhone.value, emailCode: smsCode.value })";
+        match mode {
+            LoginInputMode::PhoneOnly => sms.to_string(),
+            LoginInputMode::Dual => {
+                format!("(forgeIsEmail(smsPhone.value) ? {email} : {sms})")
+            }
+            LoginInputMode::EmailOnly => email.to_string(),
+        }
+    }
+
+    fn patch_arco_login(
+        path: &Path,
+        mode: LoginInputMode,
+        log: &dyn Fn(&str),
+    ) -> Result<usize, String> {
+        enhance_util::read_write(path, |c| {
+            if c.contains("FORGE_SMS_LOGIN") && c.contains("handleSendSms") && c.contains("smsPhone")
+            {
+                return None;
+            }
+            let apis = match mode {
+                LoginInputMode::PhoneOnly => "getSmsCode, smsLogin",
+                LoginInputMode::Dual => "getSmsCode, smsLogin, getEmailCode, emailLogin",
+                LoginInputMode::EmailOnly => "getEmailCode, emailLogin",
+            };
+            let first_api = apis.split(',').next().unwrap_or(apis).trim().to_string();
+            let mut out = c.to_string();
+            out = out.replace(
+                "import { getCaptchaImage } from '@/api/login'",
+                &format!("import {{ getCaptchaImage, {apis} }} from '@/api/login'"),
+            );
+            if !out.contains(&first_api) {
+                out = format!("import {{ {apis} }} from '@/api/login'\n{out}");
+            }
+            if !out.contains("setToken") {
+                out = format!("import {{ setToken }} from '@/utils/auth'\n{out}");
+            }
+            if !out.contains("smsPhone") {
+                if let Some(idx) = out.find("const captchaEnabled = ref(false)") {
+                    let insert = arco_script_block(mode);
+                    out.insert_str(idx, &insert);
                 }
             }
             if !out.contains("loginMode.value === 'sms'") {
                 out = out.replace(
                     "await userStore.login({",
-                    "if (loginMode.value === 'sms') {\n      const tk = await smsLogin({ phone: smsPhone.value, smsCode: smsCode.value })\n      setToken(tk)\n      ;(userStore as any).token = tk\n    } else await userStore.login({",
+                    &format!("if (loginMode.value === 'sms') {{\n      const tk = await {}\n      setToken(tk)\n      ;(userStore as any).token = tk\n    }} else await userStore.login({{", arco_login_call(mode)),
                 );
                 // close the extra else: original `await userStore.login({ ... })` needs a matching brace
                 // The replace only prefixes; the original call remains as else-branch and still has closing })
             }
             if let Some(idx) = out.find("<a-form-item field=\"username\"") {
-                if !out.contains("FORGE_SMS_LOGIN") || !out.contains("短信登录") {
+                if !out.contains("FORGE_SMS_LOGIN") || !out.contains(mode.tab_label()) {
                     out.insert_str(
                         idx,
-                        "<!-- FORGE_SMS_LOGIN -->\n        <div style=\"margin-bottom:12px;font-size:13px;\">\n          <span :style=\"loginMode==='pwd' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='pwd'\">账号登录</span>\n          &nbsp;|&nbsp;\n          <span :style=\"loginMode==='sms' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='sms'\">短信登录</span>\n        </div>\n        <a-form-item v-if=\"loginMode==='sms'\" field=\"phone\" hide-asterisk>\n          <a-input v-model.trim=\"smsPhone\" placeholder=\"手机号\" allow-clear />\n        </a-form-item>\n        <a-form-item v-if=\"loginMode==='sms'\" field=\"smsCode\" hide-asterisk>\n          <div class=\"login-form__captcha\">\n            <a-input v-model.trim=\"smsCode\" placeholder=\"短信验证码\" allow-clear />\n            <a-button :disabled=\"smsCooldown>0\" @click=\"handleSendSms\">{{ smsCooldown>0 ? smsCooldown + 's' : '发送验证码' }}</a-button>\n          </div>\n        </a-form-item>\n        ",
+                        &format!("<!-- FORGE_SMS_LOGIN -->\n        <div style=\"margin-bottom:12px;font-size:13px;\">\n          <span :style=\"loginMode==='pwd' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='pwd'\">账号登录</span>\n          &nbsp;|&nbsp;\n          <span :style=\"loginMode==='sms' ? 'font-weight:600;cursor:pointer' : 'cursor:pointer'\" @click=\"loginMode='sms'\">{tab}</span>\n        </div>\n        <a-form-item v-if=\"loginMode==='sms'\" field=\"phone\" hide-asterisk>\n          <a-input v-model.trim=\"smsPhone\" placeholder=\"{account}\" allow-clear />\n        </a-form-item>\n        <a-form-item v-if=\"loginMode==='sms'\" field=\"smsCode\" hide-asterisk>\n          <div class=\"login-form__captcha\">\n            <a-input v-model.trim=\"smsCode\" placeholder=\"{code}\" allow-clear />\n            <a-button :disabled=\"smsCooldown>0\" @click=\"handleSendSms\">{{{{ smsCooldown>0 ? smsCooldown + 's' : '发送验证码' }}}}</a-button>\n          </div>\n        </a-form-item>\n        ",
+                            tab = mode.tab_label(),
+                            account = mode.account_placeholder(),
+                            code = mode.code_placeholder()),
                     );
                 }
             }
@@ -950,7 +1308,10 @@ async function handleSendSms() {
         })
         .map(|ok| {
             if ok {
-                log("已改造 arco 登录页短信模式（手机号+验证码+60s 发码）");
+                log(&format!(
+                    "已改造 arco 登录页验证码模式（{}+验证码+60s 发码）",
+                    mode.account_placeholder()
+                ));
                 1
             } else {
                 0
@@ -958,10 +1319,15 @@ async function handleSendSms() {
         })
     }
 
-    fn patch_uniapp(ui: &Path, cloud: bool, log: &dyn Fn(&str)) -> Result<usize, String> {
+    fn patch_uniapp(
+        ui: &Path,
+        cloud: bool,
+        mode: LoginInputMode,
+        log: &dyn Fn(&str),
+    ) -> Result<usize, String> {
         let mut n = 0usize;
         let auth = ui.join("api/auth.js");
-        if auth.is_file() {
+        if auth.is_file() && mode.phone() {
             let code_url = if cloud {
                 "/auth/smsCode"
             } else {
@@ -990,38 +1356,63 @@ async function handleSendSms() {
                 if c.contains("FORGE_SMS_LOGIN") {
                     return None;
                 }
-                let extra = r#"
+                let extra = format!(
+                    r#"
       <!-- FORGE_SMS_LOGIN -->
       <view class="sms-login">
-        <input v-model="phone" placeholder="手机号" />
-        <input v-model="smsCode" placeholder="短信验证码" />
+        <input v-model="phone" placeholder="{account}" />
+        <input v-model="smsCode" placeholder="{code}" />
         <button @click="handleSendSms">发送验证码</button>
-        <button @click="handleSmsLogin">短信登录</button>
+        <button @click="handleSmsLogin">{tab}</button>
       </view>
-"#;
+"#,
+                    account = mode.account_placeholder(),
+                    code = mode.code_placeholder(),
+                    tab = mode.tab_label()
+                );
+                let apis = match mode {
+                    LoginInputMode::PhoneOnly => "getSmsCode, smsLogin",
+                    LoginInputMode::Dual => "getSmsCode, smsLogin, getEmailCode, emailLogin",
+                    LoginInputMode::EmailOnly => "getEmailCode, emailLogin",
+                };
                 let mut out = c.replace(
                     "import { wechatLogin } from '@/api/auth.js'",
-                    "import { wechatLogin, getSmsCode, smsLogin } from '@/api/auth.js'",
+                    &format!("import {{ wechatLogin, {apis} }} from '@/api/auth.js'"),
                 );
                 if let Some(idx) = out.find("</view>\n</template>") {
-                    out.insert_str(idx, extra);
+                    out.insert_str(idx, &extra);
                 } else if let Some(idx) = out.find("</template>") {
-                    out.insert_str(idx, extra);
+                    out.insert_str(idx, &extra);
                 }
                 if !out.contains("handleSendSms") {
                     out = out.replace(
                         "data() {\n    return {\n      loading: false\n    }",
                         "data() {\n    return {\n      loading: false,\n      phone: '',\n      smsCode: ''\n    }",
                     );
+                    let (send, login_call) = match mode {
+                        LoginInputMode::PhoneOnly => (
+                            "await getSmsCode({ phone: this.phone })".to_string(),
+                            "await smsLogin({ phone: this.phone, smsCode: this.smsCode })".to_string(),
+                        ),
+                        // phone 字段同时承载手机号与邮箱，含 @ 走邮箱通道
+                        LoginInputMode::Dual => (
+                            "const account = (this.phone || '').trim(); await (account.indexOf('@') > -1 ? getEmailCode({ email: account }) : getSmsCode({ phone: account }))".to_string(),
+                            "await (String(this.phone || '').indexOf('@') > -1 ? emailLogin({ email: this.phone, emailCode: this.smsCode }) : smsLogin({ phone: this.phone, smsCode: this.smsCode }))".to_string(),
+                        ),
+                        LoginInputMode::EmailOnly => (
+                            "await getEmailCode({ email: this.phone })".to_string(),
+                            "await emailLogin({ email: this.phone, emailCode: this.smsCode })".to_string(),
+                        ),
+                    };
                     out = out.replace(
                         "methods: {",
-                        "methods: {\n    async handleSendSms() { await getSmsCode({ phone: this.phone }) },\n    async handleSmsLogin() { const res = await smsLogin({ phone: this.phone, smsCode: this.smsCode }); if (res && (res.token || res.access_token)) { setStorageSync('token', res.token || res.access_token) } },",
+                        &format!("methods: {{\n    async handleSendSms() {{ {send} }},\n    async handleSmsLogin() {{ const res = {login_call}; if (res && (res.token || res.access_token)) {{ setStorageSync('token', res.token || res.access_token) }} }},"),
                     );
                 }
                 Some(out)
             })? {
                 n += 1;
-                log("已向 uniapp 登录页追加短信方式");
+                log(&format!("已向 uniapp 登录页追加{}方式", mode.tab_label()));
             }
         }
         Ok(n)
@@ -1092,5 +1483,12 @@ mod tests {
         assert!(inner.contains("getDelFlag()"), "{inner}");
         assert!(inner.contains("getStatus()"), "{inner}");
         assert!(inner.contains("throw new ServiceException"), "{inner}");
+        assert!(inner.contains("getMenuPermission(sysUser)"), "{inner}");
+        assert!(inner.contains("getRolePermission(sysUser)"), "{inner}");
+        assert!(inner.contains("setRoles"), "{inner}");
+        assert!(
+            !inner.contains("getMenuPermission(sysUser.getUserId())"),
+            "官方 getMenuPermission 入参是 SysUser：{inner}"
+        );
     }
 }

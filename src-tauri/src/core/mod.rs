@@ -18,6 +18,7 @@ pub mod oss;
 pub mod enhance_util;
 pub mod wechat_login;
 pub mod sms_login;
+pub mod mail;
 pub mod captcha_slider;
 pub mod api_encrypt;
 pub mod generator_config;
@@ -101,6 +102,21 @@ fn default_sms_expire_minutes() -> i32 {
 
 /// serde 默认值辅助：同一手机号每日发码上限默认 10 次
 fn default_sms_daily_limit() -> i32 {
+    10
+}
+
+/// serde 默认值辅助：SMTP 端口默认 465（SSL）
+fn default_mail_port() -> i32 {
+    465
+}
+
+/// serde 默认值辅助：邮箱验证码有效期默认 5 分钟
+fn default_email_code_expire_minutes() -> i32 {
+    5
+}
+
+/// serde 默认值辅助：同一邮箱每日发码上限默认 10 次
+fn default_email_daily_limit() -> i32 {
     10
 }
 
@@ -414,6 +430,37 @@ pub struct CustomizeParams {
     /// AES-128 密钥（16 字节可打印字符；空则执行时随机生成）
     #[serde(default)]
     pub aes_secret: String,
+    // ---- 增强件：邮件发送与邮箱验证码登录 ----
+    /// 是否启用通用邮件发送能力（Spring Mail + MailService，默认关）
+    #[serde(default)]
+    pub enable_mail: bool,
+    /// 是否启用邮箱验证码登录（依赖 enable_mail，默认关）
+    #[serde(default)]
+    pub enable_email_login: bool,
+    /// SMTP 服务器地址（如 smtp.qq.com / smtp.163.com / smtp.exmail.qq.com）
+    #[serde(default)]
+    pub mail_host: String,
+    /// SMTP 端口（465 SSL / 587 STARTTLS）
+    #[serde(default = "default_mail_port")]
+    pub mail_port: i32,
+    /// SMTP 账号
+    #[serde(default)]
+    pub mail_username: String,
+    /// SMTP 授权码/密码（禁止写入 CLI 输出、报告与交付文档明文）
+    #[serde(default)]
+    pub mail_password: String,
+    /// 发件人地址（留空则用 mail_username）
+    #[serde(default)]
+    pub mail_from: String,
+    /// 发件人显示名（留空则用 frontend_title）
+    #[serde(default)]
+    pub mail_from_name: String,
+    /// 邮箱验证码有效期（分钟）
+    #[serde(default = "default_email_code_expire_minutes")]
+    pub email_code_expire_minutes: i32,
+    /// 同一邮箱每日发码上限
+    #[serde(default = "default_email_daily_limit")]
+    pub email_daily_limit: i32,
 }
 
 impl Default for CustomizeParams {
@@ -517,6 +564,16 @@ impl Default for CustomizeParams {
             enable_captcha_slider: false,
             enable_api_encrypt: false,
             aes_secret: String::new(),
+            enable_mail: false,
+            enable_email_login: false,
+            mail_host: String::new(),
+            mail_port: 465,
+            mail_username: String::new(),
+            mail_password: String::new(),
+            mail_from: String::new(),
+            mail_from_name: String::new(),
+            email_code_expire_minutes: 5,
+            email_daily_limit: 10,
         }
     }
 }
@@ -606,6 +663,41 @@ impl CustomizeParams {
             let user = self.db_username.trim();
             if user.contains('\'') || user.contains('\\') {
                 return Some("数据库账号不能包含单引号或反斜杠".into());
+            }
+        }
+        // 邮件发送与邮箱验证码登录（方案 D）：邮箱登录依赖通用邮件能力
+        if self.enable_email_login && !self.enable_mail {
+            return Some("邮箱验证码登录需要开启邮件发送".into());
+        }
+        if self.enable_email_login {
+            if !(1..=30).contains(&self.email_code_expire_minutes) {
+                return Some(format!(
+                    "邮箱验证码有效期「{}」不合法：须为 1-30 分钟",
+                    self.email_code_expire_minutes
+                ));
+            }
+            if !(1..=100).contains(&self.email_daily_limit) {
+                return Some(format!(
+                    "邮箱验证码日限额「{}」不合法：须为 1-100 次",
+                    self.email_daily_limit
+                ));
+            }
+        }
+        if self.enable_mail {
+            if !(1..=65535).contains(&self.mail_port) {
+                return Some(format!(
+                    "SMTP 端口「{}」不合法：须为 1-65535（465 为 SSL，587 为 STARTTLS）",
+                    self.mail_port
+                ));
+            }
+            if self.mail_host.trim().is_empty() {
+                return Some("已开启邮件发送，SMTP 服务器地址不能为空".into());
+            }
+            if self.mail_username.trim().is_empty() {
+                return Some("已开启邮件发送，SMTP 账号不能为空".into());
+            }
+            if self.mail_password.is_empty() {
+                return Some("已开启邮件发送，SMTP 授权码/密码不能为空".into());
             }
         }
         None
@@ -958,6 +1050,84 @@ mod tests {
         assert!(p.validate().unwrap().contains("账号"));
         p.db_username = "root".into();
         assert!(p.validate().is_none());
+    }
+
+    /// 方案 D：邮箱登录依赖邮件发送，开启邮件后 host/账号/授权码必填，端口须 1-65535
+    #[test]
+    fn validate_mail_dependency_required_fields_and_port_range() {
+        let mut p = CustomizeParams::default();
+        p.original_package = "com.ruoyi".into();
+        p.new_package = "com.demo".into();
+        p.original_module_prefix = "ruoyi".into();
+        p.new_module_prefix = "demo".into();
+        p.frontend_title = "演示系统".into();
+        assert!(p.validate().is_none(), "默认全关不应报错");
+
+        p.enable_email_login = true;
+        assert!(p
+            .validate()
+            .unwrap()
+            .contains("邮箱验证码登录需要开启邮件发送"));
+
+        p.enable_mail = true;
+        assert!(p.validate().unwrap().contains("SMTP 服务器地址"));
+        p.mail_host = "smtp.qq.com".into();
+        assert!(p.validate().unwrap().contains("SMTP 账号"));
+        p.mail_username = "no-reply@example.com".into();
+        assert!(p.validate().unwrap().contains("授权码"));
+        p.mail_password = "app-code".into();
+        assert!(p.validate().is_none());
+
+        p.mail_port = 0;
+        assert!(p.validate().unwrap().contains("SMTP 端口"));
+        p.mail_port = 70000;
+        assert!(p.validate().unwrap().contains("SMTP 端口"));
+        p.mail_port = 587;
+        assert!(p.validate().is_none());
+
+        p.email_code_expire_minutes = 0;
+        assert!(p.validate().unwrap().contains("有效期"));
+        p.email_code_expire_minutes = -1;
+        assert!(p.validate().unwrap().contains("有效期"));
+        p.email_code_expire_minutes = 31;
+        assert!(p.validate().unwrap().contains("有效期"));
+        p.email_code_expire_minutes = 5;
+        p.email_daily_limit = 0;
+        assert!(p.validate().unwrap().contains("日限额"));
+        p.email_daily_limit = -3;
+        assert!(p.validate().unwrap().contains("日限额"));
+        p.email_daily_limit = 101;
+        assert!(p.validate().unwrap().contains("日限额"));
+        p.email_daily_limit = 10;
+        assert!(p.validate().is_none());
+    }
+
+    /// 旧配置 JSON 无邮件字段时按 serde default 回落，不影响既有工程
+    #[test]
+    fn old_json_without_mail_fields_defaults() {
+        let p = CustomizeParams::default();
+        let mut v = serde_json::to_value(&p).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        for k in [
+            "enable_mail",
+            "enable_email_login",
+            "mail_host",
+            "mail_port",
+            "mail_username",
+            "mail_password",
+            "mail_from",
+            "mail_from_name",
+            "email_code_expire_minutes",
+            "email_daily_limit",
+        ] {
+            obj.remove(k);
+        }
+        let loaded: CustomizeParams = serde_json::from_value(v).unwrap();
+        assert!(!loaded.enable_mail);
+        assert!(!loaded.enable_email_login);
+        assert_eq!(loaded.mail_port, 465);
+        assert_eq!(loaded.email_code_expire_minutes, 5);
+        assert_eq!(loaded.email_daily_limit, 10);
     }
 
     #[test]

@@ -104,6 +104,16 @@ pub fn default_params() -> CustomizeParams {
         enable_captcha_slider: false,
         enable_api_encrypt: false,
         aes_secret: String::new(),
+        enable_mail: false,
+        enable_email_login: false,
+        mail_host: String::new(),
+        mail_port: 465,
+        mail_username: String::new(),
+        mail_password: String::new(),
+        mail_from: String::new(),
+        mail_from_name: String::new(),
+        email_code_expire_minutes: 5,
+        email_daily_limit: 10,
         config_db_name: String::new(),
         remove_modules: Vec::new(),
         new_modules: Vec::new(),
@@ -456,6 +466,8 @@ pub fn redact_cli_secrets(text: &str) -> String {
     out = aes.replace_all(&out, "aes_secret=***").into_owned();
     let wx = regex::Regex::new(r"(?i)wx_appsecret[=:：]\s*\S+").unwrap();
     out = wx.replace_all(&out, "wx_appsecret=***").into_owned();
+    let mail_pwd = regex::Regex::new(r"(?i)mail_password[=:：]\s*\S+").unwrap();
+    out = mail_pwd.replace_all(&out, "mail_password=***").into_owned();
     out
 }
 

@@ -50,6 +50,8 @@ export const DISABLED_FEATURES: Record<string, (keyof CustomizeParams)[]> = {
     'enable_uniapp', // UniApp 小程序（依赖独立前端作参考）
     'pay_included', // 微信支付（随 UniApp 一起禁用）
     'enable_sms_login',
+    'enable_mail', // 邮件发送（方案 D 仅覆盖分离版与 Cloud）
+    'enable_email_login', // 邮箱验证码登录（依赖邮件发送）
     'enable_captcha_slider',
     'enable_api_encrypt',
     'enable_nginx_config', // Nginx 反代（单体版通常内嵌 Tomcat 单体运行）

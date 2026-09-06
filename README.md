@@ -26,7 +26,7 @@
 - **OSS** — 阿里云 / 腾讯云 / MinIO / 七牛。分离版接口 `POST /common/oss/upload`；Cloud 接口 `POST /system/oss/upload`（走网关 `/system/**`，需登录）。不改官方本地上传 `/common/upload` 或 Cloud `/file/upload`
 - **JWT** — 分离版写 yaml `token.*`；Cloud 写 Java `TokenConstants` / `CacheConstants`
 - **UniApp 小程序生成** — 可选生成 `{模块前缀}-uniapp` 基础骨架，含请求封装、登录框架、环境配置，后端自动追加微信配置占位。开启 UniApp 时生成 `AppAuthController`（微信 `jscode2session` + Token）。分离版 `/app/{prefix}/auth/wechat-login`；Cloud `/system/app/{prefix}/auth/wechat-login`
-- **增强件** — 短信登录 / 滑块验证码 / 接口 AES（默认全关；单体 `ruoyi` 禁用）。微信小程序登录后端跟随 UniApp
+- **增强件** — 短信登录 / 邮件发送 / 邮箱验证码登录 / 滑块验证码 / 接口 AES（默认全关；单体 `ruoyi` 禁用）。微信小程序登录后端跟随 UniApp
 - **官方源码拉取** — 首页可从 Gitee（git 浅克隆，无需登录）/ GitHub（archive zip）选择 Spring Boot 档与 RuoYi-Vue / RuoYi-Cloud，一键拉取官方后端仓并进入识别
 - **延迟解压** — zip 压缩包在执行时才解压到用户指定的输出目录，不修改原始文件
 - **执行预览** — 改造前展示任务清单、影响范围、高风险项
@@ -323,6 +323,16 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 | sms_sdk_app_id | string | `""` | 腾讯云短信 SdkAppId（仅 tencent） |
 | sms_code_expire_minutes | number | `5` | 验证码有效期（分钟） |
 | sms_daily_limit_per_phone | number | `10` | 单号每日发送上限 |
+| enable_mail | boolean | `false` | 邮件发送（`spring-boot-starter-mail` + 具体类 `MailService`（`@Service`），无 `IMailService`）。业务 `@Autowired MailService` 后调用 `sendSimple(to, subject, content)` 纯文本、`sendHtml(to, subject, htmlContent)` HTML（UTF-8）。不提供附件 / Thymeleaf 模板，需自扩展。装配条件 `{prefix}.mail.enabled=true`。配置写入 `spring.mail` 与 `{prefix}.mail`；Cloud 落 Nacos 的 system 与 auth 条目。单体禁用 |
+| enable_email_login | boolean | `false` | 邮箱验证码登录，依赖 `enable_mail`。验证码邮件走同一套 `MailService.sendHtml`，不是另一条通道。分离版 `/emailCode` `/emailLogin`；Cloud 网关 `/auth/emailCode` `/auth/emailLogin`。发码前置校验与短信一致。单体禁用 |
+| mail_host | string | `""` | SMTP 服务器，如 `smtp.qq.com` / `smtp.163.com` / `smtp.exmail.qq.com` |
+| mail_port | number | `465` | `465` 走 SSL，其余端口（如 `587`）走 STARTTLS |
+| mail_username | string | `""` | SMTP 账号 |
+| mail_password | string | `""` | SMTP 授权码（不是登录密码；QQ / 163 / 企业邮箱常见要求）；报告、CLI 输出与 DELIVERY.md 脱敏 |
+| mail_from | string | `""` | 发件人地址；空则用 `mail_username` |
+| mail_from_name | string | `""` | 发件人显示名；空则用 `frontend_title` |
+| email_code_expire_minutes | number | `5` | 邮箱验证码有效期（分钟），范围 1–30（与 GUI / 后端 validate 一致） |
+| email_daily_limit | number | `10` | 单邮箱每日发码上限，范围 1–100 |
 | enable_captcha_slider | boolean | `false` | AJ-Captcha 滑块 `/captcha/get` `/captcha/check`；保留原图形验证码。Boot3/4 用 core 包手动装配。单体禁用 |
 | enable_api_encrypt | boolean | `false` | 接口 AES/ECB 加解密。登录/验证码/短信/微信登录等公开路径不加密。单体禁用 |
 | aes_secret | string | `""` | 16 字节可打印密钥；空则执行时随机生成。明文不进报告，只写长度与写入位置。前端密钥随包分发，属传输混淆，不能替代 HTTPS |
@@ -338,12 +348,18 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 - Nacos `8848`、Sentinel `8718` 不改
 - `remove_modules` 仅允许 `gen` / `job` / `file` / `monitor`，非法值拒绝
 - `new_modules` 仅 Cloud；短名须 `^[a-z][a-z0-9-]*$`；不可与 `remove_modules` 或现有模块短名冲突
-- 三个增强件开关默认关；关则零改动
-- `ruoyi` 禁用短信 / 滑块 / AES
+- 增强件开关默认全关；关则零改动
+- `ruoyi` 禁用短信 / 邮件 / 邮箱登录 / 滑块 / AES
+- `enable_email_login` 依赖 `enable_mail`，单开会在参数校验阶段报错
+- 邮箱验证码登录不新增登录 tab，复用短信 tab 升级为「手机/邮箱」双类型输入（含 `@` 走邮箱接口）
 - AES 不能替代 HTTPS
-- `sms_secret_key` / `aes_secret` 不出现在报告与 CLI 明文
+- `sms_secret_key` / `aes_secret` / `mail_password` 不出现在报告与 CLI 明文
 - 配置里的密码 / 密钥为明文属预期
-- GUI 的 `save_config_json` 会脱敏；CLI `init-config` 不脱敏
+- GUI 的 `save_config_json` **不脱敏**；CLI `init-config` 也不脱敏。敏感字段为明文，勿提交到公开仓库
+- 开启 `enable_mail` 时 `mail_host` / `mail_username` / `mail_password` 必填；`mail_port` 范围 1–65535
+- 开启邮件时请把 `sys_user.email` 当登录标识维护，同一邮箱绑定多个未删除账号会被拒绝登录
+- SMTP 授权码会写入产物配置（分离版 yaml / Cloud 的 `sql/ry_config_*.sql` Nacos 条目），勿把产物密钥提交到公开仓库
+- 不做 SMTP 连通性测试，配置正确性靠人工冒烟
 
 ## 打包构建
 

@@ -49,6 +49,7 @@ pub enum TaskType {
     UpdateAdminPomFinalName,
     SetupWechatLogin,
     SetupSmsLogin,
+    SetupMail,
     SetupCaptchaSlider,
     SetupApiEncrypt,
     ValidateProject,

@@ -4,6 +4,7 @@
 use ruoyi_forge_lib::core::api_encrypt;
 use ruoyi_forge_lib::core::captcha_slider;
 use ruoyi_forge_lib::core::enhance_util;
+use ruoyi_forge_lib::core::mail;
 use ruoyi_forge_lib::core::sms_login;
 use ruoyi_forge_lib::core::wechat_login;
 use ruoyi_forge_lib::core::CustomizeParams;
@@ -345,4 +346,318 @@ fn b3_vben_slider_component_and_import() {
     assert!(login.contains("forge-captcha-slider"), "{login}");
     assert!(login.contains("#/components/forge-captcha-slider.vue"), "{login}");
     assert!(login.contains("onForgeSliderSuccess"), "{login}");
+}
+
+// ---------- 方案 D：邮件发送与邮箱验证码登录 ----------
+
+/// 邮箱查用户依赖官方 checkEmailUnique + selectUserById，用例里补齐这两处源码
+fn mail_user_lookup(root: &Path) {
+    write(
+        root.join("demo-admin/src/main/java/com/example/system/mapper/SysUserMapper.java"),
+        "package com.example.system.mapper;\npublic interface SysUserMapper {\n    SysUser checkEmailUnique(String email);\n    SysUser checkPhoneUnique(String phonenumber);\n}\n",
+    );
+    write(
+        root.join("demo-admin/src/main/resources/mapper/system/SysUserMapper.xml"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\">\n<mapper namespace=\"com.example.system.mapper.SysUserMapper\">\n</mapper>\n",
+    );
+    write(
+        root.join("demo-admin/src/main/java/com/example/system/service/ISysUserService.java"),
+        "package com.example.system.service;\npublic interface ISysUserService {\n    SysUser selectUserById(Long userId);\n    SysUser selectUserByPhonenumber(String phone);\n    SysUser selectUserByUserName(String n);\n}\n",
+    );
+}
+
+/// 仅开启邮件发送：只产出 starter + MailService + 配置块，不碰登录链路
+#[test]
+fn d1_mail_only_writes_starter_service_and_yaml() {
+    let dir = tempfile::tempdir().unwrap();
+    vue_tree(dir.path());
+    let mut p = params();
+    p.enable_mail = true;
+    p.mail_host = "smtp.exmail.qq.com".into();
+    p.mail_username = "no-reply@example.com".into();
+    p.mail_password = "mail-secret-should-not-leak".into();
+    let modules = vec!["demo-admin".into(), "demo-framework".into()];
+    mail::setup_mail(dir.path(), &p, &modules, &|_| {}).unwrap();
+
+    let fw_pom = fs::read_to_string(dir.path().join("demo-framework/pom.xml")).unwrap();
+    assert!(fw_pom.contains("spring-boot-starter-mail"), "{fw_pom}");
+    assert!(
+        !fw_pom.contains("<version>"),
+        "starter 版本须随 parent 管理：{fw_pom}"
+    );
+
+    let svc = fs::read_to_string(
+        dir.path()
+            .join("demo-framework/src/main/java/com/example/framework/config/MailService.java"),
+    )
+    .unwrap();
+    assert!(svc.contains("sendSimple"), "{svc}");
+    assert!(svc.contains("sendHtml"), "{svc}");
+    assert!(svc.contains("UTF-8"), "{svc}");
+    assert!(svc.contains("prefix = \"demo.mail\""), "{svc}");
+
+    let yml =
+        fs::read_to_string(dir.path().join("demo-admin/src/main/resources/application.yaml"))
+            .unwrap();
+    assert!(yml.contains("host: 'smtp.exmail.qq.com'"), "{yml}");
+    assert!(yml.contains("daily-limit-per-email:"), "{yml}");
+
+    // 未开邮箱登录：登录链路与放行清单零改动
+    let login_svc = fs::read_to_string(dir.path().join(
+        "demo-framework/src/main/java/com/example/framework/web/service/SysLoginService.java",
+    ))
+    .unwrap();
+    assert!(!login_svc.contains("emailLogin"), "{login_svc}");
+    let sec = fs::read_to_string(
+        dir.path()
+            .join("demo-framework/src/main/java/com/example/framework/config/SecurityConfig.java"),
+    )
+    .unwrap();
+    assert!(!sec.contains("/emailCode"), "{sec}");
+    assert!(
+        !dir.path()
+            .join("demo-framework/src/main/java/com/example/framework/config/EmailLoginService.java")
+            .exists(),
+        "未开邮箱登录不应生成 EmailLoginService"
+    );
+}
+
+/// 开启邮箱验证码登录：SysLoginService、Controller、放行清单、四端前端一并落地
+#[test]
+fn d2_email_login_patches_login_chain_and_frontend() {
+    let dir = tempfile::tempdir().unwrap();
+    vue_tree(dir.path());
+    mail_user_lookup(dir.path());
+    write(
+        dir.path().join("demo-ui/apps/web-ele/src/api/core/auth.ts"),
+        "export async function loginApi() { return { accessToken: 't' } }\n",
+    );
+    write(
+        dir.path().join("demo-ui/apps/web-ele/src/views/_core/authentication/login.vue"),
+        "<script lang=\"ts\" setup>\nimport { computed, h, ref } from 'vue';\nimport { getCaptchaApi } from '#/api';\nconst captchaUuid = ref('');\nconst captchaEnabled = ref(true);\nconst formSchema = computed(() => { const fields = []; return fields; });\nasync function handleSubmit(values: Record<string, any>) {\n  await authStore.authLogin({\n    username: values.username,\n  });\n}\n</script>\n<template>\n  <AuthenticationLogin @submit=\"handleSubmit\" />\n</template>\n",
+    );
+    write(
+        dir.path().join("demo-ui/apps/web-ele/src/store/auth.ts"),
+        "import { getAccessCodesApi, getUserInfoApi, loginApi, logoutApi } from '#/api';\nconst { accessToken } = await loginApi(params);\n",
+    );
+    let mut p = params();
+    p.enable_mail = true;
+    p.enable_email_login = true;
+    p.mail_host = "smtp.qq.com".into();
+    p.mail_username = "no-reply@example.com".into();
+    p.mail_password = "mail-secret-should-not-leak".into();
+    let modules = vec!["demo-admin".into(), "demo-framework".into()];
+    mail::setup_mail(dir.path(), &p, &modules, &|_| {}).unwrap();
+
+    let login_svc = fs::read_to_string(dir.path().join(
+        "demo-framework/src/main/java/com/example/framework/web/service/SysLoginService.java",
+    ))
+    .unwrap();
+    assert!(login_svc.contains("emailLogin(String email"), "{login_svc}");
+    assert!(login_svc.contains("checkEmailUnique(email)"), "{login_svc}");
+    assert!(login_svc.contains("countUserByEmail(email)"), "{login_svc}");
+    assert!(
+        !login_svc.contains("selectUserByEmail"),
+        "不得编造 mapper 方法：{login_svc}"
+    );
+
+    let mapper_java = fs::read_to_string(
+        dir.path()
+            .join("demo-admin/src/main/java/com/example/system/mapper/SysUserMapper.java"),
+    )
+    .unwrap();
+    assert!(mapper_java.contains("countUserByEmail"), "{mapper_java}");
+    let mapper_xml = fs::read_to_string(
+        dir.path()
+            .join("demo-admin/src/main/resources/mapper/system/SysUserMapper.xml"),
+    )
+    .unwrap();
+    assert!(mapper_xml.contains("countUserByEmail"), "{mapper_xml}");
+    assert!(mapper_xml.contains("del_flag = '0'"), "{mapper_xml}");
+
+    let sec = fs::read_to_string(
+        dir.path()
+            .join("demo-framework/src/main/java/com/example/framework/config/SecurityConfig.java"),
+    )
+    .unwrap();
+    assert!(sec.contains("/emailCode"), "{sec}");
+    assert!(sec.contains("/emailLogin"), "{sec}");
+
+    let code_svc = fs::read_to_string(
+        dir.path()
+            .join("demo-framework/src/main/java/com/example/framework/config/EmailLoginService.java"),
+    )
+    .unwrap();
+    assert!(code_svc.contains("email:login:"), "{code_svc}");
+    assert!(code_svc.contains("sendHtml"), "{code_svc}");
+    let lower = code_svc
+        .find("email = email.trim().toLowerCase()")
+        .expect("须归一化邮箱");
+    let key = code_svc
+        .find("\"email:login:cool:\" + email")
+        .expect("应有冷却 key");
+    assert!(lower < key, "toLowerCase 必须在拼 Redis key 之前：{code_svc}");
+
+    let ctrl = fs::read_to_string(dir.path().join(
+        "demo-admin/src/main/java/com/example/web/controller/system/EmailAuthController.java",
+    ))
+    .unwrap();
+    assert!(ctrl.contains("@PostMapping(\"/emailCode\")"), "{ctrl}");
+    assert!(ctrl.contains("@PostMapping(\"/emailLogin\")"), "{ctrl}");
+
+    // 前端：仅开邮箱登录时验证码 tab 为纯邮箱模式
+    let login = fs::read_to_string(
+        dir.path()
+            .join("demo-ui/apps/web-ele/src/views/_core/authentication/login.vue"),
+    )
+    .unwrap();
+    assert!(login.contains("getEmailCodeApi"), "{login}");
+    assert!(login.contains("邮箱登录"), "{login}");
+    let auth =
+        fs::read_to_string(dir.path().join("demo-ui/apps/web-ele/src/api/core/auth.ts")).unwrap();
+    assert!(auth.contains("emailLoginApi"), "{auth}");
+    assert!(auth.contains("/emailLogin"), "{auth}");
+    let store =
+        fs::read_to_string(dir.path().join("demo-ui/apps/web-ele/src/store/auth.ts")).unwrap();
+    assert!(store.contains("forgeEmail"), "{store}");
+}
+
+/// 短信 + 邮箱同开：登录页升级为手机/邮箱双类型输入，两套 API 都在
+#[test]
+fn d2_sms_plus_email_login_is_dual_input() {
+    let dir = tempfile::tempdir().unwrap();
+    vue_tree(dir.path());
+    mail_user_lookup(dir.path());
+    write(
+        dir.path().join("demo-ui/src/settings.js"),
+        "module.exports = { title: 'demo' }\n",
+    );
+    write(
+        dir.path().join("demo-ui/src/api/login.js"),
+        "import request from '@/utils/request'\nexport function getCodeImg() { return request({ url: '/captchaImage' }) }\n",
+    );
+    write(
+        dir.path().join("demo-ui/src/views/login.vue"),
+        "<template>\n  <el-form>\n      <el-form-item prop=\"username\">\n      </el-form-item>\n  </el-form>\n</template>\n<script>\nimport { getCodeImg } from \"@/api/login\"\nexport default {\n  data() {\n    return {\n      loginForm: {\n        username: \"admin\",\n        rememberMe: false\n      }\n    }\n  },\n  methods: {\n    handleLogin() {\n      this.loading = true\n    }\n  }\n}\n</script>\n",
+    );
+    let mut p = params();
+    p.enable_sms_login = true;
+    p.enable_mail = true;
+    p.enable_email_login = true;
+    p.mail_host = "smtp.qq.com".into();
+    p.mail_username = "no-reply@example.com".into();
+    p.mail_password = "mail-secret-should-not-leak".into();
+    let modules = vec!["demo-admin".into(), "demo-framework".into()];
+    sms_login::setup_sms_login(dir.path(), &p, &modules, &|_| {}).unwrap();
+    mail::setup_mail(dir.path(), &p, &modules, &|_| {}).unwrap();
+
+    let login = fs::read_to_string(dir.path().join("demo-ui/src/views/login.vue")).unwrap();
+    assert!(login.contains("手机/邮箱登录"), "{login}");
+    assert!(login.contains("手机号或邮箱"), "{login}");
+    assert!(login.contains("(this.loginForm.phone || \"\").indexOf"), "Dual 须防 undefined.indexOf：{login}");
+    assert!(login.contains("getEmailCode"), "{login}");
+    assert!(login.contains("getSmsCode"), "{login}");
+    assert!(login.contains("setToken(res.token)"), "{login}");
+    assert!(login.contains("commit('SET_TOKEN'"), "{login}");
+    assert!(
+        !login.contains("dispatch(\"Login\""),
+        "经典端不得走 Login action：{login}"
+    );
+    assert!(login.contains("import { setToken } from '@/utils/auth'"), "{login}");
+
+    let api = fs::read_to_string(dir.path().join("demo-ui/src/api/login.js")).unwrap();
+    assert!(api.contains("'/smsCode'"), "{api}");
+    assert!(api.contains("'/emailCode'"), "{api}");
+    assert!(api.contains("'/emailLogin'"), "{api}");
+}
+
+/// 缺 checkEmailUnique / selectUserById 时明确失败，不生成半成品
+#[test]
+fn d2_email_login_fails_without_official_lookup() {
+    let dir = tempfile::tempdir().unwrap();
+    vue_tree(dir.path());
+    let mut p = params();
+    p.enable_mail = true;
+    p.enable_email_login = true;
+    p.mail_host = "smtp.qq.com".into();
+    p.mail_username = "no-reply@example.com".into();
+    p.mail_password = "pwd".into();
+    let modules = vec!["demo-admin".into(), "demo-framework".into()];
+    let err = mail::setup_mail(dir.path(), &p, &modules, &|_| {}).unwrap_err();
+    assert!(err.contains("checkEmailUnique"), "{err}");
+}
+
+/// 有 checkEmailUnique 但缺 Mapper XML 时明确失败
+#[test]
+fn d2_email_login_fails_without_mapper_xml() {
+    let dir = tempfile::tempdir().unwrap();
+    vue_tree(dir.path());
+    write(
+        dir.path().join("demo-admin/src/main/java/com/example/system/mapper/SysUserMapper.java"),
+        "package com.example.system.mapper;\npublic interface SysUserMapper {\n    SysUser checkEmailUnique(String email);\n}\n",
+    );
+    write(
+        dir.path().join("demo-admin/src/main/java/com/example/system/service/ISysUserService.java"),
+        "package com.example.system.service;\npublic interface ISysUserService {\n    SysUser selectUserById(Long userId);\n}\n",
+    );
+    let mut p = params();
+    p.enable_mail = true;
+    p.enable_email_login = true;
+    p.mail_host = "smtp.qq.com".into();
+    p.mail_username = "no-reply@example.com".into();
+    p.mail_password = "pwd".into();
+    let modules = vec!["demo-admin".into(), "demo-framework".into()];
+    let err = mail::setup_mail(dir.path(), &p, &modules, &|_| {}).unwrap_err();
+    assert!(err.contains("SysUserMapper.xml"), "{err}");
+}
+
+/// 仅开短信：经典 ruoyi-ui 同样自行落 token，不得走 Login action
+#[test]
+fn b2_classic_sms_login_sets_token_not_login_action() {
+    let dir = tempfile::tempdir().unwrap();
+    vue_tree(dir.path());
+    write(
+        dir.path().join("demo-ui/src/settings.js"),
+        "module.exports = { title: 'demo' }\n",
+    );
+    write(
+        dir.path().join("demo-ui/src/api/login.js"),
+        "import request from '@/utils/request'\nexport function getCodeImg() { return request({ url: '/captchaImage' }) }\n",
+    );
+    write(
+        dir.path().join("demo-ui/src/views/login.vue"),
+        "<template>\n  <el-form>\n      <el-form-item prop=\"username\">\n      </el-form-item>\n  </el-form>\n</template>\n<script>\nimport { getCodeImg } from \"@/api/login\"\nexport default {\n  data() {\n    return {\n      loginForm: {\n        username: \"admin\",\n        rememberMe: false\n      }\n    }\n  },\n  methods: {\n    handleLogin() {\n      this.loading = true\n    }\n  }\n}\n</script>\n",
+    );
+    let mut p = params();
+    p.enable_sms_login = true;
+    p.sms_provider = "aliyun".into();
+    let modules = vec!["demo-admin".into(), "demo-framework".into()];
+    sms_login::setup_sms_login(dir.path(), &p, &modules, &|_| {}).unwrap();
+    let login = fs::read_to_string(dir.path().join("demo-ui/src/views/login.vue")).unwrap();
+    assert!(login.contains("setToken(res.token)"), "{login}");
+    assert!(login.contains("commit('SET_TOKEN'"), "{login}");
+    assert!(
+        !login.contains("dispatch(\"Login\""),
+        "经典端不得走 Login action：{login}"
+    );
+    assert!(login.contains("import { setToken } from '@/utils/auth'"), "{login}");
+}
+
+/// mail_password 不得出现在 CLI 输出
+#[test]
+fn d_cli_redacts_mail_password() {
+    let out = cli::redact_cli_secrets("mail_password=super-secret-app-code 其它日志");
+    assert!(!out.contains("super-secret-app-code"), "{out}");
+    assert!(out.contains("mail_password=***"), "{out}");
+}
+
+/// 两个开关默认关闭：CustomizeParams 默认值即零回归基线
+#[test]
+fn d_switches_default_off() {
+    let p = params();
+    assert!(!p.enable_mail);
+    assert!(!p.enable_email_login);
+    assert_eq!(p.mail_port, 465);
+    assert_eq!(p.email_code_expire_minutes, 5);
+    assert_eq!(p.email_daily_limit, 10);
 }

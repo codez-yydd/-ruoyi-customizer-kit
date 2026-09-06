@@ -694,6 +694,165 @@ fn cloud_boot4_trim_gen_job() {
     run_cloud(false, true);
 }
 
+/// 方案 D：Cloud 邮件 + 邮箱验证码登录（Nacos 配置、网关白名单、Feign 查用户）
+#[test]
+fn cloud_boot4_mail_and_email_login() {
+    let dir = build_cloud_fixture(false);
+    let root = dir.path();
+    // 邮箱登录链路依赖的官方源码：auth 的 SysLoginService、api 的 Feign、system 的查询方法
+    write(
+        root.join("ruoyi-auth/src/main/java/com/ruoyi/auth/service/SysLoginService.java"),
+        "package com.ruoyi.auth.service;\n\npublic class SysLoginService {\n    public LoginUser login(String username, String password) { return null; }\n    public void recordLogininfor(String username, String status, String message) {}\n}\n",
+    );
+    write(
+        root.join("ruoyi-api/ruoyi-api-system/src/main/java/com/ruoyi/system/api/RemoteUserService.java"),
+        "package com.ruoyi.system.api;\n\npublic interface RemoteUserService {\n    R<LoginUser> getUserInfo(@PathVariable(\"username\") String username, @RequestHeader(SecurityConstants.FROM_SOURCE) String source);\n}\n",
+    );
+    write(
+        root.join("ruoyi-api/ruoyi-api-system/src/main/java/com/ruoyi/system/api/factory/RemoteUserFallbackFactory.java"),
+        "package com.ruoyi.system.api.factory;\n\n@Component\npublic class RemoteUserFallbackFactory implements FallbackFactory<RemoteUserService>\n{\n    @Override\n    public RemoteUserService create(Throwable throwable)\n    {\n        return new RemoteUserService()\n        {\n            @Override\n            public R<LoginUser> getUserInfo(String username, String source)\n            {\n                return R.fail(\"获取用户失败:\" + throwable.getMessage());\n            }\n            @Override\n            public R<Boolean> registerUserInfo(SysUser sysUser, String source)\n            {\n                return R.fail(\"注册用户失败:\" + throwable.getMessage());\n            }\n            @Override\n            public R<Boolean> recordUserLogin(SysUser sysUser, String source)\n            {\n                return R.fail(\"记录用户登录信息失败:\" + throwable.getMessage());\n            }\n        };\n    }\n}\n",
+    );
+    write(
+        root.join("ruoyi-modules/ruoyi-system/src/main/java/com/ruoyi/system/mapper/SysUserMapper.java"),
+        "package com.ruoyi.system.mapper;\n\npublic interface SysUserMapper {\n    SysUser checkEmailUnique(String email);\n}\n",
+    );
+    write(
+        root.join("ruoyi-modules/ruoyi-system/src/main/resources/mapper/system/SysUserMapper.xml"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\">\n<mapper namespace=\"com.ruoyi.system.mapper.SysUserMapper\">\n</mapper>\n",
+    );
+    write(
+        root.join("ruoyi-modules/ruoyi-system/src/main/java/com/ruoyi/system/service/ISysUserService.java"),
+        "package com.ruoyi.system.service;\n\npublic interface ISysUserService {\n    SysUser selectUserById(Long userId);\n}\n",
+    );
+
+    // 官方 Nacos 自带 ruoyi-auth-dev.yml，基线 fixture 未包含，这里按同格式补一条
+    let sql_path = root.join("sql/ry_config_20260905.sql");
+    let sql = fs::read_to_string(&sql_path).unwrap();
+    let auth_yml = escape_sql_yaml("server:\n  port: 9200\nspring:\n  application:\n    name: ruoyi-auth\n");
+    let auth_row = format!(
+        ",(7,'ruoyi-auth-dev.yml','DEFAULT_GROUP','{auth_yml}','{}','2020-01-01 00:00:00','2020-01-01 00:00:00',NULL,'127.0.0.1','','','认证中心配置','','','yaml','','')",
+        dummy_md5()
+    );
+    let marker = ");\n";
+    let at = sql.rfind(marker).expect("应能定位 INSERT 结尾");
+    let patched = format!("{}{}{}", &sql[..at + 1], auth_row, &sql[at + 1..]);
+    write(sql_path.clone(), patched);
+
+    let template = load_cloud_template();
+    let mut info = detector::detect(root, &template);
+    info.template_dir = "ruoyi-cloud".into();
+    let mut params = cloud_params(root, false);
+    params.enable_mail = true;
+    params.enable_email_login = true;
+    params.mail_host = "smtp.exmail.qq.com".into();
+    params.mail_port = 587;
+    params.mail_username = "no-reply@example.com".into();
+    params.mail_password = "cloud-mail-secret-should-not-leak".into();
+
+    let tasks = planner::plan(&info, &params, &template);
+    assert!(
+        tasks.iter().any(|t| t.task_type == TaskType::SetupMail),
+        "开启邮件后应规划 SetupMail 任务"
+    );
+    let results = execute_all(root, &info, &tasks, &params, &template, |_| {});
+    for r in &results {
+        if matches!(r.status, TaskStatus::Failed) {
+            panic!("任务 {} 失败：{}", r.task_name, r.message);
+        }
+    }
+
+    // 依赖落到 system 与 auth 两个模块
+    let system_pom =
+        fs::read_to_string(root.join("demo-modules/demo-system/pom.xml")).unwrap();
+    let auth_pom = fs::read_to_string(root.join("demo-auth/pom.xml")).unwrap();
+    assert!(system_pom.contains("spring-boot-starter-mail"), "{system_pom}");
+    assert!(auth_pom.contains("spring-boot-starter-mail"), "{auth_pom}");
+
+    // 登录链路：auth 的 SysLoginService 走 Feign 查用户
+    let login_svc = fs::read_to_string(
+        root.join("demo-auth/src/main/java/com/company/project/auth/service/SysLoginService.java"),
+    )
+    .unwrap();
+    assert!(login_svc.contains("emailLogin"), "{login_svc}");
+    assert!(login_svc.contains("getUserInfoByEmail"), "{login_svc}");
+    let remote = fs::read_to_string(
+        root.join("demo-api/demo-api-system/src/main/java/com/company/project/system/api/RemoteUserService.java"),
+    )
+    .unwrap();
+    assert!(remote.contains("getUserInfoByEmail"), "{remote}");
+    assert!(remote.contains("@GetMapping(\"/user/info/email\")"), "{remote}");
+    assert!(remote.contains("@RequestParam(\"email\")"), "{remote}");
+    assert!(
+        !remote.contains("/user/info/email/{email}"),
+        "邮箱 Feign 不得用 PathVariable：{remote}"
+    );
+    let fallback = fs::read_to_string(
+        root.join("demo-api/demo-api-system/src/main/java/com/company/project/system/api/factory/RemoteUserFallbackFactory.java"),
+    )
+    .unwrap();
+    assert!(fallback.contains("getUserInfoByEmail"), "{fallback}");
+    assert!(fallback.contains("getUserInfo(String username"), "{fallback}");
+    let inner = fs::read_to_string(
+        root.join("demo-modules/demo-system/src/main/java/com/company/project/system/controller/SysEmailInnerController.java"),
+    )
+    .unwrap();
+    assert!(inner.contains("getMenuPermission(sysUser)"), "{inner}");
+    assert!(inner.contains("getRolePermission(sysUser)"), "{inner}");
+    assert!(inner.contains("setRoles"), "{inner}");
+    assert!(
+        !inner.contains("getMenuPermission(sysUser.getUserId())"),
+        "{inner}"
+    );
+    assert!(inner.contains("@RequestParam(\"email\")"), "{inner}");
+    assert!(inner.contains("countUserByEmail"), "{inner}");
+    assert!(
+        root.join("demo-modules/demo-system/src/main/java/com/company/project/system/controller/SysEmailInnerController.java")
+            .is_file(),
+        "应生成邮箱查询内部接口"
+    );
+
+    // Nacos：system 与 auth 条目都要有 spring.mail 与 demo.mail；网关放行两条路径
+    let cfg = fs::read_to_string(root.join("sql/ry_config_20260905.sql")).unwrap();
+    assert!(cfg.contains("smtp.exmail.qq.com"), "Nacos 应写入 SMTP 主机：{cfg}");
+    assert!(cfg.contains("starttls"), "587 端口应走 STARTTLS：{cfg}");
+    assert!(cfg.contains("daily-limit-per-email"), "{cfg}");
+    let configs = ruoyi_forge_lib::core::nacos_config::parse_config_sql(
+        &root.join("sql/ry_config_20260905.sql"),
+    )
+    .expect("应能解析改写后的 ry_config SQL");
+    let auth_cfg = configs
+        .iter()
+        .find(|c| c.data_id.contains("auth"))
+        .expect("应有 auth yml");
+    assert!(
+        auth_cfg.content.contains("host: 'smtp.exmail.qq.com'"),
+        "auth 条目必须自带邮件配置：{}",
+        auth_cfg.content
+    );
+    let gw = configs
+        .iter()
+        .find(|c| ruoyi_forge_lib::core::nacos_config::is_gateway_yml(&c.data_id))
+        .expect("应有 gateway yml");
+    let whites = gateway_whitelist_paths(&gw.content);
+    assert!(
+        whites.iter().any(|p| p == "/auth/emailCode"),
+        "网关应放行 /auth/emailCode：{whites:?}"
+    );
+    assert!(
+        whites.iter().any(|p| p == "/auth/emailLogin"),
+        "网关应放行 /auth/emailLogin：{whites:?}"
+    );
+
+    // 交付文档不得出现授权码明文
+    let doc = delivery::generate_delivery_doc(root, &info, &params).unwrap();
+    let md = fs::read_to_string(&doc).unwrap();
+    assert!(md.contains("邮箱验证码登录"), "{md}");
+    assert!(
+        !md.contains("cloud-mail-secret-should-not-leak"),
+        "交付文档不得出现授权码明文"
+    );
+}
+
 #[test]
 fn cloud_boot4_new_module_order() {
     let dir = build_cloud_fixture(false);

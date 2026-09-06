@@ -21,7 +21,7 @@ A desktop tool for rapid initialization and customization of **RuoYi-Vue** (sepa
 - **OSS** — Aliyun / Tencent Cloud / MinIO / Qiniu. Separated edition: `POST /common/oss/upload`. Cloud: `POST /system/oss/upload` (via gateway `/system/**`, login required). Does not replace the official local upload `/common/upload` or Cloud `/file/upload`
 - **JWT** — Separated edition writes yaml `token.*`; Cloud writes Java `TokenConstants` / `CacheConstants`
 - **UniApp Scaffolding** — Optionally generates `{prefix}-uniapp` project with request utilities, login framework, env config; auto-appends WeChat config to backend application files. When UniApp is enabled, generates `AppAuthController` (WeChat `jscode2session` + Token). Separated edition: `/app/{prefix}/auth/wechat-login`; Cloud: `/system/app/{prefix}/auth/wechat-login`
-- **Add-ons** — SMS login / slider captcha / API AES (all off by default; disabled for standalone `ruoyi`). WeChat mini-program login backend follows UniApp
+- **Add-ons** — SMS login / mail sending / email-code login / slider captcha / API AES (all off by default; disabled for standalone `ruoyi`). WeChat mini-program login backend follows UniApp
 - **Official Source Fetch** — From the home screen, pull official RuoYi-Vue or RuoYi-Cloud backends via Gitee (shallow git clone, no login) or GitHub (archive zip) and continue into detection
 - **Deferred Extraction** — ZIP archives are extracted at execution time to a user-chosen output directory; original files are never modified
 - **Execution Preview** — Preview task list, impact scope, and high-risk items before executing
@@ -315,6 +315,16 @@ Field names match `CustomizeParams` in `src/types/index.ts`. Defaults match CLI 
 | sms_sdk_app_id | string | `""` | Tencent Cloud SMS SdkAppId (tencent only) |
 | sms_code_expire_minutes | number | `5` | Code TTL (minutes) |
 | sms_daily_limit_per_phone | number | `10` | Daily send cap per phone number |
+| enable_mail | boolean | `false` | Mail sending (`spring-boot-starter-mail` + concrete class `MailService` (`@Service`), no `IMailService`). Business code `@Autowired MailService` then calls `sendSimple(to, subject, content)` (plain text) and `sendHtml(to, subject, htmlContent)` (HTML, UTF-8). No attachments / Thymeleaf templates — extend it yourself. Wired when `{prefix}.mail.enabled=true`. Config goes to `spring.mail` and `{prefix}.mail`; Cloud writes the Nacos system and auth entries. Disabled for standalone |
+| enable_email_login | boolean | `false` | Email-code login, requires `enable_mail`. Code emails use the same `MailService.sendHtml`, not a separate channel. Separated edition: `/emailCode` `/emailLogin`. Cloud gateway: `/auth/emailCode` `/auth/emailLogin`. Pre-send captcha check matches SMS. Disabled for standalone |
+| mail_host | string | `""` | SMTP host, e.g. `smtp.qq.com` / `smtp.163.com` / `smtp.exmail.qq.com` |
+| mail_port | number | `465` | `465` uses SSL; other ports (e.g. `587`) use STARTTLS |
+| mail_username | string | `""` | SMTP account |
+| mail_password | string | `""` | SMTP app password, not the mailbox login password (typical for QQ / 163 / enterprise mail); redacted in reports, CLI output and DELIVERY.md |
+| mail_from | string | `""` | From address; empty falls back to `mail_username` |
+| mail_from_name | string | `""` | From display name; empty falls back to `frontend_title` |
+| email_code_expire_minutes | number | `5` | Email code TTL (minutes), range 1–30 (matches GUI / backend validate) |
+| email_daily_limit | number | `10` | Daily send cap per email address, range 1–100 |
 | enable_captcha_slider | boolean | `false` | AJ-Captcha slider `/captcha/get` `/captcha/check`; keeps the original image captcha. Boot3/4 uses the core package with manual wiring. Disabled for standalone |
 | enable_api_encrypt | boolean | `false` | API AES/ECB encrypt/decrypt. Public paths (login / captcha / SMS / WeChat login, etc.) are not encrypted. Disabled for standalone |
 | aes_secret | string | `""` | 16-byte printable key; empty generates a random one at execute time. Plaintext is not written to the report — only length and write location. The frontend key ships with the bundle (transport obfuscation, not a substitute for HTTPS) |
@@ -330,12 +340,18 @@ Constraints:
 - Nacos `8848` and Sentinel `8718` are not changed
 - `remove_modules` accepts only `gen` / `job` / `file` / `monitor`; illegal values are rejected
 - `new_modules` is Cloud only; short names must match `^[a-z][a-z0-9-]*$`; must not collide with `remove_modules` or existing module short names
-- The three add-on switches default to off; off means zero changes
-- Standalone `ruoyi` disables SMS / slider / AES
+- All add-on switches default to off; off means zero changes
+- Standalone `ruoyi` disables SMS / mail / email login / slider / AES
+- `enable_email_login` requires `enable_mail`; enabling it alone fails parameter validation
+- Email-code login adds no new login tab: the SMS tab becomes a phone/email input (an `@` routes to the email endpoints)
 - AES is not a substitute for HTTPS
-- `sms_secret_key` / `aes_secret` never appear in plaintext in reports or CLI output
+- `sms_secret_key` / `aes_secret` / `mail_password` never appear in plaintext in reports or CLI output
 - Passwords / secrets in the config are plaintext by design
-- GUI `save_config_json` redacts secrets; CLI `init-config` does not
+- GUI `save_config_json` is **not** redacted; neither is CLI `init-config`. Secrets are stored in plaintext — do not commit the file to a public repository
+- When `enable_mail` is on, `mail_host` / `mail_username` / `mail_password` are required; `mail_port` range 1–65535
+- With mail enabled, treat `sys_user.email` as the login identifier; the same address bound to multiple non-deleted accounts is rejected at login
+- The SMTP app password is written into the generated config (separated-edition yaml / Cloud `sql/ry_config_*.sql` Nacos entries); do not commit generated secrets to a public repository
+- No SMTP connectivity test is performed; verify the config with a manual smoke test
 
 ## Build & Package
 

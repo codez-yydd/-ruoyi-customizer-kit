@@ -650,6 +650,22 @@ fn render_features(md: &mut String, ctx: &DeliveryContext) {
             format!("`{}.sms` 配置块（{}）", ctx.prefix(), cfg),
         ));
     }
+    if p.enable_mail {
+        rows.push((
+            "邮件发送（Spring Mail）".into(),
+            format!(
+                "`spring.mail` 与 `{}.mail` 配置块（{}）",
+                ctx.prefix(),
+                cfg
+            ),
+        ));
+    }
+    if p.enable_email_login {
+        rows.push((
+            "邮箱验证码登录".into(),
+            "接口 `/emailCode`、`/emailLogin`".into(),
+        ));
+    }
     if p.enable_captcha_slider {
         rows.push((
             "滑块验证码".into(),
@@ -923,6 +939,24 @@ fn render_security(md: &mut String, ctx: &DeliveryContext) {
                 "已自定义，请妥善保管，勿提交 git".into()
             } else {
                 "已启用短信登录但未填写 SecretKey，配置项为空，短信发送不可用，上线前必须补齐".to_string()
+            },
+        ]);
+    }
+
+    // 8b. SMTP 授权码（仅启用邮件时列出；只标状态，不回显明文）
+    if p.enable_mail {
+        let filled = !p.mail_password.is_empty();
+        rows.push([
+            "SMTP 授权码 / 密码".into(),
+            if filled { STATE_CUSTOM } else { STATE_MISSING }.into(),
+            format!(
+                "`spring.mail.password`（{}）",
+                ctx.main_config_location()
+            ),
+            if filled {
+                "已自定义，请妥善保管，勿提交 git".into()
+            } else {
+                "已启用邮件发送但未填写授权码，配置项为空，邮件发送不可用，上线前必须补齐".to_string()
             },
         ]);
     }
@@ -1511,6 +1545,31 @@ mod tests {
         assert!(!md.contains(STATE_MISSING), "已填写不应标未填写：{md}");
         assert!(!md.contains("oss-secret-should-not-leak"), "{md}");
         assert!(!md.contains("sms-secret-should-not-leak"), "{md}");
+    }
+
+    /// 方案 D：SMTP 授权码只标状态，明文不得进 DELIVERY.md
+    #[test]
+    fn security_marks_mail_password_without_plaintext() {
+        let dir = vue_root();
+        let mut params = base_params();
+        params.enable_mail = true;
+        params.enable_email_login = true;
+        params.mail_host = "smtp.exmail.qq.com".into();
+        params.mail_username = "no-reply@example.com".into();
+        params.mail_password = "mail-secret-should-not-leak".into();
+        let md = gen(dir.path(), "ruoyi-vue", &params);
+
+        assert!(md.contains("SMTP 授权码"), "{md}");
+        assert!(md.contains("邮件发送（Spring Mail）"), "{md}");
+        assert!(md.contains("邮箱验证码登录"), "{md}");
+        assert!(
+            !md.contains("mail-secret-should-not-leak"),
+            "授权码明文不得出现在交付文档：{md}"
+        );
+
+        params.mail_password = String::new();
+        let empty = gen(dir.path(), "ruoyi-vue", &params);
+        assert!(empty.contains(STATE_MISSING), "未填写应标为待补齐：{empty}");
     }
 
     /// v2 支付模式判空看的是 API V2 密钥字段

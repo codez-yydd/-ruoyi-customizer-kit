@@ -139,6 +139,7 @@ where
         TaskType::UpdateAdminPomFinalName => do_update_admin_pom_final_name(root, params, &mut r, log),
         TaskType::SetupWechatLogin => do_setup_wechat_login(root, params, info, &mut r, log),
         TaskType::SetupSmsLogin => do_setup_sms_login(root, params, info, &mut r, log),
+        TaskType::SetupMail => do_setup_mail(root, params, info, &mut r, log),
         TaskType::SetupCaptchaSlider => do_setup_captcha_slider(root, params, info, &mut r, log),
         TaskType::SetupApiEncrypt => do_setup_api_encrypt(root, params, info, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport | TaskType::GenerateDeliveryDoc => {
@@ -1726,6 +1727,21 @@ where
 {
     let modules = current_backend_modules(root, info);
     let outcome = crate::core::sms_login::setup_sms_login(root, params, &modules, &|msg| log(msg))?;
+    r.modified_files = outcome.modified_files;
+    r.created_files = outcome.created_files;
+    if !outcome.summary.is_empty() {
+        r.message = outcome.summary.join("；");
+    }
+    Ok(())
+}
+
+/// 邮件发送与邮箱验证码登录（方案 D）：内部按 enable_mail / enable_email_login 两级开关分步
+fn do_setup_mail<F>(root: &Path, params: &CustomizeParams, info: &crate::core::ProjectInfo, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    let modules = current_backend_modules(root, info);
+    let outcome = crate::core::mail::setup_mail(root, params, &modules, &|msg| log(msg))?;
     r.modified_files = outcome.modified_files;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {

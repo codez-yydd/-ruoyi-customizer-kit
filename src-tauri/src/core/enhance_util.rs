@@ -46,6 +46,29 @@ pub fn add_maven_dependency(
     version: &str,
     log: &dyn Fn(&str),
 ) -> Result<bool, String> {
+    add_maven_dependency_opt_version(
+        root,
+        backend_modules,
+        candidates,
+        group_id,
+        artifact_id,
+        Some(version),
+        log,
+    )
+}
+
+/// 注入 Maven 依赖（幂等），`version = None` 时不写 `<version>`，交由 parent 的
+/// dependencyManagement 统一管理（Spring Boot 官方 starter 必须走这条路，
+/// 否则 Boot 2/3/4 三档要各自维护版本号）。
+pub fn add_maven_dependency_opt_version(
+    root: &Path,
+    backend_modules: &[String],
+    candidates: &[String],
+    group_id: &str,
+    artifact_id: &str,
+    version: Option<&str>,
+    log: &dyn Fn(&str),
+) -> Result<bool, String> {
     if any_pom_has(root, backend_modules, artifact_id) {
         log(&format!("{artifact_id} 依赖已存在，跳过"));
         return Ok(false);
@@ -55,8 +78,12 @@ pub fn add_maven_dependency(
     } else {
         candidates.to_vec()
     };
+    let version_line = match version {
+        Some(v) => format!("        <version>{v}</version>\n"),
+        None => String::new(),
+    };
     let dep_block = format!(
-        "\n    <dependency>\n        <groupId>{group_id}</groupId>\n        <artifactId>{artifact_id}</artifactId>\n        <version>{version}</version>\n    </dependency>\n"
+        "\n    <dependency>\n        <groupId>{group_id}</groupId>\n        <artifactId>{artifact_id}</artifactId>\n{version_line}    </dependency>\n"
     );
     for module in &list {
         let pom = root.join(module).join("pom.xml");
@@ -83,7 +110,12 @@ pub fn add_maven_dependency(
         };
         std::fs::write(&pom, new_content)
             .map_err(|e| format!("写入 {} 失败：{e}", pom.display()))?;
-        log(&format!("已在 {module}/pom.xml 添加 {artifact_id}:{version}"));
+        match version {
+            Some(v) => log(&format!("已在 {module}/pom.xml 添加 {artifact_id}:{v}")),
+            None => log(&format!(
+                "已在 {module}/pom.xml 添加 {artifact_id}（版本随 parent 管理）"
+            )),
+        }
         return Ok(true);
     }
     Err(format!("找不到合适的 pom.xml 来添加 {artifact_id}"))
@@ -119,8 +151,8 @@ pub fn find_java_file(module: &Path, file_name: &str) -> Option<PathBuf> {
     None
 }
 
-/// 在整个项目递归查找 Java 文件名
-pub fn find_java_file_in_project(root: &Path, file_name: &str) -> Option<PathBuf> {
+/// 在整个项目递归查找指定文件名（Java / XML 等）
+pub fn find_file_in_project(root: &Path, file_name: &str) -> Option<PathBuf> {
     for entry in walkdir::WalkDir::new(root)
         .into_iter()
         .filter_entry(|e| {
@@ -137,6 +169,104 @@ pub fn find_java_file_in_project(root: &Path, file_name: &str) -> Option<PathBuf
         }
     }
     None
+}
+
+/// 在整个项目递归查找 Java 文件名
+pub fn find_java_file_in_project(root: &Path, file_name: &str) -> Option<PathBuf> {
+    find_file_in_project(root, file_name)
+}
+
+/// 向 Java 源码插入 `import`（幂等）。优先插在最后一个 import 之后，否则插在 package 声明后。
+pub fn ensure_java_import(src: &str, fqcn: &str) -> String {
+    let stmt = fqcn
+        .trim()
+        .trim_start_matches("import ")
+        .trim_end_matches(';')
+        .trim()
+        .to_string();
+    let line = format!("import {stmt};");
+    if src.contains(&line) || src.contains(&format!("import {stmt} ")) {
+        return src.to_string();
+    }
+    if let Some(idx) = src.rfind("\nimport ") {
+        let rest = &src[idx + 1..];
+        let after = rest.find('\n').map(|i| idx + 1 + i).unwrap_or(src.len());
+        let mut out = String::with_capacity(src.len() + line.len() + 1);
+        out.push_str(&src[..after]);
+        out.push('\n');
+        out.push_str(&line);
+        out.push_str(&src[after..]);
+        return out;
+    }
+    if let Some(idx) = src.find("package ") {
+        let rest = &src[idx..];
+        let after = rest.find('\n').map(|i| idx + i).unwrap_or(src.len());
+        let mut out = String::with_capacity(src.len() + line.len() + 2);
+        out.push_str(&src[..after]);
+        out.push('\n');
+        out.push_str(&line);
+        out.push_str(&src[after..]);
+        return out;
+    }
+    format!("{line}\n{src}")
+}
+
+/// 定位 Cloud `RemoteUserFallbackFactory.java`：优先与 RemoteUserService 同包下 `factory/`，
+/// 再按文件名全树查找。
+pub fn locate_remote_user_fallback(root: &Path, remote_user_service: &Path) -> Option<PathBuf> {
+    if let Some(dir) = remote_user_service.parent() {
+        let sibling = dir.join("factory").join("RemoteUserFallbackFactory.java");
+        if sibling.is_file() {
+            return Some(sibling);
+        }
+    }
+    find_java_file_in_project(root, "RemoteUserFallbackFactory.java")
+}
+
+/// 向 Cloud `RemoteUserFallbackFactory` 匿名类补覆盖方法（幂等）。
+/// 官方 `create` 返回 `new RemoteUserService(){...}`，接口新增抽象方法后未实现即编译失败。
+pub fn patch_remote_user_fallback(
+    root: &Path,
+    remote_user_service: &Path,
+    method_name: &str,
+    java_override: &str,
+    log: &dyn Fn(&str),
+) -> Result<bool, String> {
+    let factory = locate_remote_user_fallback(root, remote_user_service).ok_or_else(|| {
+        format!(
+            "未找到 RemoteUserFallbackFactory.java，无法为 {method_name} 补覆盖方法，Cloud 编译会失败"
+        )
+    })?;
+    read_write(&factory, |c| {
+        if c.contains(method_name) {
+            return None;
+        }
+        let pos = c.rfind("};")?;
+        let snippet = java_override.trim_start_matches('\n');
+        let mut out = String::with_capacity(c.len() + snippet.len() + 2);
+        out.push_str(&c[..pos]);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(snippet);
+        if !snippet.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str(&c[pos..]);
+        Some(out)
+    })
+    .map(|ok| {
+        if ok {
+            log(&format!(
+                "已向 RemoteUserFallbackFactory 追加 {method_name}"
+            ));
+        } else {
+            log(&format!(
+                "RemoteUserFallbackFactory 已含 {method_name}，跳过"
+            ));
+        }
+        ok
+    })
 }
 
 /// 项目内是否出现某段 Java 源码（用于探测方法名，找不到则明确失败）
@@ -258,6 +388,71 @@ pub fn upsert_prefix_child(yaml: &str, prefix: &str, child_key: &str, child_bloc
         out.push('\n');
     }
     out.push_str(&format!("\n{prefix}:\n"));
+    for l in &insert_lines {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out
+}
+
+/// 在指定顶层块下插入子键，存在性判断**限定在该块内部**。
+///
+/// 与 `upsert_prefix_child` 的区别：后者用全局 `  {child}:` 判重，遇到
+/// `spring.mail` 与 `{prefix}.mail` 这类不同顶层块下的同名子键会互相误判。
+/// 方案 D 的邮件配置需要同时写这两处，故单独提供作用域版本。
+pub fn upsert_top_level_child(
+    yaml: &str,
+    top_key: &str,
+    child_key: &str,
+    child_block: &str,
+) -> String {
+    let top = format!("{top_key}:");
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut top_idx = None;
+    for (i, line) in lines.iter().enumerate() {
+        if !line.starts_with(' ') && !line.starts_with('\t') && line.trim_end() == top {
+            top_idx = Some(i);
+            break;
+        }
+    }
+    let insert_lines: Vec<String> = child_block
+        .lines()
+        .map(|s| s.to_string())
+        .collect();
+    if let Some(start) = top_idx {
+        // 该顶层块的范围：直到下一个顶格非空行
+        let mut end = start + 1;
+        while end < lines.len() {
+            let l = lines[end];
+            if l.trim().is_empty() {
+                end += 1;
+                continue;
+            }
+            if !l.starts_with(' ') && !l.starts_with('\t') {
+                break;
+            }
+            end += 1;
+        }
+        let marker = format!("{child_key}:");
+        let exists = lines[start + 1..end]
+            .iter()
+            .any(|l| (l.starts_with(' ') || l.starts_with('\t')) && l.trim_start().starts_with(&marker));
+        if exists {
+            return yaml.to_string();
+        }
+        let mut out_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+        out_lines.splice(end..end, insert_lines);
+        let mut out = out_lines.join("\n");
+        if yaml.ends_with('\n') && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        return out;
+    }
+    let mut out = yaml.to_string();
+    if !out.ends_with('\n') && !out.is_empty() {
+        out.push('\n');
+    }
+    out.push_str(&format!("\n{top_key}:\n"));
     for l in &insert_lines {
         out.push_str(l);
         out.push('\n');
@@ -438,5 +633,36 @@ mod tests {
         assert_eq!(servlet_ns(Some(3)), "jakarta");
         assert_eq!(servlet_ns(Some(4)), "jakarta");
         assert_eq!(servlet_ns(None), "jakarta");
+    }
+
+    #[test]
+    fn ensure_java_import_is_idempotent() {
+        let src = "package a;\nimport org.springframework.web.bind.annotation.PathVariable;\n\nclass A {}\n";
+        let once = ensure_java_import(src, "org.springframework.web.bind.annotation.RequestParam");
+        assert!(once.contains("import org.springframework.web.bind.annotation.RequestParam;"), "{once}");
+        let twice = ensure_java_import(&once, "org.springframework.web.bind.annotation.RequestParam");
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn patch_remote_user_fallback_inserts_before_anonymous_close() {
+        let dir = tempfile::tempdir().unwrap();
+        let api = dir.path().join("src/main/java/com/demo/api");
+        std::fs::create_dir_all(api.join("factory")).unwrap();
+        let remote = api.join("RemoteUserService.java");
+        std::fs::write(&remote, "package com.demo.api;\npublic interface RemoteUserService {}\n").unwrap();
+        let factory = api.join("factory/RemoteUserFallbackFactory.java");
+        std::fs::write(
+            &factory,
+            "package com.demo.api.factory;\npublic class RemoteUserFallbackFactory {\n    public RemoteUserService create(Throwable throwable) {\n        return new RemoteUserService() {\n            @Override\n            public R<LoginUser> getUserInfo(String username, String source) {\n                return R.fail(\"获取用户失败:\" + throwable.getMessage());\n            }\n        };\n    }\n}\n",
+        )
+        .unwrap();
+        let snippet = "            @Override\n            public R<LoginUser> getUserInfoByEmail(String email, String source)\n            {\n                return R.fail(\"获取用户失败:\" + throwable.getMessage());\n            }\n";
+        assert!(patch_remote_user_fallback(dir.path(), &remote, "getUserInfoByEmail", snippet, &|_| {}).unwrap());
+        let out = std::fs::read_to_string(&factory).unwrap();
+        assert!(out.contains("getUserInfoByEmail"), "{out}");
+        assert!(out.contains("getUserInfo(String username"), "{out}");
+        assert!(out.contains("throwable.getMessage()"), "{out}");
+        assert!(!patch_remote_user_fallback(dir.path(), &remote, "getUserInfoByEmail", snippet, &|_| {}).unwrap());
     }
 }

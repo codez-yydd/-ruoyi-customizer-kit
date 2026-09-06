@@ -540,6 +540,35 @@ pub fn plan(
             error_message: String::new(),
         });
     }
+    // 邮件发送与邮箱验证码登录（方案 D）：enable_email_login 是 enable_mail 的子能力，
+    // 两个开关合并为一个任务，任务名按组合区分。
+    if params.enable_mail {
+        let mut created = vec![
+            "MailProperties.java".to_string(),
+            "MailService.java".to_string(),
+        ];
+        let mut affected = vec!["pom.xml".to_string()];
+        let name = if params.enable_email_login {
+            created.push("EmailLoginService.java".into());
+            created.push("EmailAuthController.java".into());
+            affected.push("SysLoginService.java".into());
+            affected.push("SecurityConfig.java".into());
+            "邮件发送 + 邮箱验证码登录：MailService + 发码/登录接口".to_string()
+        } else {
+            "邮件发送：spring-boot-starter-mail + MailService".to_string()
+        };
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name,
+            task_type: TaskType::SetupMail,
+            risk_level: RiskLevel::Medium,
+            affected_files: affected,
+            affected_dirs: vec![],
+            created_files: created,
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
     if params.enable_captcha_slider {
         tasks.push(Task {
             id: next_id(&tasks),

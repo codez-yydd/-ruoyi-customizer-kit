@@ -285,3 +285,187 @@ fn vue_new_module_order() {
         "分离版即使填写 new_modules 也不应生成 demo-order"
     );
 }
+
+// ---------- 方案 D：邮件发送与邮箱验证码登录 ----------
+
+/// 补齐邮箱登录链路依赖的官方源码（SysLoginService / SecurityConfig / 查用户方法）
+fn add_login_chain(root: &std::path::Path) {
+    write(
+        root.join("ruoyi-framework/src/main/java/com/ruoyi/framework/web/service/SysLoginService.java"),
+        "package com.ruoyi.framework.web.service;\n\npublic class SysLoginService {\n    public String login(String username, String password, String code, String uuid) { return \"token\"; }\n}\n",
+    );
+    write(
+        root.join("ruoyi-framework/src/main/java/com/ruoyi/framework/config/SecurityConfig.java"),
+        "package com.ruoyi.framework.config;\n\npublic class SecurityConfig {\n    void cfg() { antMatchers(\"/captchaImage\").permitAll(); }\n}\n",
+    );
+    write(
+        root.join("ruoyi-system/src/main/java/com/ruoyi/system/mapper/SysUserMapper.java"),
+        "package com.ruoyi.system.mapper;\n\npublic interface SysUserMapper {\n    SysUser checkEmailUnique(String email);\n}\n",
+    );
+    write(
+        root.join("ruoyi-system/src/main/resources/mapper/system/SysUserMapper.xml"),
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<!DOCTYPE mapper PUBLIC \"-//mybatis.org//DTD Mapper 3.0//EN\" \"http://mybatis.org/dtd/mybatis-3-mapper.dtd\">\n<mapper namespace=\"com.ruoyi.system.mapper.SysUserMapper\">\n</mapper>\n",
+    );
+    write(
+        root.join("ruoyi-system/src/main/java/com/ruoyi/system/service/ISysUserService.java"),
+        "package com.ruoyi.system.service;\n\npublic interface ISysUserService {\n    SysUser selectUserById(Long userId);\n}\n",
+    );
+}
+
+/// 目录内容快照（相对路径 → 内容），用于零回归逐字节比对
+fn snapshot(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).unwrap() {
+            let p = entry.unwrap().path();
+            if p.is_dir() {
+                // 报告目录带时间戳，天然不可比
+                if p.file_name().and_then(|s| s.to_str()) == Some(".ry-forge-report") {
+                    continue;
+                }
+                stack.push(p);
+            } else {
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(rel, fs::read(&p).unwrap());
+            }
+        }
+    }
+    out
+}
+
+/// 邮件 + 邮箱验证码登录全流程：依赖、配置、登录链路、放行清单、前端、报告脱敏
+#[test]
+fn vue_mail_and_email_login_pipeline() {
+    let dir = build_full_project();
+    let root = dir.path();
+    add_login_chain(root);
+    write(
+        root.join("ruoyi-admin/pom.xml"),
+        "<project>\n<parent>\n<groupId>com.ruoyi</groupId>\n<artifactId>ruoyi</artifactId>\n</parent>\n<artifactId>ruoyi-admin</artifactId>\n<dependencies>\n</dependencies>\n</project>\n",
+    );
+    write(
+        root.join("ruoyi-framework/pom.xml"),
+        "<project>\n<parent>\n<groupId>com.ruoyi</groupId>\n<artifactId>ruoyi</artifactId>\n</parent>\n<artifactId>ruoyi-framework</artifactId>\n<dependencies>\n</dependencies>\n</project>\n",
+    );
+    let template = load_template();
+    let info = detector::detect(root, &template);
+    let mut params = full_params();
+    params.enable_mail = true;
+    params.enable_email_login = true;
+    params.mail_host = "smtp.exmail.qq.com".into();
+    params.mail_port = 465;
+    params.mail_username = "no-reply@example.com".into();
+    params.mail_password = "mail-secret-should-not-leak".into();
+
+    let tasks = planner::plan(&info, &params, &template);
+    assert!(
+        tasks.iter().any(|t| t.task_type == TaskType::SetupMail),
+        "开启邮件后应规划 SetupMail 任务"
+    );
+
+    let results = execute_all(root, &info, &tasks, &params, &template, |_| {});
+    for r in &results {
+        if matches!(r.status, TaskStatus::Failed) {
+            panic!("任务 {} 失败：{}", r.task_name, r.message);
+        }
+    }
+
+    // 依赖：starter 无版本号（随 parent）
+    let fw_pom = fs::read_to_string(root.join("demo-framework/pom.xml")).unwrap();
+    assert!(fw_pom.contains("spring-boot-starter-mail"), "{fw_pom}");
+
+    // 登录链路 + 放行清单
+    let login_svc = fs::read_to_string(root.join(
+        "demo-framework/src/main/java/com/company/project/framework/web/service/SysLoginService.java",
+    ))
+    .unwrap();
+    assert!(login_svc.contains("emailLogin"), "{login_svc}");
+    let sec = fs::read_to_string(root.join(
+        "demo-framework/src/main/java/com/company/project/framework/config/SecurityConfig.java",
+    ))
+    .unwrap();
+    assert!(sec.contains("/emailCode"), "{sec}");
+    assert!(sec.contains("/emailLogin"), "{sec}");
+
+    // 配置：spring.mail 与 demo.mail
+    let base = fs::read_to_string(
+        root.join("demo-admin/src/main/resources/application.yaml"),
+    )
+    .unwrap();
+    assert!(base.contains("host: 'smtp.exmail.qq.com'"), "{base}");
+    assert!(base.contains("daily-limit-per-email:"), "{base}");
+
+    // 发码/登录接口（前端登录页分流由 enhancements.rs 的真实登录页用例覆盖，
+    // 本用例的合成 login.vue 不含官方锚点）
+    let ctrl = fs::read_to_string(root.join(
+        "demo-admin/src/main/java/com/company/project/web/controller/system/EmailAuthController.java",
+    ))
+    .unwrap();
+    assert!(ctrl.contains("/emailCode"), "{ctrl}");
+    assert!(ctrl.contains("/emailLogin"), "{ctrl}");
+
+    // 报告与交付文档均不得出现授权码明文
+    let checks = validator::validate(root, &params, &template);
+    let delivery_path = delivery::generate_delivery_doc(root, &info, &params).unwrap();
+    let delivery_content = fs::read_to_string(&delivery_path).unwrap();
+    assert!(delivery_content.contains("邮件发送（Spring Mail）"), "{delivery_content}");
+    assert!(
+        !delivery_content.contains("mail-secret-should-not-leak"),
+        "交付文档不得出现授权码明文"
+    );
+    let report_path =
+        report::generate_report(root, &info, &params, &results, &checks, Some(&delivery_path))
+            .unwrap();
+    let report_content = fs::read_to_string(&report_path).unwrap();
+    assert!(report_content.contains("邮件发送：已启用"), "{report_content}");
+    assert!(
+        !report_content.contains("mail-secret-should-not-leak"),
+        "报告不得出现授权码明文"
+    );
+}
+
+/// 零回归：两个开关关闭时，填不填邮件参数产物逐字节一致
+#[test]
+fn vue_mail_switches_off_is_byte_identical() {
+    let template = load_template();
+
+    let run = |params: &CustomizeParams| {
+        let dir = build_full_project();
+        add_login_chain(dir.path());
+        let info = detector::detect(dir.path(), &template);
+        let tasks = planner::plan(&info, params, &template);
+        let _ = execute_all(dir.path(), &info, &tasks, params, &template, |_| {});
+        let snap = snapshot(dir.path());
+        (dir, snap)
+    };
+
+    let mut baseline = full_params();
+    baseline.enable_report = false;
+    let (_d1, before) = run(&baseline);
+
+    // 填了邮件参数但开关不开：不得产生任何差异
+    let mut filled = baseline.clone();
+    filled.mail_host = "smtp.exmail.qq.com".into();
+    filled.mail_username = "no-reply@example.com".into();
+    filled.mail_password = "mail-secret-should-not-leak".into();
+    filled.mail_from_name = "运营中心".into();
+    let (_d2, after) = run(&filled);
+
+    assert_eq!(
+        before.keys().collect::<Vec<_>>(),
+        after.keys().collect::<Vec<_>>(),
+        "文件清单应完全一致"
+    );
+    for (path, content) in &before {
+        assert_eq!(
+            content,
+            after.get(path).unwrap(),
+            "{path} 内容应逐字节一致"
+        );
+    }
+}

@@ -204,6 +204,16 @@ const defaults = (): CustomizeParams => ({
   sms_sdk_app_id: '',
   sms_code_expire_minutes: 5,
   sms_daily_limit_per_phone: 10,
+  enable_mail: false,
+  enable_email_login: false,
+  mail_host: '',
+  mail_port: 465,
+  mail_username: '',
+  mail_password: '',
+  mail_from: '',
+  mail_from_name: '',
+  email_code_expire_minutes: 5,
+  email_daily_limit: 10,
   enable_captcha_slider: false,
   enable_api_encrypt: false,
   aes_secret: ''
@@ -238,6 +248,16 @@ if (form.sms_template_code == null) form.sms_template_code = ''
 if (form.sms_sdk_app_id == null) form.sms_sdk_app_id = ''
 if (typeof form.sms_code_expire_minutes !== 'number') form.sms_code_expire_minutes = 5
 if (typeof form.sms_daily_limit_per_phone !== 'number') form.sms_daily_limit_per_phone = 10
+if (form.enable_mail == null) form.enable_mail = false
+if (form.enable_email_login == null) form.enable_email_login = false
+if (form.mail_host == null) form.mail_host = ''
+if (typeof form.mail_port !== 'number') form.mail_port = 465
+if (form.mail_username == null) form.mail_username = ''
+if (form.mail_password == null) form.mail_password = ''
+if (form.mail_from == null) form.mail_from = ''
+if (form.mail_from_name == null) form.mail_from_name = ''
+if (typeof form.email_code_expire_minutes !== 'number') form.email_code_expire_minutes = 5
+if (typeof form.email_daily_limit !== 'number') form.email_daily_limit = 10
 if (form.enable_captcha_slider == null) form.enable_captcha_slider = false
 if (form.enable_api_encrypt == null) form.enable_api_encrypt = false
 if (form.aes_secret == null) form.aes_secret = ''
@@ -439,7 +459,7 @@ const sectionCounts = computed(() => ({
   cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0) + (Array.isArray(form.new_modules) ? form.new_modules.length : 0),
   structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]),
   oss: countTrue([form.enable_oss]),
-  enhance: countTrue([form.enable_sms_login, form.enable_captcha_slider, form.enable_api_encrypt]),
+  enhance: countTrue([form.enable_sms_login, form.enable_mail, form.enable_email_login, form.enable_captcha_slider, form.enable_api_encrypt]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
   deploy: countTrue([form.enable_nginx_config, form.enable_startup_scripts]),
   uniapp: countTrue([form.pay_included]),
@@ -522,10 +542,18 @@ function onSwitchChange() {
   markCustomized()
 }
 
+/** 邮件总开关关闭时联动关掉邮箱验证码登录，避免提交出「邮箱登录需要开启邮件发送」的校验错误 */
+function onMailSwitchChange() {
+  if (!form.enable_mail) form.enable_email_login = false
+  onSwitchChange()
+}
+
 /** 智能展开：开关被打开时（含预设/导入触发）自动展开所属分区 */
 const TRIGGERS: ReadonlyArray<readonly [() => boolean, string]> = [
   [() => form.enable_oss, SECTION.oss],
   [() => form.enable_sms_login, SECTION.enhance],
+  [() => form.enable_mail, SECTION.enhance],
+  [() => form.enable_email_login, SECTION.enhance],
   [() => form.enable_captcha_slider, SECTION.enhance],
   [() => form.enable_api_encrypt, SECTION.enhance],
   [() => form.enable_security, SECTION.security],
@@ -1295,6 +1323,22 @@ function generateAesSecret(): string {
               </div>
               <div class="switch-item">
                 <div class="switch-item__head">
+                  <span class="switch-item__label">邮件发送</span>
+                  <el-switch v-model="form.enable_mail" @change="onMailSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">Spring Mail + MailService（simple / html），配置写入 {{ form.new_module_prefix || 'demo' }}.mail</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">邮箱验证码登录</span>
+                  <el-switch v-model="form.enable_email_login" :disabled="!form.enable_mail" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">
+                  POST /emailCode、/emailLogin；依赖邮件发送，登录页复用验证码 tab（含 @ 走邮箱）
+                </div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
                   <span class="switch-item__label">滑块验证码</span>
                   <el-switch v-model="form.enable_captcha_slider" @change="onSwitchChange" />
                 </div>
@@ -1340,8 +1384,38 @@ function generateAesSecret(): string {
                 </el-form-item>
               </div>
             </div>
+            <div v-if="form.enable_mail" class="detail-panel">
+              <div class="detail-panel__bar">邮件发送</div>
+              <div class="detail-grid">
+                <el-form-item label="SMTP 服务器">
+                  <el-input v-model="form.mail_host" placeholder="smtp.qq.com / smtp.163.com / smtp.exmail.qq.com" />
+                </el-form-item>
+                <el-form-item label="端口">
+                  <el-input-number v-model="form.mail_port" :min="1" :max="65535" />
+                </el-form-item>
+                <el-form-item label="SMTP 账号">
+                  <el-input v-model="form.mail_username" placeholder="发信邮箱账号" />
+                </el-form-item>
+                <el-form-item label="授权码/密码">
+                  <el-input v-model="form.mail_password" show-password placeholder="授权码，不会写入报告明文" />
+                </el-form-item>
+                <el-form-item label="发件人地址">
+                  <el-input v-model="form.mail_from" placeholder="留空则取 SMTP 账号" />
+                </el-form-item>
+                <el-form-item label="发件人名称">
+                  <el-input v-model="form.mail_from_name" placeholder="留空则取系统名称" />
+                </el-form-item>
+                <el-form-item v-if="form.enable_email_login" label="有效期(分钟)">
+                  <el-input-number v-model="form.email_code_expire_minutes" :min="1" :max="30" />
+                </el-form-item>
+                <el-form-item v-if="form.enable_email_login" label="日限额/邮箱">
+                  <el-input-number v-model="form.email_daily_limit" :min="1" :max="100" />
+                </el-form-item>
+              </div>
+              <div class="detail-tip muted">465 走 SSL，587 走 STARTTLS，其余端口按明文提交（内网自建邮件服务）。工具离线运行，不做 SMTP 连通性测试，请自行确认授权码有效。</div>
+            </div>
             <div v-if="form.enable_api_encrypt" class="detail-panel">
-              <div v-if="form.enable_sms_login" class="detail-panel__bar">接口 AES 加密</div>
+              <div v-if="form.enable_sms_login || form.enable_mail" class="detail-panel__bar">接口 AES 加密</div>
               <el-form-item label="AES 密钥">
                 <el-input v-model="form.aes_secret" show-password placeholder="16 字符，留空则执行时随机生成">
                   <template #append>

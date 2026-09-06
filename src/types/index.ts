@@ -262,6 +262,21 @@ export interface CustomizeParams {
   sms_sdk_app_id: string
   sms_code_expire_minutes: number
   sms_daily_limit_per_phone: number
+  // ---- 增强件：邮件发送与邮箱验证码登录 ----
+  /** 通用邮件发送能力（Spring Mail + MailService） */
+  enable_mail: boolean
+  /** 邮箱验证码登录（依赖 enable_mail） */
+  enable_email_login: boolean
+  mail_host: string
+  /** SMTP 端口，465=SSL，587=STARTTLS */
+  mail_port: number
+  mail_username: string
+  /** SMTP 授权码/密码，敏感字段，不进报告与交付文档明文 */
+  mail_password: string
+  mail_from: string
+  mail_from_name: string
+  email_code_expire_minutes: number
+  email_daily_limit: number
   // ---- 增强件：滑块验证码 ----
   enable_captcha_slider: boolean
   // ---- 增强件：接口 AES ----
@@ -313,6 +328,7 @@ export type TaskType =
   | 'UpdateAdminPomFinalName'
   | 'SetupWechatLogin'
   | 'SetupSmsLogin'
+  | 'SetupMail'
   | 'SetupCaptchaSlider'
   | 'SetupApiEncrypt'
   | 'ValidateProject'

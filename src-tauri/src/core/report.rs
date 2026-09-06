@@ -78,6 +78,21 @@ pub fn generate_report(
     if params.enable_sms_login {
         md.push_str("- 短信登录：已启用（厂商与模板已写入 yml，密钥不写入报告）\n");
     }
+    if params.enable_mail {
+        // 授权码/密码只标状态，不回显明文
+        let pwd = if params.mail_password.is_empty() {
+            "未填写需补齐"
+        } else {
+            "已自定义"
+        };
+        md.push_str(&format!(
+            "- 邮件发送：已启用（SMTP {}:{}，配置块 {}.mail，授权码{}）\n",
+            params.mail_host, params.mail_port, params.new_module_prefix, pwd
+        ));
+        if params.enable_email_login {
+            md.push_str("- 邮箱验证码登录：已启用（/emailCode /emailLogin）\n");
+        }
+    }
     if params.enable_captcha_slider {
         md.push_str("- 滑块验证码：已启用（/captcha/get /captcha/check）\n");
     }
