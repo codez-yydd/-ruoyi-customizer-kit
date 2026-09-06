@@ -141,9 +141,9 @@ where
         TaskType::SetupSmsLogin => do_setup_sms_login(root, params, info, &mut r, log),
         TaskType::SetupCaptchaSlider => do_setup_captcha_slider(root, params, info, &mut r, log),
         TaskType::SetupApiEncrypt => do_setup_api_encrypt(root, params, info, &mut r, log),
-        TaskType::ValidateProject | TaskType::GenerateReport => {
+        TaskType::ValidateProject | TaskType::GenerateReport | TaskType::GenerateDeliveryDoc => {
             r.status = TaskStatus::Skipped;
-            r.message = "校验/报告在执行后单独触发".into();
+            r.message = "校验/报告/交付文档在执行后单独触发".into();
             return r;
         }
     };

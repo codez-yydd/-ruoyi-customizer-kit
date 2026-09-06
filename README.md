@@ -246,6 +246,7 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 | enable_long_id_json_string | boolean | `true` | Long 主键序列化为字符串，避免前端精度丢失 |
 | enable_snowflake_id | boolean | `false` | 全局雪花 ID：insert 手动 setId，禁用自增 |
 | enable_report | boolean | `true` | 生成 Markdown 改造报告 |
+| enable_delivery_doc | boolean | `true` | 生成交付文档 `DELIVERY.md`（项目概览 / 服务与端口 / 数据库与中间件 / 启动指南 / 安全清单） |
 | enable_clear_home | boolean | `true` | 清空若依前端首页为空白页 |
 | enable_remove_github | boolean | `true` | 移除顶部栏 GitHub / Gitee 外链 |
 | enable_remove_docs | boolean | `true` | 移除顶部栏文档外链 |

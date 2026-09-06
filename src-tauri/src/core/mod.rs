@@ -40,6 +40,7 @@ pub mod planner;
 pub mod executor;
 pub mod validator;
 pub mod report;
+pub mod delivery;
 
 use serde::{Deserialize, Serialize};
 
@@ -156,6 +157,9 @@ pub struct CustomizeParams {
     #[serde(default)]
     pub enable_snowflake_id: bool,
     pub enable_report: bool,
+    /// 生成交付文档 DELIVERY.md（项目概览/端口/启动指南/安全清单），默认开
+    #[serde(default = "default_true")]
+    pub enable_delivery_doc: bool,
     /// 清空若依前端首页（views/index.vue）为空白页
     #[serde(default = "default_true")]
     pub enable_clear_home: bool,
@@ -433,6 +437,7 @@ impl Default for CustomizeParams {
             enable_long_id_json_string: true,
             enable_snowflake_id: false,
             enable_report: true,
+            enable_delivery_doc: true,
             enable_clear_home: true,
             enable_remove_github: true,
             enable_remove_docs: true,

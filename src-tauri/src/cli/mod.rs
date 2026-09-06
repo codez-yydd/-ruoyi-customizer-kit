@@ -34,6 +34,7 @@ pub fn default_params() -> CustomizeParams {
         enable_long_id_json_string: true,
         enable_snowflake_id: false,
         enable_report: true,
+        enable_delivery_doc: true,
         enable_clear_home: true,
         enable_remove_github: true,
         enable_remove_docs: true,
@@ -477,12 +478,13 @@ fn print_run_summary(resp: &ExecuteResponse) {
         .filter(|c| matches!(c.result, crate::core::validator::CheckResult::Fail))
         .count();
     println!(
-        "汇总：成功={} 失败任务={} 校验失败项={} 输出目录={} 报告={}",
+        "汇总：成功={} 失败任务={} 校验失败项={} 输出目录={} 报告={} 交付文档={}",
         resp.success,
         resp.failed_count,
         check_fail,
         resp.output_dir,
-        resp.report_path
+        resp.report_path,
+        resp.delivery_doc_path
     );
 }
 
@@ -755,6 +757,7 @@ mod tests {
                 message: generated,
             }],
             report_path: String::new(),
+            delivery_doc_path: String::new(),
             failed_count: 0,
             output_dir: String::new(),
         };

@@ -12,6 +12,7 @@ pub fn generate_report(
     params: &CustomizeParams,
     task_results: &[TaskResult],
     checks: &[CheckItem],
+    delivery_doc_path: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
     let report_dir = project_root.join(".ry-forge-report").join(&timestamp);
@@ -36,6 +37,9 @@ pub fn generate_report(
         None => "未识别".to_string(),
     };
     md.push_str(&format!("- Spring Boot 大版本：{}\n", boot_label));
+    if let Some(p) = delivery_doc_path {
+        md.push_str(&format!("- 交付文档：{}\n", p.display()));
+    }
     let new_mods = crate::core::new_module::normalize_new_module_names(&params.new_modules);
     if !new_mods.is_empty() {
         md.push_str(&format!(

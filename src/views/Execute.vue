@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 执行改造页：触发 execute_transform，监听 transform:progress 事件，展示进度、
-// 实时日志、任务结果与执行后校验（checks）及报告路径（report_path）。
+// 实时日志、任务结果与执行后校验（checks）及报告路径（report_path）、
+// 交付文档路径（delivery_doc_path）。
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
@@ -168,6 +169,48 @@ async function copyReportPath() {
     }
   }
 }
+
+/** 在系统文件管理器中打开交付文档所在目录并选中 DELIVERY.md（失败不阻断，仅提示） */
+async function openDeliveryDocDir() {
+  if (!result.value?.delivery_doc_path) return
+  try {
+    await revealItemInDir(result.value.delivery_doc_path)
+  } catch (e) {
+    store.log(`打开交付文档目录失败：${e}`, 'WARN')
+    ElMessage.warning('打开交付文档目录失败，请按路径手动前往')
+  }
+}
+
+/** 复制交付文档路径到剪贴板（clipboard API 不可用时降级 execCommand） */
+async function copyDeliveryDocPath() {
+  const path = result.value?.delivery_doc_path
+  if (!path) return
+  try {
+    await navigator.clipboard.writeText(path)
+    ElMessage.success('交付文档路径已复制')
+  } catch {
+    // 降级方案：隐藏 textarea + execCommand('copy')
+    const ta = document.createElement('textarea')
+    ta.value = path
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    } finally {
+      document.body.removeChild(ta)
+    }
+    if (ok) {
+      ElMessage.success('交付文档路径已复制')
+    } else {
+      ElMessage.error('复制失败，请手动复制')
+    }
+  }
+}
 </script>
 
 <template>
@@ -258,6 +301,18 @@ async function copyReportPath() {
         <div class="report-actions">
           <el-button size="small" @click="openReportDir">打开报告目录</el-button>
           <el-button size="small" @click="copyReportPath">复制路径</el-button>
+        </div>
+      </div>
+
+      <!-- 交付文档路径：未生成（delivery_doc_path 为空）时不渲染 -->
+      <div v-if="result?.delivery_doc_path" class="rf-card report-card">
+        <div class="report-info">
+          <span class="report-label">交付文档</span>
+          <span class="report-path">{{ result.delivery_doc_path }}</span>
+        </div>
+        <div class="report-actions">
+          <el-button size="small" @click="openDeliveryDocDir">打开文档目录</el-button>
+          <el-button size="small" @click="copyDeliveryDocPath">复制路径</el-button>
         </div>
       </div>
 

@@ -238,6 +238,7 @@ Field names match `CustomizeParams` in `src/types/index.ts`. Defaults match CLI 
 | enable_long_id_json_string | boolean | `true` | Serialize Long primary keys as strings to avoid JS precision loss |
 | enable_snowflake_id | boolean | `false` | Global snowflake IDs: setId on insert, disable auto-increment |
 | enable_report | boolean | `true` | Generate a Markdown transformation report |
+| enable_delivery_doc | boolean | `true` | Generate the delivery document `DELIVERY.md` (overview, services and ports, database and middleware, startup guide, security checklist) |
 | enable_clear_home | boolean | `true` | Clear the RuoYi frontend home page to a blank page |
 | enable_remove_github | boolean | `true` | Remove GitHub / Gitee links from the top bar |
 | enable_remove_docs | boolean | `true` | Remove documentation links from the top bar |

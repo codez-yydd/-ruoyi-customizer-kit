@@ -1,6 +1,7 @@
-// 改造管线：解压/复制 → 识别 → 规划 → 执行 → 校验 → 报告。
+// 改造管线：解压/复制 → 识别 → 规划 → 执行 → 交付文档 → 校验 → 报告。
 // 从 commands/execute.rs 下沉，日志通过回调输出，不依赖 Tauri AppHandle。
 
+use crate::core::delivery;
 use crate::core::executor::{self, TaskResult};
 use crate::core::planner;
 use crate::core::report;
@@ -52,6 +53,8 @@ pub struct ExecuteResponse {
     pub task_results: Vec<TaskResult>,
     pub checks: Vec<CheckItem>,
     pub report_path: String,
+    /// 交付文档 DELIVERY.md 路径；未开启或生成失败时为空串
+    pub delivery_doc_path: String,
     pub failed_count: usize,
     /// 实际输出目录（改造后的项目位置）
     pub output_dir: String,
@@ -81,6 +84,7 @@ pub fn run_transform(
             task_results: vec![],
             checks: vec![],
             report_path: String::new(),
+            delivery_doc_path: String::new(),
             failed_count: 0,
             output_dir: String::new(),
         });
@@ -94,6 +98,7 @@ pub fn run_transform(
             task_results: vec![],
             checks: vec![],
             report_path: String::new(),
+            delivery_doc_path: String::new(),
             failed_count: 0,
             output_dir: String::new(),
         });
@@ -169,6 +174,7 @@ pub fn run_transform(
             task_results: vec![],
             checks: vec![],
             report_path: String::new(),
+            delivery_doc_path: String::new(),
             failed_count: 0,
             output_dir: root.to_string_lossy().to_string(),
         });
@@ -181,6 +187,7 @@ pub fn run_transform(
             task_results: vec![],
             checks: vec![],
             report_path: String::new(),
+            delivery_doc_path: String::new(),
             failed_count: 0,
             output_dir: root.to_string_lossy().to_string(),
         });
@@ -229,16 +236,39 @@ pub fn run_transform(
         }
     }
 
+    // 8. 交付文档（必须在校验之前：校验项要检查 DELIVERY.md；报告要引用其路径）
+    let delivery_doc_path = if params.enable_delivery_doc {
+        match delivery::generate_delivery_doc(&root, &info, params) {
+            Ok(p) => {
+                log(&LogEvent::info(format!("交付文档已生成：{}", p.display())));
+                p
+            }
+            Err(e) => {
+                log(&LogEvent::warn(format!("生成交付文档失败：{e}")));
+                PathBuf::new()
+            }
+        }
+    } else {
+        PathBuf::new()
+    };
+
+    // 9. 校验
     let checks = validator::validate(&root, params, &template);
 
-    // 8. 报告
-    let report_path = match report::generate_report(&root, &info, params, &task_results, &checks) {
-        Ok(p) => p,
-        Err(e) => {
-            log(&LogEvent::error(format!("生成报告失败：{e}")));
-            PathBuf::new()
-        }
+    // 10. 报告
+    let delivery_ref = if delivery_doc_path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(delivery_doc_path.as_path())
     };
+    let report_path =
+        match report::generate_report(&root, &info, params, &task_results, &checks, delivery_ref) {
+            Ok(p) => p,
+            Err(e) => {
+                log(&LogEvent::error(format!("生成报告失败：{e}")));
+                PathBuf::new()
+            }
+        };
 
     let failed_count = task_results
         .iter()
@@ -265,6 +295,7 @@ pub fn run_transform(
         task_results,
         checks,
         report_path: report_path.to_string_lossy().to_string(),
+        delivery_doc_path: delivery_doc_path.to_string_lossy().to_string(),
         failed_count,
         output_dir: root.to_string_lossy().to_string(),
     })

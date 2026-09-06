@@ -1023,7 +1023,22 @@ pub fn plan(
         error_message: String::new(),
     });
 
-    // 13. 生成报告（可选，默认开）
+    // 13. 生成交付文档（可选，默认开；实际在校验之前执行，见 pipeline::run_transform）
+    if params.enable_delivery_doc {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "生成交付文档（DELIVERY.md）".into(),
+            task_type: TaskType::GenerateDeliveryDoc,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec!["DELIVERY.md".into()],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
+    // 14. 生成报告（可选，默认开）
     if params.enable_report {
         tasks.push(Task {
             id: next_id(&tasks),

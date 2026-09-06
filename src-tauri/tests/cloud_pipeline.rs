@@ -8,6 +8,7 @@
 // - 全功能开；以及裁剪 gen+job
 // Vue 测试（e2e_pipeline / boot_versions / new_features）不受本文件影响。
 
+use ruoyi_forge_lib::core::delivery;
 use ruoyi_forge_lib::core::detector;
 use ruoyi_forge_lib::core::executor::execute_all;
 use ruoyi_forge_lib::core::planner;
@@ -639,12 +640,43 @@ fn run_cloud(boot2: bool, trim: bool) {
         "Cloud start 应检查 Nacos 8848"
     );
 
+    // 交付文档（enable_delivery_doc 默认开启）：Cloud 需含服务端口表与双库说明
+    assert!(params.enable_delivery_doc, "交付文档开关应默认开启");
+    let delivery_path = delivery::generate_delivery_doc(root, &info, &params).unwrap();
+    assert!(delivery_path.is_file(), "DELIVERY.md 应存在");
+    let delivery_md = fs::read_to_string(&delivery_path).unwrap();
+    assert!(delivery_md.contains("## 二、服务与端口"), "{delivery_md}");
+    assert!(delivery_md.contains("| `demo-gateway` | 8080 |"), "{delivery_md}");
+    assert!(delivery_md.contains("| `demo-auth` | 8081 |"), "{delivery_md}");
+    assert!(delivery_md.contains("127.0.0.1:8848"), "{delivery_md}");
+    assert!(delivery_md.contains("`demo-config`"), "配置库名应出现：{delivery_md}");
+    assert!(delivery_md.contains("## 六、安全清单（必读）"), "{delivery_md}");
+    // JWT 已自定义，交付文档不得回显密钥明文
+    assert!(
+        !delivery_md.contains("cloud-jwt-secret-32bytes-xxxxxx"),
+        "交付文档不得回显 JWT 密钥：{delivery_md}"
+    );
+    if trim {
+        assert!(!delivery_md.contains("| `demo-gen` |"), "裁剪模块不应在端口表：{delivery_md}");
+        assert!(!delivery_md.contains("| `demo-job` |"), "裁剪模块不应在端口表：{delivery_md}");
+    }
+
     let checks = validator::validate(root, &params, &template);
     for c in &checks {
         if c.item.starts_with("Cloud") && matches!(c.result, validator::CheckResult::Fail) {
             panic!("Cloud 校验失败：{} - {}", c.item, c.message);
         }
     }
+    let delivery_check = checks
+        .iter()
+        .find(|c| c.item == "交付文档生成")
+        .expect("应存在交付文档校验项");
+    assert!(
+        matches!(delivery_check.result, validator::CheckResult::Pass),
+        "交付文档校验应通过：{:?} - {}",
+        delivery_check.result,
+        delivery_check.message
+    );
 }
 
 #[test]

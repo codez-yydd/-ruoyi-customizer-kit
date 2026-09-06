@@ -52,6 +52,7 @@ pub enum TaskType {
     SetupCaptchaSlider,
     SetupApiEncrypt,
     ValidateProject,
+    GenerateDeliveryDoc,
     GenerateReport,
 }
 

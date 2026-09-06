@@ -116,6 +116,7 @@ const defaults = (): CustomizeParams => ({
   enable_long_id_json_string: true,
   enable_snowflake_id: false,
   enable_report: true,
+  enable_delivery_doc: true,
   enable_clear_home: true,
   enable_remove_github: true,
   enable_remove_docs: true,
@@ -431,6 +432,7 @@ const sectionCounts = computed(() => ({
     form.enable_remove_github,
     form.enable_remove_docs,
     form.enable_report,
+    form.enable_delivery_doc,
     form.enable_uniapp
   ]),
   security: countTrue([form.enable_security, form.enable_sql_customize]),
@@ -907,6 +909,13 @@ function generateAesSecret(): string {
                   <el-switch v-model="form.enable_report" @change="onSwitchChange" />
                 </div>
                 <div class="switch-item__hint muted">改造后输出 Markdown 报告</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">生成交付文档</span>
+                  <el-switch v-model="form.enable_delivery_doc" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">改造后输出 DELIVERY.md（项目概览/端口/启动指南/安全清单）</div>
               </div>
               <div v-if="!isDisabled('enable_uniapp')" class="switch-item">
                 <div class="switch-item__head">

@@ -339,7 +339,43 @@ pub fn validate(
         items.extend(validate_cloud(root, params, &scan));
     }
 
+    // 13. 交付文档（开启时才校验；生成时机在校验之前，见 pipeline::run_transform）
+    items.push(check_delivery_doc(root, params));
+
     items
+}
+
+/// 交付文档轻校验：开启时 DELIVERY.md 须存在且含「安全清单」小节。
+fn check_delivery_doc(root: &Path, params: &crate::core::CustomizeParams) -> CheckItem {
+    if !params.enable_delivery_doc {
+        return CheckItem {
+            item: "交付文档生成".into(),
+            result: CheckResult::Skip,
+            message: "未开启交付文档生成".into(),
+        };
+    }
+    let path = root.join("DELIVERY.md");
+    if !path.is_file() {
+        return CheckItem {
+            item: "交付文档生成".into(),
+            result: CheckResult::Fail,
+            message: "DELIVERY.md 不存在".into(),
+        };
+    }
+    let content = read_text_plain(&path).unwrap_or_default();
+    if content.contains("安全清单") {
+        CheckItem {
+            item: "交付文档生成".into(),
+            result: CheckResult::Pass,
+            message: "DELIVERY.md 已生成且含安全清单".into(),
+        }
+    } else {
+        CheckItem {
+            item: "交付文档生成".into(),
+            result: CheckResult::Fail,
+            message: "DELIVERY.md 缺少安全清单小节".into(),
+        }
+    }
 }
 
 /// Cloud：业务库+配置库脚本、bootstrap nacos 锚点、裁剪残留。

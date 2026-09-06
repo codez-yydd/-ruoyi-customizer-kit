@@ -104,6 +104,8 @@ export interface CustomizeParams {
   /** 全局雪花ID：insert 手动 setId（Hutool 雪花算法），全局禁用自增 */
   enable_snowflake_id: boolean
   enable_report: boolean
+  /** 生成交付文档 DELIVERY.md（项目概览/端口/启动指南/安全清单） */
+  enable_delivery_doc: boolean
   /** 清空若依前端首页为空白页 */
   enable_clear_home: boolean
   /** 移除顶部栏 github/gitee 外链 */
@@ -376,6 +378,8 @@ export interface ExecuteResponse {
   task_results: TaskResult[]
   checks: CheckItem[]
   report_path: string
+  /** 交付文档 DELIVERY.md 路径；未开启或生成失败时为空串 */
+  delivery_doc_path: string
   failed_count: number
   /** 实际输出目录 */
   output_dir: string

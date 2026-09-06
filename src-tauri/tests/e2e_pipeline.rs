@@ -1,6 +1,7 @@
 // 端到端冒烟测试：对合成 RuoYi-Vue 项目跑完整流程 识别 → 规划 → 执行 → 校验 → 报告。
 // 验证 MVP 验收标准（计划第二十三章）的核心项。
 
+use ruoyi_forge_lib::core::delivery;
 use ruoyi_forge_lib::core::detector;
 use ruoyi_forge_lib::core::executor::execute_all;
 use ruoyi_forge_lib::core::planner;
@@ -225,13 +226,30 @@ fn full_pipeline_end_to_end() {
         mp_check.message
     );
 
-    // 6. 报告
-    let report_path = report::generate_report(root, &info, &params, &results, &checks).unwrap();
+    // 6. 交付文档（enable_delivery_doc 默认开启）
+    assert!(params.enable_delivery_doc, "交付文档开关应默认开启");
+    let delivery_path = delivery::generate_delivery_doc(root, &info, &params).unwrap();
+    assert!(delivery_path.is_file(), "DELIVERY.md 应存在");
+    assert_eq!(delivery_path, root.join("DELIVERY.md"));
+    let delivery_content = fs::read_to_string(&delivery_path).unwrap();
+    assert!(delivery_content.contains("交付说明"), "{delivery_content}");
+    assert!(delivery_content.contains("## 六、安全清单（必读）"), "{delivery_content}");
+    assert!(delivery_content.contains("## 四、启动指南"), "{delivery_content}");
+    assert!(
+        !delivery_content.contains("## 二、服务与端口"),
+        "分离版不应含 Cloud 端口表：{delivery_content}"
+    );
+
+    // 7. 报告（引用交付文档路径）
+    let report_path =
+        report::generate_report(root, &info, &params, &results, &checks, Some(&delivery_path))
+            .unwrap();
     assert!(report_path.is_file(), "报告文件应存在");
     let report_content = fs::read_to_string(&report_path).unwrap();
     assert!(report_content.contains("# 若依锻造台 执行报告"));
     assert!(report_content.contains("任务执行结果"));
     assert!(report_content.contains("校验结果"));
+    assert!(report_content.contains("交付文档："), "报告应引用交付文档路径");
 }
 
 #[test]
