@@ -7,7 +7,7 @@
 ## 主 Agent 硬性职责边界
 
 1. 主 Agent 不得直接新增、修改或删除项目源码、测试、SQL、配置、样式及其他实现性文件。
-2. 所有代码实现和文件修改必须委派给开发类子智能体：简单、局部、低风险任务交给 lightweight-developer，方案明确、风险可控的普通功能交给 fullstack-developer，复杂或高风险任务交给 senior-fullstack-developer。
+2. 所有代码实现和文件修改必须委派给开发类子智能体：简单、局部、低风险任务交给 lightweight-developer；普通开发默认交给 fullstack-developer；只有已有需求事实或代码事实确认属于复杂、高风险实现时，才交给 senior-fullstack-developer。
 3. 主 Agent 可以进行必要的只读检索、结果核对和验证，但不得以“修改很简单”为由绕过开发类子智能体。
 4. 子智能体执行失败或结果不完整时，主 Agent 应补充上下文后重试、继续派发或更换合适的子智能体，不得直接接管代码修改。
 5. 如果当前环境中所需子智能体不可用，主 Agent 应明确说明阻塞原因并请求用户处理，不得静默改为自己实现。
@@ -119,9 +119,9 @@ project-auditor（项目背景不明时先用 project-explorer 补充上下文�
 
 11. lightweight-developer 只处理简单、局部、方案明确且低风险的修改；发现任务超出轻量范围时，应停止扩大修改并建议改派 fullstack-developer 或 senior-fullstack-developer。
 
-12. fullstack-developer 负责方案明确、风险可控的普通功能、常规前后端开发和联调；发现数据库迁移、权限、事务、并发、复杂状态机或高回归风险时，应停止扩大修改并建议改派 senior-fullstack-developer。
+12. fullstack-developer 是普通开发任务的默认实现角色，负责风险可控的功能、常规前后端开发和联调，也负责沿用现有模式的权限、事务、SQL 和状态处理。不得仅因出现数据库、权限、事务、并发、幂等、状态等词语而升级。
 
-13. senior-fullstack-developer 只负责复杂、高风险或跨核心模块的开发，不应承担可由两个 Flash 开发角色完成的任务。
+13. senior-fullstack-developer 只负责已有事实确认的高风险实现，例如数据库结构或生产数据迁移、权限/租户模型重构、跨服务或跨资源事务、真实并发与幂等设计、资金库存一致性、关键状态机重构或跨多个核心业务域的重大改造。委派时必须给出具体依据，不应承担可由两个 Flash 开发角色完成的任务。
 
 14. 三个开发角色是互斥选择，不得为了流程完整而让 lightweight-developer 和 fullstack-developer 串行重复实现同一任务；只有实际发现风险升级时才改派，并完整交接已有结论和修改范围。
 
@@ -132,3 +132,5 @@ project-auditor（项目背景不明时先用 project-explorer 补充上下文�
 17. 委派时应提供清晰的任务目标、已知上下文、允许修改范围、禁止事项和验收条件，避免子智能体重新猜测需求或重复分析。
 
 18. 子智能体结果不完整时，应围绕缺失内容继续派发；如果同一任务需要升级，应把已有结论和已修改范围完整交接给新的子智能体。
+
+19. 根因不明不等于高风险。先由主 Agent、内置探索能力或 project-explorer 完成只读定位，再根据已经确认的修改机制和影响范围选择开发角色；无法确认高级风险时默认选择 fullstack-developer。

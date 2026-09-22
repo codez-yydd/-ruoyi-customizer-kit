@@ -1,8 +1,8 @@
 // 子智能体协作说明：递归扫描 agents/ 目录，生成说明文本并注入 AGENTS.md。
 //
 // 设计：
-// - 数据源：kit 根目录 agents/（含 zcode/、claude/ 子目录）下递归扫描的 *.md
-//   （每个文件含 YAML frontmatter：name + description）；两套客户端定义 name 相同，
+// - 数据源：kit 根目录 agents/（含 claude/、kimi/、zcode/ 子目录）下递归扫描的 *.md
+//   （每个文件含 YAML frontmatter：name + description）；多套客户端定义 name 相同，
 //   按 name 去重（保留首个命中）
 // - 说明文本：静态框架模板（sub-agents-framework.md）+ 动态扫描出的各智能体小节
 // - 注入：写入项目根 AGENTS.md，用首尾 HTML 注释标记包裹，幂等可重复执行
@@ -36,7 +36,7 @@ fn framework_template_path() -> PathBuf {
 
 /// 递归扫描 agents/ 目录（含子目录）下所有 *.md，返回 (name, description) 列表，
 /// 按 name 字母序排列。解析各文件首部 YAML frontmatter 中的 name 与 description
-/// 字段；缺失则跳过该文件。两套客户端定义 name 相同，按 name 去重（保留首个命中）。
+/// 字段；缺失则跳过该文件。多套客户端定义 name 相同，按 name 去重（保留首个命中）。
 fn scan_agents() -> Vec<(String, String)> {
     // BTreeMap 以 name 为键：天然去重（or_insert 保留首个命中）且迭代即字母序
     let mut found: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
@@ -45,9 +45,9 @@ fn scan_agents() -> Vec<(String, String)> {
 }
 
 /// 递归遍历 dir 下所有 *.md 文件并解析 frontmatter，结果按 name 去重写入 out。
-/// 非 frontmatter 文件（如 zcode/AGENTS.md、claude/CLAUDE.md）解析出空 name，自然跳过。
+/// 非 frontmatter 文件（如 zcode/AGENTS.md、claude/CLAUDE.md、kimi/AGENTS.md）解析出空 name，自然跳过。
 /// read_dir 的遍历顺序不作保证，因此先收集全部路径并按字典序排序后再解析，
-/// 使「同 name 去重保留首个命中」跨环境确定为路径靠前的文件（claude/ 先于 zcode/）。
+/// 使「同 name 去重保留首个命中」跨环境确定为路径靠前的文件（claude/ 先于 kimi/、zcode/）。
 fn walk_agent_files(dir: &Path, out: &mut std::collections::BTreeMap<String, String>) {
     let mut paths = Vec::new();
     collect_agent_md_paths(dir, &mut paths);
@@ -267,7 +267,7 @@ mod tests {
             "应包含轻量开发智能体的调度规则"
         );
         assert!(
-            desc.contains("复杂或高风险任务交给 senior-fullstack-developer"),
+            desc.contains("只有已有需求事实或代码事实确认属于复杂、高风险实现时，才交给 senior-fullstack-developer"),
             "应包含高级全栈开发智能体的调度规则"
         );
         assert!(
@@ -283,5 +283,38 @@ mod tests {
         let (name, desc) = parse_frontmatter(content);
         assert_eq!(name, "demo");
         assert_eq!(desc, "测试用说明");
+    }
+
+    /// Kimi Code 自定义 Agent 应完整入库，并满足自动选择所需的 name/description 约束。
+    #[test]
+    fn kimi_agent_definitions_are_valid() {
+        let dir = agents_source_dir().join("kimi").join("agents");
+        for expected in [
+            "architect",
+            "code-reviewer",
+            "database-reviewer",
+            "fullstack-developer",
+            "lightweight-developer",
+            "project-auditor",
+            "project-explorer",
+            "senior-fullstack-developer",
+            "ui-reviewer",
+            "vision",
+        ] {
+            let path = dir.join(format!("{expected}.md"));
+            let content = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("读取 Kimi Agent {} 失败：{e}", path.display()));
+            let (name, desc) = parse_frontmatter(&content);
+            assert_eq!(name, expected, "Kimi Agent name 与文件名不一致");
+            assert!(!desc.trim().is_empty(), "Kimi Agent description 不能为空");
+            assert!(
+                content.contains("完整、自包含结果"),
+                "Kimi 委派型 Agent 必须声明自包含交付要求：{expected}"
+            );
+            assert!(
+                content.contains("subagents: []"),
+                "Kimi 自定义 Agent 应禁止继续递归委派：{expected}"
+            );
+        }
     }
 }

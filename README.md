@@ -90,6 +90,16 @@
 | 类型检查 | [TypeScript 5.6](https://www.typescriptlang.org) + [vue-tsc](https://github.com/vuejs/language-tools) |
 | AI 辅助 | GLM 5.2 + Qwen 3.7 Plus |
 
+## AI Agent 定义
+
+仓库的 `agents/` 同时提供 ZCode、Claude Code 和 Kimi Code 三套定义：
+
+- `agents/zcode/`：ZCode 全局规则和 Agents。
+- `agents/claude/`：Claude Code 全局规则和 Subagents。
+- `agents/kimi/`：[Kimi Code](https://www.kimi.com/code/docs/kimi-code-cli/customization/agents.html) 全局规则和自定义 Agents；用户级可复制到 `$KIMI_CODE_HOME/AGENTS.md` 与 `$KIMI_CODE_HOME/agents/`（默认 `~/.kimi-code/`），项目级可放入 `.kimi-code/AGENTS.md` 与 `.kimi-code/agents/`。
+
+三个开发角色按风险互斥选择：局部低风险修改使用 `lightweight-developer`，普通开发默认使用 `fullstack-developer`，只有已有需求或代码事实确认高风险时才使用 `senior-fullstack-developer`。根因不明时先探索定位，不直接按高级任务处理。
+
 ## 环境要求
 
 - **Node.js** >= 20（使用 npm，不支持 pnpm）

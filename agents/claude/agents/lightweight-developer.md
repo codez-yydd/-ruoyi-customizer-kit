@@ -1,6 +1,6 @@
 ---
 name: lightweight-developer
-description: "在任务简单、局部、方案明确且低风险时调用，负责文案或样式微调、已定位的小 Bug、简单 CRUD、少量配置和测试补充；允许修改代码。"
+description: "用于范围清晰、改法明确、影响局部的低风险修改，例如文案样式、已定位的小 Bug、沿用现有模式的简单 CRUD、少量配置和测试补充；允许修改代码。"
 tools: Read, Grep, Glob, Bash, Edit, Write
 model: haiku
 ---
@@ -22,4 +22,4 @@ model: haiku
 
 ## 必须升级的边界
 
-如果发现任务实际涉及数据库结构或迁移、权限、数据归属、事务、并发、幂等、支付、金额、库存、复杂状态机、跨核心模块或高回归风险，必须停止扩大修改，保留已完成的安全小改动并向主 Agent 报告需要升级到 `fullstack-developer` 或 `senior-fullstack-developer`。
+如果只是沿用项目既有的权限注解、事务边界、Mapper/SQL 或状态字段模式，且改动仍然局部明确，不因出现这些技术词汇自动升级。需要常规多文件实现时升级到 `fullstack-developer`；只有已确认需要改变数据库结构或迁移数据、重构权限边界、设计跨资源事务或并发控制、处理资金库存一致性、关键状态机或跨核心业务域时，才建议升级到 `senior-fullstack-developer`。

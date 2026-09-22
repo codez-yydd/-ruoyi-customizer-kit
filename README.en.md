@@ -83,6 +83,16 @@ A wizard-style workflow â€” customize a project in five steps: select project â†
 | Type Checking | [TypeScript 5.6](https://www.typescriptlang.org) + [vue-tsc](https://github.com/vuejs/language-tools) |
 | AI Assisted | GLM 5.2 + Qwen 3.7 Plus |
 
+## AI Agent Definitions
+
+The `agents/` directory provides definitions for ZCode, Claude Code, and Kimi Code:
+
+- `agents/zcode/`: ZCode global rules and agents.
+- `agents/claude/`: Claude Code global rules and subagents.
+- `agents/kimi/`: [Kimi Code](https://www.kimi.com/code/docs/kimi-code-cli/customization/agents.html) global rules and custom agents. For user scope, copy them to `$KIMI_CODE_HOME/AGENTS.md` and `$KIMI_CODE_HOME/agents/` (default `~/.kimi-code/`); for project scope, use `.kimi-code/AGENTS.md` and `.kimi-code/agents/`.
+
+The three developer roles are mutually exclusive by risk: use `lightweight-developer` for small low-risk changes, default ordinary development to `fullstack-developer`, and select `senior-fullstack-developer` only when requirements or code evidence confirm a high-risk implementation. An unknown root cause should be explored first rather than treated as high risk by default.
+
 ## Prerequisites
 
 - **Node.js** >= 20 (use npm; pnpm is not supported)
