@@ -19,7 +19,7 @@ import { useProfilesStore } from '@/stores/profiles'
 import type { ProfileEntry } from '@/stores/profiles'
 import { Setting, MagicStick, ArrowDown, Link } from '@element-plus/icons-vue'
 import { pickSaveDirectory, pickSaveJsonFile, pickOpenJsonFile } from '@/api/dialog'
-import { saveConfigJson, loadConfigJson, buildSubAgentsDescription } from '@/api'
+import { saveConfigJson, loadConfigJson, buildSubAgentsDescription, testConnectivity } from '@/api'
 import type { CustomizeParams } from '@/types'
 import { FEATURE_PRESETS, type Preset } from '@/constants/presets'
 import { isFeatureDisabled, DISABLED_FEATURES, UI_TEMPLATES, getUiTemplateMeta, normalizeUiTemplateKey, DEFAULT_UI_TEMPLATE_KEY } from '@/constants/template-capabilities'
@@ -118,6 +118,7 @@ const defaults = (): CustomizeParams => ({
   enable_report: true,
   enable_delivery_doc: true,
   enable_compile_check: false,
+  enable_frontend_build_check: false,
   enable_clear_home: true,
   enable_remove_github: true,
   enable_remove_docs: true,
@@ -218,6 +219,18 @@ const defaults = (): CustomizeParams => ({
   enable_captcha_slider: false,
   enable_api_encrypt: false,
   aes_secret: '',
+  // 中间件与环境定制（批次 F，默认全关 / 空 = 零改动）
+  enable_redis_customize: false,
+  redis_host: '127.0.0.1',
+  redis_port: 6379,
+  redis_database: 1,
+  redis_password: '',
+  upload_path: '',
+  demo_enabled: null,
+  nacos_server_addr: '',
+  nacos_namespace: '',
+  nacos_username: '',
+  nacos_password: '',
   // 官方拉取记录的源码版本信息（随参数透传到执行报告与交付文档；本地项目为 null）
   source_version_info: store.sourceVersionInfo ?? null
 })
@@ -265,6 +278,19 @@ if (form.enable_captcha_slider == null) form.enable_captcha_slider = false
 if (form.enable_api_encrypt == null) form.enable_api_encrypt = false
 if (form.aes_secret == null) form.aes_secret = ''
 if (form.enable_compile_check == null) form.enable_compile_check = false
+if (form.enable_frontend_build_check == null) form.enable_frontend_build_check = false
+// 批次 F：旧配置 / 导入缺字段时回落默认（demo_enabled 缺省 = null = 不修改）
+if (form.enable_redis_customize == null) form.enable_redis_customize = false
+if (!form.redis_host) form.redis_host = '127.0.0.1'
+if (typeof form.redis_port !== 'number') form.redis_port = 6379
+if (typeof form.redis_database !== 'number') form.redis_database = 1
+if (form.redis_password == null) form.redis_password = ''
+if (form.upload_path == null) form.upload_path = ''
+if (form.demo_enabled === undefined || form.demo_enabled == null) form.demo_enabled = null
+if (form.nacos_server_addr == null) form.nacos_server_addr = ''
+if (form.nacos_namespace == null) form.nacos_namespace = ''
+if (form.nacos_username == null) form.nacos_username = ''
+if (form.nacos_password == null) form.nacos_password = ''
 
 // 识别结果变化时重置原值
 watch(
@@ -433,6 +459,29 @@ const errors = computed(() => {
       e.db_username = '账号不能包含单引号或反斜杠'
     }
   }
+  // Redis 定制（镜像 Rust validate：开启后端口 1-65535、索引 0-15、地址非空）
+  if (form.enable_redis_customize) {
+    if (form.redis_port < 1 || form.redis_port > 65535) {
+      e.redis_port = '端口须在 1-65535 之间'
+    }
+    if (form.redis_database < 0 || form.redis_database > 15) {
+      e.redis_database = '索引须在 0-15 之间'
+    }
+    if (!(form.redis_host || '').trim()) {
+      e.redis_host = '请输入 Redis 地址'
+    }
+  }
+  // 上传路径：填了就必须是绝对路径（Windows 盘符或 / 开头；与后端 is_absolute_fs_path 一致）
+  const upload = (form.upload_path || '').trim()
+  if (upload) {
+    const isAbs =
+      upload.startsWith('/') ||
+      upload.startsWith('\\\\') ||
+      (/^[a-zA-Z]:[\\/]/.test(upload))
+    if (!isAbs) {
+      e.upload_path = '须为绝对路径，如 D:/data/upload 或 /home/app/upload'
+    }
+  }
   return e
 })
 const valid = computed(() => Object.keys(errors.value).length === 0)
@@ -458,15 +507,16 @@ const sectionCounts = computed(() => ({
     form.enable_report,
     form.enable_delivery_doc,
     form.enable_compile_check,
+    form.enable_frontend_build_check,
     form.enable_uniapp
   ]),
-  security: countTrue([form.enable_security, form.enable_sql_customize]),
-  cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0) + (Array.isArray(form.new_modules) ? form.new_modules.length : 0),
+  security: countTrue([form.enable_security, form.enable_sql_customize, form.enable_redis_customize]),
+  cloud: form.remove_modules.length + (form.enable_cloud_custom_ports ? 1 : 0) + (Array.isArray(form.new_modules) ? form.new_modules.length : 0) + (form.demo_enabled !== null ? 1 : 0) + ((form.nacos_server_addr || '').trim() ? 1 : 0) + ((form.nacos_namespace || '').trim() ? 1 : 0) + ((form.nacos_username || '').trim() || form.nacos_password ? 1 : 0),
   structure: countTrue([form.enable_frontend_split, form.enable_ai_rules, form.enable_sub_agents]),
   oss: countTrue([form.enable_oss]),
   enhance: countTrue([form.enable_sms_login, form.enable_mail, form.enable_email_login, form.enable_captcha_slider, form.enable_api_encrypt]),
   jwt: countTrue([form.enable_jwt, form.enable_generator_config]),
-  deploy: countTrue([form.enable_nginx_config, form.enable_startup_scripts]),
+  deploy: countTrue([form.enable_nginx_config, form.enable_startup_scripts]) + ((form.upload_path || '').trim() ? 1 : 0),
   uniapp: countTrue([form.pay_included]),
   replaceUi: countTrue([form.enable_replace_ui])
 }))
@@ -563,6 +613,7 @@ const TRIGGERS: ReadonlyArray<readonly [() => boolean, string]> = [
   [() => form.enable_api_encrypt, SECTION.enhance],
   [() => form.enable_security, SECTION.security],
   [() => form.enable_sql_customize, SECTION.security],
+  [() => form.enable_redis_customize, SECTION.security],
   [() => form.enable_jwt, SECTION.jwt],
   [() => form.enable_generator_config, SECTION.jwt],
   [() => form.enable_nginx_config, SECTION.deploy],
@@ -667,6 +718,26 @@ async function chooseOutputDir() {
   }
 }
 
+/** 选择上传物理路径（复用输出目录的目录选择器；选择结果为绝对路径） */
+async function chooseUploadPath() {
+  const dir = await pickSaveDirectory()
+  if (dir) {
+    form.upload_path = dir
+  }
+}
+
+/**
+ * demoEnabled 三态选择器的本地哨兵：'' = 不修改（demo_enabled=null），
+ * 'true' / 'false' 映射布尔。el-option 的 value 类型不接受 null，经此转换。
+ */
+const demoEnabledSel = computed<string>({
+  get: () => (form.demo_enabled === null || form.demo_enabled === undefined ? '' : form.demo_enabled ? 'true' : 'false'),
+  set: (v: string) => {
+    form.demo_enabled = v === '' ? null : v === 'true'
+    onSwitchChange()
+  }
+})
+
 /** 导出当前配置到 JSON 文件 */
 async function exportConfig() {
   // 后端按表单原样序列化，密码/密钥等敏感字段为明文，导出前先确认
@@ -751,6 +822,66 @@ function applyHistory(entry: ProfileEntry) {
 /** 删除一条历史记录 */
 function removeHistory(id: string) {
   profilesStore.removeHistory(id)
+}
+
+// ===== 外部服务连通性自检（数据库 / SMTP / OSS，仅 TCP 层，不验证账号密码）=====
+/** 三处「测试连通」按钮各自的 loading（互不干扰） */
+const connectivityLoading = reactive({ db: false, mail: false, oss: false })
+
+/** 按钮旁固定说明（与后端 message 固定后缀同一口径） */
+const CONNECTIVITY_HINT = '仅检测网络连通性，不验证账号密码'
+
+/** 数据库探测目标：db_port=0 时按方言回落（mysql 3306 / postgresql 5432，与 README 参数表一致） */
+function dbConnectivityTarget(): string {
+  const port = form.db_port || (form.db_type === 'postgresql' ? 5432 : 3306)
+  return `${(form.db_host || '').trim()}:${port}`
+}
+
+/** 执行探测并回显结果：可达 success / 不可达 warning（内容含解析出的 host:port 与后端结论） */
+async function runConnectivity(kind: 'db' | 'mail' | 'oss', label: string, target: string) {
+  connectivityLoading[kind] = true
+  try {
+    const res = await testConnectivity(target)
+    ElMessageBox.alert(res.message, `${label}连通性：${res.host}:${res.port}`, {
+      type: res.reachable ? 'success' : 'warning',
+      confirmButtonText: '知道了'
+    })
+  } catch (e) {
+    // 后端解析失败走 Err 通道（中文提示），提示用户修正地址
+    ElMessage.warning(`${label}地址无法解析：` + String(e))
+  } finally {
+    connectivityLoading[kind] = false
+  }
+}
+
+/** 数据库：host:port（db_port=0 时按方言回落 3306 / 5432） */
+function testDbConnectivity() {
+  const host = (form.db_host || '').trim()
+  if (!host) {
+    ElMessage.warning('请先填写数据库地址')
+    return
+  }
+  return runConnectivity('db', '数据库', dbConnectivityTarget())
+}
+
+/** 邮件：SMTP host:port */
+function testMailConnectivity() {
+  const host = (form.mail_host || '').trim()
+  if (!host) {
+    ElMessage.warning('请先填写 SMTP 服务器地址')
+    return
+  }
+  return runConnectivity('mail', 'SMTP 邮件', `${host}:${form.mail_port}`)
+}
+
+/** OSS：endpoint 原值交给后端解析（兼容 URL / 裸域名 / host:port） */
+function testOssConnectivity() {
+  const endpoint = (form.oss_endpoint || '').trim()
+  if (!endpoint) {
+    ElMessage.warning('请先填写 Endpoint')
+    return
+  }
+  return runConnectivity('oss', 'OSS', endpoint)
 }
 
 /** 前端本地生成一个随机 JWT secret（64 位十六进制）。执行时若留空，后端也会生成。 */
@@ -980,7 +1111,16 @@ function generateAesSecret(): string {
                   <span class="switch-item__label">编译冒烟检查</span>
                   <el-switch v-model="form.enable_compile_check" @change="onSwitchChange" />
                 </div>
-                <div class="switch-item__hint muted">执行阶段对产物跑 mvn compile 验证可编译性；需本机安装 Maven 与 JDK，未安装将自动跳过；首次运行需联网下载依赖，耗时较长</div>
+                <div class="switch-item__hint muted">执行阶段对产物跑 mvn compile 验证可编译性；需本机安装 Maven 与 JDK，未安装将自动跳过；首次运行需联网下载依赖，耗时较长。注意：编译冒烟将在本机执行源码中 pom 声明的构建插件，请确认来源可信</div>
+              </div>
+              <!-- 单体模板无独立前端工程，规划器不会规划前端构建冒烟任务，
+                   与 enable_uniapp 同模式按模板能力隐藏（DISABLED_FEATURES） -->
+              <div v-if="!isDisabled('enable_frontend_build_check')" class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">前端构建冒烟检查</span>
+                  <el-switch v-model="form.enable_frontend_build_check" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">执行阶段对产物前端目录跑包管理器 install + build 验证可构建性；需本机安装 Node.js（替换 UI 为 vben 模板时需 pnpm，未装自动跳过）；首次运行需联网下载依赖，耗时较长。注意：构建冒烟将在本机执行前端项目的 install 与 build 脚本，请确认来源可信</div>
               </div>
               <div v-if="!isDisabled('enable_uniapp')" class="switch-item">
                 <div class="switch-item__head">
@@ -1077,6 +1217,39 @@ function generateAesSecret(): string {
                 </div>
                 <div class="switch-item__hint muted">库名、连接、admin 密码、清除演示/quartz 数据</div>
               </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">Redis 定制</span>
+                  <el-switch v-model="form.enable_redis_customize" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">
+                  {{ isCloud ? '改写 Nacos 配置条目的 redis 连接（需开启配置重构或 SQL 定制任务）' : '改写 application-dev/prod.yaml 的 redis 连接（需开启重构配置文件）' }}
+                </div>
+              </div>
+            </div>
+
+            <!-- Redis 定制详情 -->
+            <div v-if="form.enable_redis_customize" class="detail-panel">
+              <div class="detail-panel__bar">Redis 连接</div>
+              <div class="detail-grid">
+                <el-form-item label="Redis 地址" :error="errors.redis_host">
+                  <el-input v-model="form.redis_host" placeholder="127.0.0.1" />
+                </el-form-item>
+                <el-form-item label="端口" :error="errors.redis_port">
+                  <el-input-number v-model="form.redis_port" :min="1" :max="65535" />
+                </el-form-item>
+                <el-form-item label="数据库索引" :error="errors.redis_database">
+                  <el-input-number v-model="form.redis_database" :min="0" :max="15" />
+                  <span class="inline-hint muted">0-15</span>
+                </el-form-item>
+                <el-form-item label="Redis 密码">
+                  <el-input v-model="form.redis_password" show-password placeholder="留空则写入无密码连接" />
+                  <span class="inline-hint muted">不会写入报告与交付文档明文</span>
+                </el-form-item>
+              </div>
+              <div class="detail-tip muted">
+                默认关闭时不改任何 Redis 配置；开启后按上方连接写入（Cloud 写入 Nacos 配置条目，分离版 / 单体写入 application-dev/prod.yaml）。
+              </div>
             </div>
 
             <!-- 安全加固 / SQL 定制详情（共用 admin 密码，避免重复输入） -->
@@ -1109,7 +1282,15 @@ function generateAesSecret(): string {
                   label="端口"
                   :error="errors.db_port"
                 >
-                  <el-input-number v-model="form.db_port" :min="1" :max="65535" />
+                  <div class="conn-test">
+                    <el-input-number v-model="form.db_port" :min="1" :max="65535" />
+                    <el-button
+                      size="small"
+                      :loading="connectivityLoading.db"
+                      @click="testDbConnectivity"
+                    >测试连通</el-button>
+                    <span class="inline-hint muted">{{ CONNECTIVITY_HINT }}</span>
+                  </div>
                 </el-form-item>
                 <el-form-item
                   v-if="form.enable_sql_customize"
@@ -1210,6 +1391,33 @@ function generateAesSecret(): string {
                 <el-form-item label="自定义模块端口">
                   <el-switch v-model="form.enable_cloud_custom_ports" @change="onSwitchChange" />
                   <span class="inline-hint muted">关闭时从网关端口起按 gateway → auth → system → gen → job → file → monitor 依次 +1，已裁剪模块不占号</span>
+                </el-form-item>
+              </div>
+              <!-- 批次 F：demoEnabled 三态 + Nacos 地址 / 命名空间 / 发布凭据 -->
+              <div class="detail-grid">
+                <el-form-item label="demo 模式开关">
+                  <el-select v-model="demoEnabledSel" style="width: 100%">
+                    <el-option label="不修改（保持官方）" value="" />
+                    <el-option label="开启 demoEnabled" value="true" />
+                    <el-option label="关闭 demoEnabled" value="false" />
+                  </el-select>
+                  <span class="inline-hint muted">写入 Nacos 配置的 ruoyi.demoEnabled</span>
+                </el-form-item>
+                <el-form-item label="Nacos 地址">
+                  <el-input v-model="form.nacos_server_addr" placeholder="留空保持官方 127.0.0.1:8848" />
+                  <span class="inline-hint muted">改写各服务 bootstrap.yml；docker-compose 不动</span>
+                </el-form-item>
+                <el-form-item label="Nacos 命名空间">
+                  <el-input v-model="form.nacos_namespace" placeholder="留空不改动命名空间" />
+                  <span class="inline-hint muted">命名空间 ID；官方 bootstrap 无此字段，非空才新增</span>
+                </el-form-item>
+                <el-form-item label="Nacos 账号">
+                  <el-input v-model="form.nacos_username" placeholder="留空回退官方 nacos" />
+                  <span class="inline-hint muted">仅用于工具向运行中的 Nacos 回填配置</span>
+                </el-form-item>
+                <el-form-item label="Nacos 密码">
+                  <el-input v-model="form.nacos_password" show-password placeholder="留空回退官方 nacos" />
+                  <span class="inline-hint muted">不写入产物文件与报告明文</span>
                 </el-form-item>
               </div>
               <div v-if="!form.enable_cloud_custom_ports" class="cloud-port-preview">
@@ -1314,7 +1522,15 @@ function generateAesSecret(): string {
               </el-form-item>
               <div class="detail-grid">
                 <el-form-item label="Endpoint">
-                  <el-input v-model="form.oss_endpoint" :placeholder="form.oss_provider === 'minio' ? 'http://localhost:9000' : '如 oss-cn-hangzhou.aliyuncs.com'" />
+                  <div class="conn-test">
+                    <el-input v-model="form.oss_endpoint" :placeholder="form.oss_provider === 'minio' ? 'http://localhost:9000' : '如 oss-cn-hangzhou.aliyuncs.com'" />
+                    <el-button
+                      size="small"
+                      :loading="connectivityLoading.oss"
+                      @click="testOssConnectivity"
+                    >测试连通</el-button>
+                    <span class="inline-hint muted">{{ CONNECTIVITY_HINT }}</span>
+                  </div>
                 </el-form-item>
                 <el-form-item label="Bucket">
                   <el-input v-model="form.oss_bucket" placeholder="bucket 名称" />
@@ -1428,7 +1644,15 @@ function generateAesSecret(): string {
                   <el-input v-model="form.mail_host" placeholder="smtp.qq.com / smtp.163.com / smtp.exmail.qq.com" />
                 </el-form-item>
                 <el-form-item label="端口">
-                  <el-input-number v-model="form.mail_port" :min="1" :max="65535" />
+                  <div class="conn-test">
+                    <el-input-number v-model="form.mail_port" :min="1" :max="65535" />
+                    <el-button
+                      size="small"
+                      :loading="connectivityLoading.mail"
+                      @click="testMailConnectivity"
+                    >测试连通</el-button>
+                    <span class="inline-hint muted">{{ CONNECTIVITY_HINT }}</span>
+                  </div>
                 </el-form-item>
                 <el-form-item label="SMTP 账号">
                   <el-input v-model="form.mail_username" placeholder="发信邮箱账号" />
@@ -1549,6 +1773,19 @@ function generateAesSecret(): string {
                   <template v-else>start/stop 脚本 + build 一键打包脚本（.sh + .bat），端口与 Nginx 共用</template>
                 </div>
               </div>
+            </div>
+
+            <!-- 批次 F：上传物理路径（独立于 Nginx / 启动脚本，始终可配；留空 = 不改） -->
+            <div class="detail-grid" style="margin-top: 12px">
+              <el-form-item label="上传物理路径" :error="errors.upload_path" class="notify-row">
+                <div class="output-dir-row">
+                  <el-input v-model="form.upload_path" :placeholder="isCloud ? '如 D:/data/upload 或 /home/app/upload，留空不改' : '如 D:/data/upload，留空不改（需开启重构配置文件）'" />
+                  <el-button @click="chooseUploadPath">选择</el-button>
+                </div>
+                <span class="inline-hint muted">
+                  {{ isCloud ? '写入 Nacos 的 ruoyi.profile 与 file 服务的 file.path' : '写入 application.yaml 的 ruoyi.profile；反斜杠自动转为正斜杠' }}
+                </span>
+              </el-form-item>
             </div>
 
             <div v-if="form.enable_nginx_config || form.enable_startup_scripts" class="detail-panel">
@@ -1929,6 +2166,22 @@ function generateAesSecret(): string {
 .inline-hint {
   margin-left: 12px;
   font-size: 12px;
+}
+/* ===== 外部服务连通性自检：输入框 + 测试连通按钮同行排列 ===== */
+.conn-test {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  width: 100%;
+}
+.conn-test .el-input,
+.conn-test .el-input-number {
+  flex: 1;
+  min-width: 120px;
+}
+.conn-test .el-button {
+  flex-shrink: 0;
 }
 
 /* ===== 后台 UI 卡片选型 + 预览 ===== */

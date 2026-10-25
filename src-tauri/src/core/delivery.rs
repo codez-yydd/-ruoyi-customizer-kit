@@ -282,7 +282,15 @@ fn render_ports(md: &mut String, ctx: &DeliveryContext) {
                     .join("、")
             ));
         }
-        md.push_str("- Nacos 注册中心 / 配置中心：`127.0.0.1:8848`\n");
+        md.push_str(&format!(
+            "- Nacos 注册中心 / 配置中心：`{}`{}\n",
+            display_nacos_addr(p),
+            if p.nacos_namespace.trim().is_empty() {
+                String::new()
+            } else {
+                format!("（命名空间 `{}`）", p.nacos_namespace.trim())
+            }
+        ));
         md.push_str("- Sentinel 控制台（若使用）：`127.0.0.1:8718`\n");
         md.push_str("- 所有前端请求统一走网关端口，业务服务端口一般不直接对外暴露。\n\n");
         return;
@@ -307,6 +315,17 @@ fn render_ports(md: &mut String, ctx: &DeliveryContext) {
         ));
     }
     md.push('\n');
+}
+
+/// 批次 F：交付文档展示的 Nacos 地址——参数非空用参数值，否则保持官方默认 `127.0.0.1:8848`。
+/// 与 bootstrap.yml 改写（`nacos_server_addr`）保持同一口径。
+fn display_nacos_addr(p: &CustomizeParams) -> &str {
+    let addr = p.nacos_server_addr.trim();
+    if addr.is_empty() {
+        "127.0.0.1:8848"
+    } else {
+        addr
+    }
 }
 
 /// Cloud 官方模块的中文说明
@@ -342,6 +361,11 @@ fn render_database(md: &mut String, ctx: &DeliveryContext) {
         md.push_str(&format!(
             "| 业务库 | `{biz}` | 若依业务数据（用户、角色、菜单、字典、日志等） |\n\n"
         ));
+        if dialect.name == "postgresql" {
+            md.push_str(&format!(
+                "> PostgreSQL 模式：**业务库**（`{biz}`）使用 PostgreSQL（初始化脚本 `sql/ry.sql` 已转换，需先自建库）；\n> **配置库**（`{config_db}`，Nacos Server 自身数据源）与 `ry_seata` 脚本保持 MySQL，不随业务库切换。\n\n"
+            ));
+        }
         md.push_str("**导入顺序：先配置库，再业务库，最后启动 Nacos。**\n\n");
     } else {
         let biz = crate::core::resolve_biz_db_name(p);
@@ -396,18 +420,40 @@ fn render_database(md: &mut String, ctx: &DeliveryContext) {
     md.push_str("### 中间件\n\n");
     if ctx.cloud {
         md.push_str(&format!(
-            "- Nacos：`127.0.0.1:8848`，配置持久化到 `{}` 库；启动前请确认该库已导入。\n",
-            crate::core::resolve_config_db_name(p)
+            "- Nacos：`{}`，配置持久化到 `{}` 库；启动前请确认该库已导入。{}\n",
+            display_nacos_addr(p),
+            crate::core::resolve_config_db_name(p),
+            if p.nacos_namespace.trim().is_empty() {
+                String::new()
+            } else {
+                format!("（命名空间 `{}`，已写入各服务 bootstrap.yml）", p.nacos_namespace.trim())
+            }
         ));
         md.push_str(&format!(
             "- Nacos 配置条目：命名形如 `{}-<服务>-dev.yml`，随配置库脚本一并导入，不需要手工新建。\n",
             ctx.prefix()
         ));
     }
-    md.push_str(&format!(
-        "- Redis：默认 `localhost:6379`（database 1），连接与密码见 {}。\n\n",
-        ctx.datasource_location()
-    ));
+    // 批次 F：开启 Redis 定制时展示实际连接；默认保持官方口径（localhost:6379 / db1）
+    if p.enable_redis_customize {
+        let pass_state = if p.redis_password.is_empty() {
+            "未设置"
+        } else {
+            "已自定义（见配置文件，本文档不复述）"
+        };
+        md.push_str(&format!(
+            "- Redis：`{}:{}`（database {}，密码{}）\n\n",
+            p.redis_host.trim(),
+            p.redis_port,
+            p.redis_database,
+            pass_state
+        ));
+    } else {
+        md.push_str(&format!(
+            "- Redis：默认 `localhost:6379`（database 1），连接与密码见 {}。\n\n",
+            ctx.datasource_location()
+        ));
+    }
 }
 
 // ---------- 四、启动指南 ----------
@@ -420,7 +466,15 @@ fn render_startup(md: &mut String, ctx: &DeliveryContext) {
         md.push_str("### 启动顺序\n\n");
         md.push_str("1. 启动 MySQL，按上一节顺序导入配置库与业务库。\n");
         md.push_str("2. 启动 Redis。\n");
-        md.push_str("3. 启动 Nacos（`127.0.0.1:8848`），确认配置列表已加载。\n");
+        md.push_str(&format!(
+            "3. 启动 Nacos（`{}`），确认配置列表已加载。{}\n",
+            display_nacos_addr(p),
+            if p.nacos_namespace.trim().is_empty() {
+                String::new()
+            } else {
+                format!("命名空间使用 `{}`。", p.nacos_namespace.trim())
+            }
+        ));
         let ports = crate::core::cloud_ports::resolve_cloud_module_ports(p);
         let mut order: Vec<String> = Vec::new();
         for suffix in crate::core::cloud_ports::CLOUD_RUNNABLE_ORDER {
@@ -841,13 +895,27 @@ fn render_security(md: &mut String, ctx: &DeliveryContext) {
         ]);
     }
 
-    // 3. Redis 密码
-    rows.push([
-        "Redis 密码".into(),
-        "默认空 ⚠️".into(),
-        cfg.clone(),
-        "默认未设置密码，生产环境务必开启 `requirepass` 并同步配置".into(),
-    ]);
+    // 3. Redis 密码（批次 F：开启 Redis 定制时按实际状态展示；默认保持官方口径，只标状态不回显明文）
+    if p.enable_redis_customize {
+        let filled = !p.redis_password.is_empty();
+        rows.push([
+            "Redis 密码".into(),
+            if filled { STATE_CUSTOM.to_string() } else { "未设置".to_string() },
+            cfg.clone(),
+            if filled {
+                "已自定义，请妥善保管，勿提交 git；如与既有 Redis 不符请先在服务端设置".into()
+            } else {
+                "已开启 Redis 定制但未填写密码，按无密码连接；目标 Redis 若启用认证请补齐后重启".into()
+            },
+        ]);
+    } else {
+        rows.push([
+            "Redis 密码".into(),
+            "默认空 ⚠️".into(),
+            cfg.clone(),
+            "默认未设置密码，生产环境务必开启 `requirepass` 并同步配置".into(),
+        ]);
+    }
 
     // 4. 后台 admin 登录密码
     // 实际改写点：security::apply_security_hardening（任务规划条件 enable_security || enable_jwt）
@@ -982,6 +1050,20 @@ fn render_security(md: &mut String, ctx: &DeliveryContext) {
             } else {
                 "已启用邮件发送但未填写授权码，配置项为空，邮件发送不可用，上线前必须补齐".to_string()
             },
+        ]);
+    }
+
+    // 8c.（批次 F）Redis 密码行已合并到上方「3. Redis 密码」：开启定制时按实际状态展示。
+
+    // 8d. Nacos live 发布凭据（仅填写时列出；只标状态，不回显明文——批次 F。
+    // 该凭据只用于工具把配置回填到运行中的 Nacos，不写入任何产物文件）
+    if !p.nacos_username.trim().is_empty() || !p.nacos_password.is_empty() {
+        let filled = !p.nacos_password.is_empty();
+        rows.push([
+            "Nacos 发布凭据".into(),
+            if filled { STATE_CUSTOM.into() } else { "仅用户名".into() },
+            "不写入产物文件（仅工具回填运行中的 Nacos 时使用）".into(),
+            "已自定义，请妥善保管；bootstrap.yml 只含地址与命名空间，不含该凭据".to_string(),
         ]);
     }
 
@@ -1747,6 +1829,54 @@ mod tests {
 
         assert!(md.contains("`localhost:6379`"), "{md}");
         assert!(!md.contains("`127.0.0.1:6379`"), "Redis 实际写入 localhost：{md}");
+    }
+
+    /// 批次 F：开启 Redis 定制后中间件行展示实际连接；密码明文不得出现
+    #[test]
+    fn redis_customize_shows_connection_without_password_plaintext() {
+        let dir = vue_root();
+        let mut params = base_params();
+        params.enable_redis_customize = true;
+        params.redis_host = "192.168.1.30".into();
+        params.redis_port = 6380;
+        params.redis_database = 5;
+        params.redis_password = "redis-secret-should-not-leak".into();
+        let md = gen(dir.path(), "ruoyi-vue", &params);
+
+        assert!(md.contains("`192.168.1.30:6380`"), "应展示定制连接：{md}");
+        assert!(md.contains("database 5"), "{md}");
+        assert!(md.contains("Redis 密码"), "安全清单应含 Redis 密码行：{md}");
+        assert!(md.contains(STATE_CUSTOM), "{md}");
+        assert!(
+            !md.contains("redis-secret-should-not-leak"),
+            "Redis 密码明文不得出现在交付文档：{md}"
+        );
+        assert!(!md.contains("`localhost:6379`"), "开启定制后不应再写默认口径：{md}");
+    }
+
+    /// 批次 F：nacos_server_addr / namespace 非空时交付文档跟随展示，默认保持官方地址
+    #[test]
+    fn nacos_addr_and_namespace_follow_params() {
+        let dir = cloud_root();
+        let params = base_params();
+        let md = gen(dir.path(), "ruoyi-cloud", &params);
+        assert!(md.contains("127.0.0.1:8848"), "默认保持官方地址：{md}");
+        assert!(!md.contains("命名空间"), "{md}");
+
+        let mut params = base_params();
+        params.nacos_server_addr = "10.0.0.5:8848".into();
+        params.nacos_namespace = "dev-ns".into();
+        params.nacos_username = "ops".into();
+        params.nacos_password = "nacos-secret-should-not-leak".into();
+        let md = gen(dir.path(), "ruoyi-cloud", &params);
+        assert!(md.contains("10.0.0.5:8848"), "{md}");
+        assert!(!md.contains("127.0.0.1:8848"), "定制后不应残留官方地址：{md}");
+        assert!(md.contains("`dev-ns`"), "应展示命名空间：{md}");
+        assert!(md.contains("Nacos 发布凭据"), "安全清单应含 live 凭据行：{md}");
+        assert!(
+            !md.contains("nacos-secret-should-not-leak"),
+            "Nacos 密码明文不得出现在交付文档：{md}"
+        );
     }
 
     /// 源码版本小节：Some 时概览表出现「源码版本」行（来源仓库、tag/分支、Boot/Java）

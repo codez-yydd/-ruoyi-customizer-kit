@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// 项目识别页：纯展示识别结果。
+// 项目识别页：纯展示识别结果，并提供增强件体检（与 CLI doctor 同一套锚点检查）。
 // 项目选择/重选统一回首页做（向导式单流程），本页只负责「展示结果 + 上一步/下一步」。
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
@@ -9,6 +9,9 @@ import { formatVersionLine } from '@/composables/useProjectFlow'
 import * as api from '@/api'
 import { getTemplateMeta } from '@/constants/template-capabilities'
 import { Search } from '@element-plus/icons-vue'
+// ElMessage 是函数式 API，显式从组件入口引入（与 Execute.vue 一致）
+import { ElMessage } from 'element-plus/es/components/message/index.mjs'
+import type { HealthCheckReport, HealthItem } from '@/types'
 import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
@@ -35,6 +38,58 @@ const springBootLabel = computed(() => {
 const sourceVersionLabel = computed(() =>
   sourceVersionInfo.value ? formatVersionLine(sourceVersionInfo.value) : ''
 )
+
+// ===== 增强件体检（与 CLI `forge-cli doctor` 同语义） =====
+const healthVisible = ref(false)
+const healthChecking = ref(false)
+const healthReport = ref<HealthCheckReport | null>(null)
+
+async function openHealthCheck() {
+  if (!rootPath.value || healthChecking.value) return
+  healthVisible.value = true
+  healthChecking.value = true
+  healthReport.value = null
+  try {
+    const report = await api.runHealthCheck(rootPath.value)
+    healthReport.value = report
+    if (!report.success) {
+      // 识别失败是错误：与 CLI doctor 一致，弹错但不关闭弹窗（保留失败原因展示）
+      ElMessage.error(`增强件体检失败：${report.message}`)
+    }
+  } catch (e) {
+    ElMessage.error(`增强件体检失败：${e}`)
+  } finally {
+    healthChecking.value = false
+  }
+}
+
+/** 体检单项的图标：✅ 可用 / ❌ 锚点缺失 / － 不适用 */
+const healthIcon = (item: HealthItem) => {
+  if (item.status === 'ok') return '✅'
+  if (item.status === 'missing') return '❌'
+  return '－'
+}
+
+const healthTagType = (item: HealthItem) => {
+  if (item.status === 'ok') return 'success'
+  if (item.status === 'missing') return 'danger'
+  return 'info'
+}
+
+const healthTagLabel = (item: HealthItem) => {
+  if (item.status === 'ok') return '可用'
+  if (item.status === 'missing') return '锚点缺失'
+  return '不适用'
+}
+
+/** 体检汇总：可用 / 缺失 / 不适用 计数 */
+const healthSummary = computed(() => {
+  const items = healthReport.value?.items ?? []
+  const ok = items.filter((i) => i.status === 'ok').length
+  const missing = items.filter((i) => i.status === 'missing').length
+  const na = items.filter((i) => i.status === 'n/a').length
+  return { ok, missing, na }
+})
 
 /** 回首页重新选择项目：清理临时目录并重置流程 */
 async function backToHome() {
@@ -94,6 +149,7 @@ const generatedUiDirName = computed(
             项目目录：<code>{{ rootPath }}</code>
           </div>
           <div class="bar__actions">
+            <el-button :disabled="!rootPath" @click="openHealthCheck">增强件体检</el-button>
             <el-button @click="backToHome">上一步：重新选择</el-button>
             <el-button type="primary" :disabled="!recognized" @click="goConfig">
               下一步：参数配置
@@ -215,6 +271,68 @@ const generatedUiDirName = computed(
 
       <LogPanel />
     </template>
+
+    <!-- 增强件体检结果弹窗（与 CLI forge-cli doctor 同一套锚点检查） -->
+    <el-dialog
+      v-model="healthVisible"
+      title="增强件体检"
+      width="640px"
+      :close-on-click-modal="!healthChecking"
+    >
+      <div v-loading="healthChecking" class="health-body">
+        <template v-if="healthReport">
+          <el-alert
+            :type="healthReport.success ? 'success' : 'error'"
+            :title="healthReport.message"
+            :closable="false"
+            show-icon
+          />
+          <template v-if="healthReport.success">
+            <div class="health-meta">
+              <span>项目类型：<strong>{{ healthReport.project_type }}</strong></span>
+              <span class="muted">
+                {{ healthSummary.ok }} 项可用 / {{ healthSummary.missing }} 项锚点缺失 /
+                {{ healthSummary.na }} 项不适用
+              </span>
+            </div>
+            <div class="health-summary-hint muted">
+              锚点缺失是信息提示，不阻断改造；缺失项开启对应增强件时执行会报错，可先补齐锚点或关闭该增强件
+            </div>
+            <el-collapse v-if="healthReport.items.length" class="health-list">
+              <el-collapse-item v-for="item in healthReport.items" :key="item.key" :name="item.key">
+                <template #title>
+                  <span class="health-item__head">
+                    <span class="health-item__icon">{{ healthIcon(item) }}</span>
+                    <span class="health-item__name">{{ item.name }}</span>
+                    <el-tag :type="healthTagType(item)" size="small">
+                      {{ healthTagLabel(item) }}
+                    </el-tag>
+                    <span class="health-item__summary muted">{{ item.summary }}</span>
+                  </span>
+                </template>
+                <div class="health-item__summary-full">{{ item.summary }}</div>
+                <ul v-if="item.missing_required.length" class="health-detail health-detail--required">
+                  <li v-for="m in item.missing_required" :key="m">缺失：{{ m }}</li>
+                </ul>
+                <ul v-if="item.optional_note.length" class="health-detail">
+                  <li v-for="m in item.optional_note" :key="m">可选缺失：{{ m }}</li>
+                </ul>
+                <ul v-if="item.notes.length" class="health-detail">
+                  <li v-for="n in item.notes" :key="n">{{ n }}</li>
+                </ul>
+              </el-collapse-item>
+            </el-collapse>
+          </template>
+        </template>
+        <div v-else-if="!healthChecking" class="muted">尚未获取体检结果</div>
+      </div>
+      <template #footer>
+        <el-button :disabled="healthChecking" @click="openHealthCheck">重新体检</el-button>
+        <el-button type="primary" :disabled="healthChecking" @click="healthVisible = false">
+          关闭
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -296,6 +414,65 @@ const generatedUiDirName = computed(
   line-height: 1.9;
   color: #5a5e66;
   word-break: break-all;
+}
+.health-body {
+  min-height: 120px;
+}
+.health-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 13.5px;
+}
+.health-summary-hint {
+  margin-top: 6px;
+  font-size: 12.5px;
+}
+.health-list {
+  margin-top: 12px;
+  border-top: none;
+}
+.health-item__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding-right: 8px;
+}
+.health-item__icon {
+  flex-shrink: 0;
+}
+.health-item__name {
+  flex-shrink: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.health-item__summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.health-item__summary-full {
+  margin: 2px 0 6px;
+  font-size: 13px;
+  color: #606266;
+}
+.health-detail {
+  margin: 0 0 4px;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #5a5e66;
+  word-break: break-all;
+}
+.health-detail--required {
+  color: #f56c6c;
 }
 @media (max-width: 1100px) {
   .result-grid {

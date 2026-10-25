@@ -54,6 +54,7 @@ pub enum TaskType {
     SetupApiEncrypt,
     ValidateProject,
     CompileSmokeCheck,
+    FrontendBuildSmokeCheck,
     GenerateDeliveryDoc,
     GenerateReport,
 }

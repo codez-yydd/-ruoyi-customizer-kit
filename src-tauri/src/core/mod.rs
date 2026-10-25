@@ -42,8 +42,11 @@ pub mod executor;
 pub mod validator;
 pub mod report;
 pub mod delivery;
+pub mod diff;
 pub mod compile_smoke;
+pub mod frontend_smoke;
 pub mod health;
+pub mod port_check;
 
 use serde::{Deserialize, Serialize};
 
@@ -197,6 +200,21 @@ fn default_db_username() -> String {
     "root".into()
 }
 
+/// serde 默认值辅助：Redis 地址默认 127.0.0.1
+fn default_redis_host() -> String {
+    "127.0.0.1".into()
+}
+
+/// serde 默认值辅助：Redis 端口默认 6379
+fn default_redis_port() -> i32 {
+    6379
+}
+
+/// serde 默认值辅助：Redis 数据库索引默认 1（与官方若依一致）
+fn default_redis_database() -> i32 {
+    1
+}
+
 /// 用户改造参数
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomizeParams {
@@ -237,6 +255,10 @@ pub struct CustomizeParams {
     /// 需本机安装 Maven 与 JDK，未安装时该任务自动 Skipped；默认关。
     #[serde(default)]
     pub enable_compile_check: bool,
+    /// 前端构建冒烟检查：执行阶段对产物前端目录跑包管理器 install + build 验证可构建性。
+    /// 需本机安装 Node.js（替换 UI 为 vben 时需 pnpm，未装自动跳过）；默认关。
+    #[serde(default)]
+    pub enable_frontend_build_check: bool,
     /// 清空若依前端首页（views/index.vue）为空白页
     #[serde(default = "default_true")]
     pub enable_clear_home: bool,
@@ -527,6 +549,44 @@ pub struct CustomizeParams {
     /// 仅由 report / delivery 消费；None 时报告与交付文档不出现该节，行为完全不变。
     #[serde(default)]
     pub source_version_info: Option<SourceVersionInfo>,
+    // ---- 中间件与环境定制（批次 F，默认全关 / 空 = 零改动） ----
+    /// 是否定制 Redis 连接（默认关；关闭时各产物 Redis 配置保持工具现状，不受下方字段影响）
+    #[serde(default)]
+    pub enable_redis_customize: bool,
+    /// Redis 地址。默认 127.0.0.1；仅 enable_redis_customize 开启时写入
+    #[serde(default = "default_redis_host")]
+    pub redis_host: String,
+    /// Redis 端口。默认 6379；仅 enable_redis_customize 开启时写入
+    #[serde(default = "default_redis_port")]
+    pub redis_port: i32,
+    /// Redis 数据库索引（0-15）。默认 1；仅 enable_redis_customize 开启时写入
+    #[serde(default = "default_redis_database")]
+    pub redis_database: i32,
+    /// Redis 密码（可空）。禁止写入 CLI / 报告 / 交付文档明文
+    #[serde(default)]
+    pub redis_password: String,
+    /// 上传物理路径（空 = 不改；非空写入分离版 ruoyi.profile 与 Cloud 的 Nacos 上传路径配置）。
+    /// 须为绝对路径（Windows 盘符或 / 开头）
+    #[serde(default)]
+    pub upload_path: String,
+    /// Cloud demoEnabled 三态：None = 不改；Some(true/false) 写入 Nacos 配置的 ruoyi.demoEnabled。
+    /// 旧配置 JSON 缺字段按 None 回落，行为不变
+    #[serde(default)]
+    pub demo_enabled: Option<bool>,
+    /// Cloud 各微服务 bootstrap.yml 的 Nacos server-addr（空 = 保持官方 127.0.0.1:8848 不改；
+    /// 非空改写 discovery 与 config 两处；docker-compose 不动）
+    #[serde(default)]
+    pub nacos_server_addr: String,
+    /// Cloud Nacos 命名空间 ID（空 = 不改；非空写入 bootstrap.yml 的 discovery 与 config namespace，
+    /// 并作为 live 发布的 tenant）。官方 bootstrap.yml 无 namespace 字段，非空时才新增
+    #[serde(default)]
+    pub nacos_namespace: String,
+    /// live Nacos 发布登录用户名（空 = 回退官方默认 nacos）。仅用于工具回填运行中的 Nacos，不写入产物文件
+    #[serde(default)]
+    pub nacos_username: String,
+    /// live Nacos 发布登录密码（空 = 回退官方默认 nacos）。禁止写入 CLI / 报告 / 交付文档明文，不写入产物文件
+    #[serde(default)]
+    pub nacos_password: String,
 }
 
 impl Default for CustomizeParams {
@@ -552,6 +612,7 @@ impl Default for CustomizeParams {
             enable_report: true,
             enable_delivery_doc: true,
             enable_compile_check: false,
+            enable_frontend_build_check: false,
             enable_clear_home: true,
             enable_remove_github: true,
             enable_remove_docs: true,
@@ -642,6 +703,17 @@ impl Default for CustomizeParams {
             email_code_expire_minutes: 5,
             email_daily_limit: 10,
             source_version_info: None,
+            enable_redis_customize: false,
+            redis_host: "127.0.0.1".into(),
+            redis_port: 6379,
+            redis_database: 1,
+            redis_password: String::new(),
+            upload_path: String::new(),
+            demo_enabled: None,
+            nacos_server_addr: String::new(),
+            nacos_namespace: String::new(),
+            nacos_username: String::new(),
+            nacos_password: String::new(),
         }
     }
 }
@@ -806,8 +878,48 @@ impl CustomizeParams {
                 return Some("已开启邮件发送，SMTP 授权码/密码不能为空".into());
             }
         }
+        // Redis 定制（批次 F）：开启后端口 / 数据库索引 / 地址必须合法
+        if self.enable_redis_customize {
+            if !(1..=65535).contains(&self.redis_port) {
+                return Some(format!(
+                    "Redis 端口「{}」不合法：须为 1-65535",
+                    self.redis_port
+                ));
+            }
+            if !(0..=15).contains(&self.redis_database) {
+                return Some(format!(
+                    "Redis 数据库索引「{}」不合法：须为 0-15",
+                    self.redis_database
+                ));
+            }
+            if self.redis_host.trim().is_empty() {
+                return Some("已开启 Redis 定制，Redis 地址不能为空".into());
+            }
+        }
+        // 上传物理路径：非空时必须是绝对路径（Windows 盘符或 / 开头），
+        // 相对路径会随服务启动目录漂移，写入产物前拦截
+        if !self.upload_path.trim().is_empty() && !is_absolute_fs_path(&self.upload_path) {
+            return Some(format!(
+                "上传路径「{}」须为绝对路径（Windows 盘符如 D:/upload，或以 / 开头的 Unix 路径）",
+                self.upload_path
+            ));
+        }
         None
     }
+}
+
+/// 判断是否为文件系统绝对路径：`/xxx`（Unix / Windows 下混用斜杠），
+/// `X:/xxx` / `X:\xxx`（Windows 盘符），`\\server\share`（UNC）。
+fn is_absolute_fs_path(p: &str) -> bool {
+    let t = p.trim();
+    if t.starts_with('/') || t.starts_with("\\\\") {
+        return true;
+    }
+    let bytes = t.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return matches!(bytes[2], b'/' | b'\\');
+    }
+    false
 }
 
 /// Cloud 允许裁剪的模块（官方核实 2026-09-05：不可裁 gateway/auth/system/common/api）
@@ -889,6 +1001,31 @@ pub fn resolve_db_username(params: &CustomizeParams) -> String {
     } else {
         user.to_string()
     }
+}
+
+/// 批次 F：贴近官方风格的裸 YAML 标量——能安全裸写时不加引号
+/// （如 `D:/upload`、`127.0.0.1:8848`、`dev-ns`；冒号后无空格的裸标量合法），
+/// 命中真正危险序列（`: `、行尾冒号、` #`、首尾空白、指示符开头、控制字符）才
+/// 退回 `yaml_quote_scalar` 的双引号形式。demoEnabled 的 true/false 亦走裸写，
+/// 避免写出 `"false"` 字符串标量。
+pub(crate) fn yaml_plain_scalar(val: &str) -> String {
+    if val.is_empty() {
+        return String::new();
+    }
+    let needs_quote = val.contains(": ")
+        || val.ends_with(':')
+        || val.contains(" #")
+        || val.contains(['\n', '\r', '\t'])
+        || val.starts_with(' ')
+        || val.ends_with(' ')
+        || val.starts_with([
+            '-', '?', '#', '&', '*', '!', '|', '>', '%', '@', '`', '\'', '"', '[', ']', '{', '}',
+            ',',
+        ]);
+    if !needs_quote {
+        return val.to_string();
+    }
+    yaml_quote_scalar(val)
 }
 
 /// YAML 标量：空值保持空白（写成 `key:`）；含特殊字符时加双引号，避免破坏 YAML。
@@ -1262,6 +1399,103 @@ mod tests {
         assert!(loaded.source_version_info.is_none());
     }
 
+    /// 批次 F：旧配置 JSON 无 Redis / 上传路径 / demoEnabled / Nacos 字段时按 serde default 回落，
+    /// 行为与默认参数完全一致（demo_enabled 缺字段 = None = 不改）
+    #[test]
+    fn old_json_without_batch_f_fields_defaults() {
+        let p = CustomizeParams::default();
+        let mut v = serde_json::to_value(&p).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        for k in [
+            "enable_redis_customize",
+            "redis_host",
+            "redis_port",
+            "redis_database",
+            "redis_password",
+            "upload_path",
+            "demo_enabled",
+            "nacos_server_addr",
+            "nacos_namespace",
+            "nacos_username",
+            "nacos_password",
+        ] {
+            obj.remove(k);
+        }
+        let loaded: CustomizeParams = serde_json::from_value(v).unwrap();
+        assert!(!loaded.enable_redis_customize);
+        assert_eq!(loaded.redis_host, "127.0.0.1");
+        assert_eq!(loaded.redis_port, 6379);
+        assert_eq!(loaded.redis_database, 1);
+        assert_eq!(loaded.redis_password, "");
+        assert_eq!(loaded.upload_path, "");
+        assert_eq!(loaded.demo_enabled, None);
+        assert_eq!(loaded.nacos_server_addr, "");
+        assert_eq!(loaded.nacos_namespace, "");
+        assert_eq!(loaded.nacos_username, "");
+        assert_eq!(loaded.nacos_password, "");
+        // 序列化往返：显式 demo_enabled=false 保持（Some(false) 与 None 是两种语义）
+        let mut p2 = CustomizeParams::default();
+        p2.demo_enabled = Some(false);
+        let loaded2: CustomizeParams =
+            serde_json::from_str(&serde_json::to_string(&p2).unwrap()).unwrap();
+        assert_eq!(loaded2.demo_enabled, Some(false));
+    }
+
+    /// 批次 F validate：Redis 定制开启后端口 1-65535 / 索引 0-15 / 地址非空
+    #[test]
+    fn validate_redis_customize_branches() {
+        let mut p = CustomizeParams::default();
+        p.original_package = "com.ruoyi".into();
+        p.new_package = "com.demo".into();
+        p.original_module_prefix = "ruoyi".into();
+        p.new_module_prefix = "demo".into();
+        p.frontend_title = "演示系统".into();
+        // 关闭开关时填了非法值也不校验（关则零改动，字段不生效）
+        p.redis_port = 70000;
+        p.redis_database = 99;
+        p.redis_host = "  ".into();
+        assert!(p.validate().is_none(), "开关关闭时不应校验 Redis 字段");
+
+        p.enable_redis_customize = true;
+        assert!(p.validate().unwrap().contains("Redis 端口"));
+        p.redis_port = 6379;
+        assert!(p.validate().unwrap().contains("数据库索引"));
+        p.redis_database = 1;
+        assert!(p.validate().unwrap().contains("Redis 地址"));
+        p.redis_host = "192.168.1.20".into();
+        assert!(p.validate().is_none());
+        // 边界值合法
+        p.redis_port = 1;
+        p.redis_database = 0;
+        assert!(p.validate().is_none());
+        p.redis_port = 65535;
+        p.redis_database = 15;
+        assert!(p.validate().is_none());
+    }
+
+    /// 批次 F validate：upload_path 非空必须是绝对路径（Windows 盘符或 / 开头）
+    #[test]
+    fn validate_upload_path_requires_absolute() {
+        let mut p = CustomizeParams::default();
+        p.original_package = "com.ruoyi".into();
+        p.new_package = "com.demo".into();
+        p.original_module_prefix = "ruoyi".into();
+        p.new_module_prefix = "demo".into();
+        p.frontend_title = "演示系统".into();
+        // 空串 = 不改，合法
+        assert!(p.validate().is_none());
+
+        for bad in ["upload/files", "./upload", "D:relative", "upload"] {
+            p.upload_path = bad.into();
+            let err = p.validate().unwrap_or_default();
+            assert!(err.contains("绝对路径"), "相对路径「{bad}」应被拒绝：{err}");
+        }
+        for ok in ["D:/data/upload", "D:\\data\\upload", "/home/ruoyi/uploadPath", "\\\\nas\\share\\upload"] {
+            p.upload_path = ok.into();
+            assert!(p.validate().is_none(), "绝对路径「{ok}」应合法");
+        }
+    }
+
     /// 旧配置 JSON 无 enable_compile_check 时按 serde default 回落 false（默认关）
     #[test]
     fn old_json_without_enable_compile_check_defaults_false() {
@@ -1277,6 +1511,23 @@ mod tests {
         let loaded2: CustomizeParams =
             serde_json::from_str(&serde_json::to_string(&p2).unwrap()).unwrap();
         assert!(loaded2.enable_compile_check);
+    }
+
+    /// 旧配置 JSON 无 enable_frontend_build_check 时按 serde default 回落 false（默认关）
+    #[test]
+    fn old_json_without_enable_frontend_build_check_defaults_false() {
+        let p = CustomizeParams::default();
+        assert!(!p.enable_frontend_build_check, "前端构建冒烟默认关");
+        let mut v = serde_json::to_value(&p).unwrap();
+        v.as_object_mut().unwrap().remove("enable_frontend_build_check");
+        let loaded: CustomizeParams = serde_json::from_value(v).unwrap();
+        assert!(!loaded.enable_frontend_build_check);
+        // 序列化往返：显式 true 保持
+        let mut p2 = CustomizeParams::default();
+        p2.enable_frontend_build_check = true;
+        let loaded2: CustomizeParams =
+            serde_json::from_str(&serde_json::to_string(&p2).unwrap()).unwrap();
+        assert!(loaded2.enable_frontend_build_check);
     }
 
     /// source_version_info 序列化往返保持一致（随执行参数透传到报告）

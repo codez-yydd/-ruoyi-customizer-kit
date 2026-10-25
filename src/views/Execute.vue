@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // 执行改造页：触发 execute_transform，监听 transform:progress 事件，展示进度、
 // 实时日志、任务结果与执行后校验（checks）及报告路径（report_path）、
-// 交付文档路径（delivery_doc_path）。
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+// 交付文档路径（delivery_doc_path）、改造 Diff 补丁路径（diff_path）。
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -14,7 +14,8 @@ import { Tools } from '@element-plus/icons-vue'
 // ElMessage/ElMessageBox 是函数式 API，ElementPlusResolver（只处理组件/指令）不自动注入，
 // 这里与 ParamConfig.vue 保持一致，显式从对应组件入口引入。
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
-import type { CheckItem, CheckResultType, ExecuteResponse } from '@/types'
+import { ElMessageBox } from 'element-plus/es/components/message-box/index.mjs'
+import type { CheckItem, CheckResultType, ExecuteResponse, PortBusyStatus } from '@/types'
 import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
@@ -41,17 +42,75 @@ onMounted(async () => {
     result.value = store.executeResult
     return
   }
+  // 改造仍在后台执行（执行期间离开本页再返回）：不重复触发，
+  // 仅恢复进度监听等待完成；防与仍在后端运行的第一条管线并发改造
+  if (store.executing) {
+    store.log('改造正在后台执行中，已恢复进度监听，请等待完成', 'INFO')
+    ElMessage.info('改造正在后台执行中，请等待完成')
+    return
+  }
   // 自动开始执行
   await run()
 })
+
+// 后台执行完成时（本页是在执行期间重新进入的实例，发起执行的旧实例已卸载），
+// 把 store 里的最终结果同步到当前页面展示
+watch(
+  () => store.executeResult,
+  (r) => {
+    if (r && !result.value) result.value = r
+  }
+)
 
 onUnmounted(() => {
   unlisten?.()
 })
 
+/**
+ * 执行前端口占用预检：从 store 的预览结果取端口清单（Preview.vue 已 setPreview），
+ * 探测本机占用；存在占用时弹窗确认，用户取消返回 false（不进入执行）。
+ * 拿不到端口清单或探测失败时跳过检测，不阻塞主流程。
+ */
+async function confirmPortsFree(): Promise<boolean> {
+  const ports = store.preview?.ports
+  if (!ports || ports.length === 0) return true
+  let statuses: PortBusyStatus[]
+  try {
+    statuses = await api.checkPortsBusy(ports.map((p) => p.port))
+  } catch (e) {
+    store.log(`端口占用检测失败，跳过检测继续执行：${e}`, 'WARN')
+    return true
+  }
+  const busy = statuses.filter((s) => s.busy)
+  if (busy.length === 0) return true
+  const detail = busy
+    .map((s) => {
+      const info = ports.find((p) => p.port === s.port)
+      return info ? `${info.label} ${s.port}` : `${s.port}`
+    })
+    .join('、')
+  try {
+    await ElMessageBox.confirm(
+      `以下端口已被占用，可能影响服务启动：${detail}。是否继续执行？`,
+      '端口占用提醒',
+      { confirmButtonText: '继续执行', cancelButtonText: '取消执行', type: 'warning' }
+    )
+    store.log(`端口被占用（${detail}），用户已确认继续执行`, 'WARN')
+    return true
+  } catch {
+    store.log('已取消执行：检测到端口被占用', 'WARN')
+    return false
+  }
+}
+
 async function run() {
   if (!projectInfo.value || !params.value) return
+  // 双保险：执行中不允许再次触发（正常入口由 onMounted 的 executing 检查拦截）
+  if (store.executing) return
+  // 执行前端口占用预检：用户取消则中止（不置 executing）
+  if (!(await confirmPortsFree())) return
   running.value = true
+  store.setExecuting(true)
   store.log('开始执行改造...', 'INFO')
   try {
     const resp = await api.executeTransform(projectInfo.value, params.value, sourceType.value, zipPath.value || undefined)
@@ -70,9 +129,19 @@ async function run() {
       profilesStore.addHistory(params.value)
     }
   } catch (e) {
-    store.log(`执行异常：${e}`, 'ERROR')
+    const msg = String(e)
+    store.log(`执行异常：${msg}`, 'ERROR')
+    // 仅后端在途互斥拒绝（如刷新窗口后前端内存状态丢失再次自动触发）时提示等待：
+    // 原管线仍在运行，进度事件仍会推送到本窗口，重复执行会并发写同一输出目录。
+    // 其余异常按普通失败提示原始错误，避免误导用户「等待」一个并未在执行的任务
+    if (msg.includes('已有改造任务正在执行中')) {
+      ElMessage.error('改造执行未开始：请等待当前改造任务完成后重试')
+    } else {
+      ElMessage.error(`改造执行失败：${msg}，详见日志`)
+    }
   } finally {
     running.value = false
+    store.setExecuting(false)
   }
 }
 
@@ -156,17 +225,15 @@ async function openReportDir() {
   }
 }
 
-/** 复制报告路径到剪贴板（clipboard API 不可用时降级 execCommand） */
-async function copyReportPath() {
-  const path = result.value?.report_path
-  if (!path) return
+/** 复制文本到剪贴板（clipboard API 不可用时降级 execCommand），成功返回 true */
+async function copyTextToClipboard(text: string): Promise<boolean> {
   try {
-    await navigator.clipboard.writeText(path)
-    ElMessage.success('报告路径已复制')
+    await navigator.clipboard.writeText(text)
+    return true
   } catch {
     // 降级方案：隐藏 textarea + execCommand('copy')
     const ta = document.createElement('textarea')
-    ta.value = path
+    ta.value = text
     ta.style.position = 'fixed'
     ta.style.opacity = '0'
     document.body.appendChild(ta)
@@ -179,11 +246,18 @@ async function copyReportPath() {
     } finally {
       document.body.removeChild(ta)
     }
-    if (ok) {
-      ElMessage.success('报告路径已复制')
-    } else {
-      ElMessage.error('复制失败，请手动复制')
-    }
+    return ok
+  }
+}
+
+/** 复制报告路径到剪贴板 */
+async function copyReportPath() {
+  const path = result.value?.report_path
+  if (!path) return
+  if (await copyTextToClipboard(path)) {
+    ElMessage.success('报告路径已复制')
+  } else {
+    ElMessage.error('复制失败，请手动复制')
   }
 }
 
@@ -198,34 +272,36 @@ async function openDeliveryDocDir() {
   }
 }
 
-/** 复制交付文档路径到剪贴板（clipboard API 不可用时降级 execCommand） */
+/** 复制交付文档路径到剪贴板 */
 async function copyDeliveryDocPath() {
   const path = result.value?.delivery_doc_path
   if (!path) return
-  try {
-    await navigator.clipboard.writeText(path)
+  if (await copyTextToClipboard(path)) {
     ElMessage.success('交付文档路径已复制')
-  } catch {
-    // 降级方案：隐藏 textarea + execCommand('copy')
-    const ta = document.createElement('textarea')
-    ta.value = path
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    let ok = false
-    try {
-      ok = document.execCommand('copy')
-    } catch {
-      ok = false
-    } finally {
-      document.body.removeChild(ta)
-    }
-    if (ok) {
-      ElMessage.success('交付文档路径已复制')
-    } else {
-      ElMessage.error('复制失败，请手动复制')
-    }
+  } else {
+    ElMessage.error('复制失败，请手动复制')
+  }
+}
+
+/** 在系统文件管理器中打开 Diff 补丁所在目录并选中 changes.patch（失败不阻断，仅提示） */
+async function openDiffPatchDir() {
+  if (!result.value?.diff_path) return
+  try {
+    await revealItemInDir(result.value.diff_path)
+  } catch (e) {
+    store.log(`打开 Diff 补丁目录失败：${e}`, 'WARN')
+    ElMessage.warning('打开 Diff 补丁目录失败，请按路径手动前往')
+  }
+}
+
+/** 复制改造 Diff 补丁路径到剪贴板 */
+async function copyDiffPatchPath() {
+  const path = result.value?.diff_path
+  if (!path) return
+  if (await copyTextToClipboard(path)) {
+    ElMessage.success('Diff 补丁路径已复制')
+  } else {
+    ElMessage.error('复制失败，请手动复制')
   }
 }
 </script>
@@ -243,7 +319,8 @@ async function copyDeliveryDocPath() {
         </div>
       </div>
 
-      <div v-if="running" class="rf-card">
+      <!-- 本实例触发（running）或执行期间从其他页面返回（store.executing）都提示执行中 -->
+      <div v-if="running || store.executing" class="rf-card">
         <el-alert type="info" :closable="false" title="正在执行改造，请勿关闭窗口..." show-icon />
       </div>
 
@@ -333,11 +410,28 @@ async function copyDeliveryDocPath() {
         </div>
       </div>
 
+      <!-- 改造 Diff 补丁路径：未生成（diff_path 为空）时不渲染 -->
+      <div v-if="result?.diff_path" class="rf-card report-card">
+        <div class="report-info">
+          <span class="report-label">改造 Diff 补丁</span>
+          <span class="report-path">{{ result.diff_path }}</span>
+        </div>
+        <div class="report-actions">
+          <el-button size="small" @click="openDiffPatchDir">打开补丁目录</el-button>
+          <el-button size="small" @click="copyDiffPatchPath">复制路径</el-button>
+        </div>
+      </div>
+
       <LogPanel />
     </div>
 
     <div v-if="result" class="actions">
       <el-button type="primary" @click="backHome">完成，返回首页</el-button>
+    </div>
+    <!-- 执行被中止（如端口占用确认被取消）且不在执行中：提供再次执行入口 -->
+    <div v-else-if="!running && !store.executing" class="actions">
+      <el-button @click="backHome">返回首页</el-button>
+      <el-button type="primary" @click="run">开始执行改造</el-button>
     </div>
   </div>
 </template>

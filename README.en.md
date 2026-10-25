@@ -12,9 +12,9 @@ A desktop tool for rapid initialization and customization of **RuoYi-Vue** (sepa
 - **Module Restructuring** — Backend modules + frontend directories renamed by prefix (e.g. `ruoyi-admin` → `demo-admin`)
 - **Maven Coordinate Update** — Batch replacement of groupId / artifactId / module dependency references
 - **Config File Refactoring** — For the separated edition, splits `application.yml` + `application-druid.yml` into `application.yaml` + `application-dev.yaml` + `application-prod.yaml`. For Cloud, rewrites Nacos `sql/ry_config*.sql` and does not generate the application.yaml trio
-- **RuoYi-Cloud** — Rewrites Nacos datasource / Redis / Token and per-service ports (including bootstrap.yml); optional trim of gen / job / file / monitor; replacing the UI applies a cloud-overlay (login `/auth/login`, jobs `/schedule/**`, code gen `/code/**`, logs / online users, etc.); optional new business-module short names (Cloud only), generating empty `{prefix}-modules/{prefix}-{name}` skeletons (pom / startup class / Health / Nacos `*-dev.yml` / gateway routes / `run-{name}`), without CRUD/SQL/menus/feign
+- **RuoYi-Cloud** — Rewrites Nacos datasource / Redis / Token and per-service ports (including bootstrap.yml); the Redis connection, upload filesystem path, `demoEnabled`, and the Nacos address / namespace are all configurable (defaults change nothing); optional trim of gen / job / file / monitor; replacing the UI applies a cloud-overlay (login `/auth/login`, jobs `/schedule/**`, code gen `/code/**`, logs / online users, etc.); optional new business-module short names (Cloud only), generating empty `{prefix}-modules/{prefix}-{name}` skeletons (pom / startup class / Health / Nacos `*-dev.yml` / gateway routes / `run-{name}`), without CRUD/SQL/menus/feign
 - **MyBatis-Plus Integration** — Adds dependency, generates pagination config, refactors existing Mapper/Service/ServiceImpl to inherit MP base classes, adapts code generator templates
-- **PostgreSQL Dialect** — For RuoYi-Vue, switch datasource, driver, pagination, init scripts, and code-generator queries to PostgreSQL (standalone / microservice not supported in this release)
+- **PostgreSQL Dialect** — All three templates (RuoYi-Vue / RuoYi standalone / RuoYi-Cloud) can switch to PostgreSQL: datasource driver/url/validation query, pagination dialect, init scripts, and code-generator queries. For Cloud, the Nacos config DB (ry-config) and Seata DB stay on MySQL (see constraints)
 - **Long ID Precision Fix** — Adds `@JsonSerialize(using = ToStringSerializer.class)` to Long primary key fields
 - **Dev Startup Scripts** — Cloud project root `run.bat` / `run.sh` is an arrow-key checklist (↑↓ move, Space toggle, A select all, N select none, Enter start, Esc quit; all selected by default). Scans `run-*.bat` (excludes `run-ui`); copy `run-xxx.bat` for a new module to appear in the menu. Runs a single Maven install for the whole repo before starting services, to avoid parallel `mvn clean`. Jar deploy scripts remain `scripts/start.bat` (generated when “startup scripts” is enabled) and are not the same as the dev `run.bat`
 - **Replace Admin UI** — Optionally replace original `ruoyi-ui` with a preset Vben Admin (Element Plus, pnpm monorepo) or Arco Design (Arco Design Vue, npm single package) template; title / port / copyright are filled via placeholders. Available for `ruoyi-vue` and `ruoyi-cloud`; disabled for standalone `ruoyi`
@@ -25,13 +25,19 @@ A desktop tool for rapid initialization and customization of **RuoYi-Vue** (sepa
 - **Official Source Fetch** — From the home screen, pull official RuoYi-Vue or RuoYi-Cloud backends via Gitee (shallow git clone, no login) or GitHub (archive zip) and continue into detection
 - **Deferred Extraction** — ZIP archives are extracted at execution time to a user-chosen output directory; original files are never modified
 - **Execution Preview** — Preview task list, impact scope, and high-risk items before executing
+- **Port Pre-check** — The preview page lists the ports the transformed artifacts will occupy and probes local occupancy (free / busy); execution asks for confirmation before continuing when a port is taken. Separated edition: the admin port; Cloud: the gateway and each microservice (including new modules; trimmed modules do not consume a port); standalone: the backend port when config rewrite is engaged
+- **Add-on Health Check** — One-click check on the detect page (the GUI entry shares the same check logic as CLI `doctor`): per add-on anchor availability (✅ ready / ❌ anchors missing / － not applicable); missing items list their required and optional anchors
+- **External Connectivity Check** — The parameter page can probe database / SMTP mail / OSS external services with “test connectivity” (local TCP-level probe with round-trip time; accepts `host:port` and endpoint URLs; explicitly does not verify account credentials)
 - **Residue Scanning** — Post-execution validation for leftover old package/module names
 - **Execution Report** — Generates a Markdown transformation report
+- **File-level Transform Diff** — After execution, a `changes.patch` (unified diff, `git apply` compatible, with added / modified / deleted / binary stats) is generated in the report directory; zip sources re-extract the original archive to build the pre-transform baseline, directory sources use the source directory as the baseline directly
 - **CLI Mode** — Standalone `forge-cli` binary, config-file driven, unattended / CI-friendly (not bundled into the GUI installer)
 
 ## RuoYi-Cloud notes
 
-Config rewriting goes through Nacos SQL, not the admin application.yaml trio. The Nacos address stays `127.0.0.1:8848` and the Sentinel port stays `8718`; neither is changed. Registration names and dataIds stay official `ruoyi-*`: only the pom module directory prefix is renamed, not the Nacos service name.
+Config rewriting goes through Nacos SQL, not the admin application.yaml trio. The Nacos address stays `127.0.0.1:8848` by default and can be rewritten per service bootstrap.yml (both discovery and config) via `nacos_server_addr` / `nacos_namespace`; the Sentinel port stays `8718`. Registration names and dataIds stay official `ruoyi-*`: only the pom module directory prefix is renamed, not the Nacos service name.
+
+PostgreSQL (`db_type=postgresql`): each service's Nacos datasource entry is switched as a whole (`driver-class-name` → `org.postgresql.Driver`, url → `jdbc:postgresql://host:5432/db?currentSchema=public`, `validationQuery` drops `FROM DUAL`); the MySQL driver in the system / gen / job module poms is replaced per-pom with the PG driver; the business `ry_*.sql` is replaced with the PG asset. Official Cloud does not configure PageHelper explicitly (the dialect is auto-detected from the JDBC url), so pagination follows PG automatically after the url switch. The `ry_config` (Nacos config DB) and `ry_seata` scripts stay MySQL as-is; with SQL customize disabled only the dialect is switched (host / db name keep the original text, port uses the PG default 5432).
 
 When Replace UI is enabled, log-menu `component` values are rewritten from `system/operlog` and `system/logininfor` to `monitor/...`; `perms` are left unchanged.
 
@@ -39,7 +45,7 @@ The gateway port is `server_port`. You may trim gen / job / file / monitor; gate
 
 For development, start Nacos first, then double-click `run.bat` (or `run.sh`) at the project root and select services. For production / packaged jars, use `scripts/start.bat` (requires “startup scripts”).
 
-Note: docker-compose and the Nacos namespace are left unchanged. Redis is currently written as localhost:6379 / db1. Upload filesystem paths and Cloud `demoEnabled` are not configurable.
+Note: the Redis connection (`enable_redis_customize` + `redis_*`), upload filesystem path (`upload_path`), Cloud `demoEnabled` (`demo_enabled`, tri-state), and the Nacos address / namespace (`nacos_server_addr` / `nacos_namespace`) are all configurable now; docker-compose is still left unchanged. Live Nacos publish credentials (`nacos_username` / `nacos_password`) are only used by the tool to publish into a running Nacos and are never written into artifacts.
 
 ## Screenshots
 
@@ -146,7 +152,7 @@ Release layout: place the `forge-cli` executable **alongside** `templates/` and 
 
 ### Subcommands
 
-Only `templates`, `detect`, `init-config`, `preview`, and `run` exist. There is no interactive wizard, no `doctor`, and no daemon.
+Current subcommands: `templates`, `detect`, `init-config`, `preview`, `run`, `pull`, and `doctor`. There is no interactive wizard and no daemon.
 
 #### templates
 
@@ -194,6 +200,11 @@ forge-cli run --config forge.json [--source <zip-or-dir>] [--set k=v ...] [--jso
 --set jwt_expire_minutes=60
 --set ui_template=arco
 --set enable_cloud_custom_ports=true
+--set enable_frontend_build_check=true
+--set enable_redis_customize=true
+--set upload_path=D:/data/upload
+--set 'demo_enabled=false'
+--set nacos_server_addr=10.0.0.5:8848
 --set 'new_modules=["order","member"]'
 ```
 
@@ -216,6 +227,14 @@ bash (one line):
 
 ```bash
 forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo --title Demo --output ./out && forge-cli preview --config forge.json && forge-cli run --config forge.json --set db_type=postgresql --set db_name=demo_db
+```
+
+#### doctor
+
+Add-on anchor self-check: auto-detects the project type, then verifies the key anchors (files / class names / source snippets) each add-on (SMS login / mail / slider captcha / API AES / WeChat login / OSS / MyBatis-Plus / Replace Admin UI, etc.) depends on. The anchor list comes from each add-on module's actual lookup logic (centralized in `core/health.rs`). The “Add-on Health Check” button on the GUI detect page offers the same entry point (the same check logic, results shown in a dialog).
+
+```text
+forge-cli doctor --dir <project-directory>
 ```
 
 ### Exit Codes
@@ -249,6 +268,7 @@ Field names match `CustomizeParams` in `src/types/index.ts`. Defaults match CLI 
 | enable_snowflake_id | boolean | `false` | Global snowflake IDs: setId on insert, disable auto-increment |
 | enable_report | boolean | `true` | Generate a Markdown transformation report |
 | enable_delivery_doc | boolean | `true` | Generate the delivery document `DELIVERY.md` (overview, services and ports, database and middleware, startup guide, security checklist) |
+| enable_frontend_build_check | boolean | `false` | Frontend build smoke check: at execution, runs package-manager `install + run build` on the artifact's frontend directory to verify buildability. Requires local Node.js (pnpm as well for the vben replace-UI template; auto-skipped when missing); the first run downloads dependencies online and takes a while (install and build each time out after 15 minutes) |
 | enable_clear_home | boolean | `true` | Clear the RuoYi frontend home page to a blank page |
 | enable_remove_github | boolean | `true` | Remove GitHub / Gitee links from the top bar |
 | enable_remove_docs | boolean | `true` | Remove documentation links from the top bar |
@@ -287,10 +307,21 @@ Field names match `CustomizeParams` in `src/types/index.ts`. Defaults match CLI 
 | cloud_port_job | number | `0` | Cloud job port; `0` = auto-increment |
 | cloud_port_file | number | `0` | Cloud file port; `0` = auto-increment |
 | cloud_port_monitor | number | `0` | Cloud monitor port; `0` = auto-increment |
-| db_type | string | `mysql` | Database type: `mysql` or `postgresql` only; `postgresql` is ruoyi-vue only |
+| db_type | string | `mysql` | Database type: `mysql` or `postgresql` only; all three templates support PostgreSQL (datasource / driver / pagination dialect / init scripts / generator queries switch together) |
 | admin_username | string | `""` | Admin login name; empty keeps `admin` (only the `user_id=1` seed row) |
 | admin_nickname | string | `""` | Admin nickname; empty keeps `若依` |
 | clean_quartz | boolean | `false` | Remove quartz tables and data |
+| enable_redis_customize | boolean | `false` | Customize the Redis connection. When off, redis_* fields have no effect (Redis config in artifacts stays as-is). When on: Cloud writes Nacos config entries (requires config rewrite or SQL customize); separated / standalone editions write application-dev/prod.yaml (requires config rewrite) |
+| redis_host | string | `127.0.0.1` | Redis host; written only when Redis customization is on |
+| redis_port | number | `6379` | Redis port (1-65535); written only when Redis customization is on |
+| redis_database | number | `1` | Redis database index (0-15); written only when Redis customization is on |
+| redis_password | string | `""` | Redis password, may be empty (empty = no password); redacted from reports, CLI output and DELIVERY.md. Avoid backslashes (see constraints) |
+| upload_path | string | `""` | Upload filesystem path; empty = unchanged. When set it must be absolute (Windows drive letter or `/` prefixed); backslashes are normalized to forward slashes. Separated / standalone editions write `ruoyi.profile` (requires config rewrite); Cloud writes Nacos `ruoyi.profile` and the file service `file.path` |
+| demo_enabled | boolean/null | `null` | Cloud `ruoyi.demoEnabled` tri-state: `null` = unchanged; `true` / `false` written into the Nacos config |
+| nacos_server_addr | string | `""` | Nacos `server-addr` for each Cloud service bootstrap.yml; empty = official `127.0.0.1:8848`. docker-compose unchanged |
+| nacos_namespace | string | `""` | Cloud Nacos namespace ID; empty = unchanged. When set, written to the discovery and config `namespace` of bootstrap.yml (official files have none; added only when non-empty) and used as the live publish tenant |
+| nacos_username | string | `""` | Live Nacos publish username; empty = official `nacos`. Only used to publish into a running Nacos; never written into artifacts |
+| nacos_password | string | `""` | Live Nacos publish password; empty = official `nacos`. Never written into artifacts; redacted from reports, CLI output and DELIVERY.md |
 | enable_frontend_split | boolean | `false` | Split frontend out of the project root, sibling to the backend |
 | enable_ai_rules | boolean | `true` | Generate AI rule files (`AGENTS.md` + `CLAUDE.md`) |
 | enable_sub_agents | boolean | `false` | Inject sub-agent collaboration notes into `AGENTS.md` |
@@ -344,10 +375,15 @@ The config file may also contain `_comment` and `_source` (not `CustomizeParams`
 Constraints:
 
 - Older JSON without `db_type` is treated as `mysql`
-- `ruoyi` / `ruoyi-cloud` cannot use `postgresql`
-- PostgreSQL init scripts do not include `CREATE DATABASE`; create the database yourself
+- PostgreSQL init scripts do not include `CREATE DATABASE`; create the database yourself (`createdb`, then import `sql/ry.sql`)
+- Cloud + PostgreSQL: the Nacos config DB (`ry-config`, Nacos Server's own datasource) and the `ry_seata` script stay on MySQL and do not follow the business DB switch; Seata / Nacos Server still need a MySQL instance
+- PG init scripts are converted from the official MySQL `ry_*.sql` by the forge dialect rules (int8/int4/char flag columns, identity PKs, externalized comments, rebuilt indexes, setval sequence bumps). Cloud keeps the Sentinel / Nacos console menu seeds; standalone keeps `sys_user_online` (Shiro online-user table). Known gap inherited from the separated edition: the right-hand `date_format(#{...})` in the generator mapper's `selectGenTableList` date filter is not converted — that filter is unusable on PG (the list without a date condition is unaffected)
 - Cloud keeps official `ruoyi-*` dataIds / registration names
-- Nacos `8848` and Sentinel `8718` are not changed
+- Nacos `8848` stays unchanged by default; when `nacos_server_addr` is set, each service bootstrap.yml is rewritten (docker-compose untouched); Sentinel `8718` is not changed
+- Redis customization / upload path / demoEnabled / Nacos address & namespace follow “defaults change nothing”: with the switch off or the field empty, artifacts are byte-identical to before
+- Live Nacos publish credentials (`nacos_username` / `nacos_password`) are only used by the tool to publish into a running Nacos and are never written into any artifact
+- Separated / standalone `upload_path` and Redis customization depend on the “config rewrite” task; Cloud depends on the Nacos task (config rewrite or SQL customize, either one)
+- The ry_config SQL escaping format is not lossless for backslashes: for `redis_password` (same as the existing `db_password`) prefer avoiding backslashes; `upload_path` normalizes them to forward slashes automatically
 - `remove_modules` accepts only `gen` / `job` / `file` / `monitor`; illegal values are rejected
 - `new_modules` is Cloud only; short names must match `^[a-z][a-z0-9-]*$`; must not collide with `remove_modules` or existing module short names
 - All add-on switches default to off; off means zero changes
@@ -361,7 +397,7 @@ Constraints:
 - When `enable_mail` is on, `mail_host` / `mail_username` / `mail_password` are required; `mail_port` range 1–65535
 - With mail enabled, treat `sys_user.email` as the login identifier; the same address bound to multiple non-deleted accounts is rejected at login
 - The SMTP app password is written into the generated config (separated-edition yaml / Cloud `sql/ry_config_*.sql` Nacos entries); do not commit generated secrets to a public repository
-- No SMTP connectivity test is performed; verify the config with a manual smoke test
+- The add-on itself sends no test email and does not verify the SMTP account / app password; the parameter page offers a TCP-level connectivity probe only (no credential verification) — still smoke-test actual sending manually
 
 ## Build & Package
 

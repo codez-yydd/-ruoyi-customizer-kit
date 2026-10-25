@@ -9,12 +9,10 @@ use crate::rules::template::Template;
 use crate::utils::path::package_to_path;
 use std::path::{Path, PathBuf};
 
-/// 是否规划 PostgreSQL 方言切换。非 ruoyi-vue（且 template_dir 非空）本期不规划。
-pub fn should_plan_switch_database_dialect(info: &ProjectInfo, params: &CustomizeParams) -> bool {
-    if params.db_type.trim().to_ascii_lowercase() == "mysql" {
-        return false;
-    }
-    crate::core::db_dialect::supports_postgresql_template(&info.template_dir)
+/// 是否规划 PostgreSQL 方言切换。批次 G 起三个模板（vue / 单体 / Cloud）均支持，
+/// 仅看 db_type 是否为非 mysql 方言。
+pub fn should_plan_switch_database_dialect(_info: &ProjectInfo, params: &CustomizeParams) -> bool {
+    params.db_type.trim().to_ascii_lowercase() != "mysql"
 }
 
 /// 规划全部任务。任务按执行顺序排列，每个任务附带 dry-run 统计。
@@ -167,13 +165,26 @@ pub fn plan(
     // 6. 配置文件重构（可选）
     // Cloud：走 Nacos config_info SQL，不规划分离版 application.yaml 三件套。
     // 只开 SQL 定制、关掉配置重构时也要规划 Nacos，否则连接写不进去。
-    if is_cloud && (params.enable_config_rewrite || params.enable_sql_customize) {
+    // 批次 G：PG 模式即使两者都关也规划 Nacos（数据源方言切换落在 ry_config SQL）。
+    // 批次 F：Redis 定制 / upload_path / demoEnabled 同样写入 ry_config SQL，
+    // 任一有写入需求就规划（沿用「有写入需求就规划」的既有设计意图），否则这些
+    // 参数在「配置重构关 + SQL 定制关 + MySQL」组合下会静默失效。
+    if is_cloud
+        && (params.enable_config_rewrite
+            || params.enable_sql_customize
+            || crate::core::db_dialect::is_postgresql(params)
+            || params.enable_redis_customize
+            || !params.upload_path.trim().is_empty()
+            || params.demo_enabled.is_some())
+    {
         let name = if params.enable_sql_customize {
             format!(
                 "Nacos 配置定制（连接 {}:{}）",
                 crate::core::resolve_db_host(params),
                 crate::core::resolve_db_port(params)
             )
+        } else if crate::core::db_dialect::is_postgresql(params) {
+            "Nacos 配置定制（PostgreSQL 方言：driver/url/validationQuery）".into()
         } else {
             "Nacos 配置定制".into()
         };
@@ -627,19 +638,28 @@ pub fn plan(
     // （规划放在 SQL 定制之后）
 
     // 数据库方言切换：必须排在 CustomizeSqlScripts 之前，使 SQL 定制作用在已替换的 PG 脚本上。
-    // 本期仅 ruoyi-vue 支持；template_dir 非空且不是 ruoyi-vue 时不规划（pipeline 会再拦截）。
+    // 批次 G 起三模板均支持；Cloud 的数据源改写在 Nacos 任务，此处 affected_files 按布局区分。
     if should_plan_switch_database_dialect(info, params) {
+        let dialect_files = if is_cloud {
+            vec![
+                "pom.xml（system/gen/job 驱动坐标）".into(),
+                "sql/ry_config*.sql（数据源方言，由 Nacos 任务改写）".into(),
+                "GenTableMapper.xml / GenTableColumnMapper.xml".into(),
+            ]
+        } else {
+            vec![
+                "pom.xml（驱动坐标）".into(),
+                "application-dev/prod.yaml（数据源，由配置重构生成）".into(),
+                "MybatisPlusConfig.java（分页方言）".into(),
+                "GenTableMapper.xml / GenTableColumnMapper.xml".into(),
+            ]
+        };
         tasks.push(Task {
             id: next_id(&tasks),
             name: "数据库方言切换（PostgreSQL）".into(),
             task_type: TaskType::SwitchDatabaseDialect,
             risk_level: RiskLevel::High,
-            affected_files: vec![
-                "pom.xml（驱动坐标）".into(),
-                "application-dev/prod.yaml（数据源，由配置重构生成）".into(),
-                "MybatisPlusConfig.java（分页方言）".into(),
-                "GenTableMapper.xml / GenTableColumnMapper.xml".into(),
-            ],
+            affected_files: dialect_files,
             affected_dirs: vec![],
             created_files: vec![],
             status: TaskStatus::Pending,
@@ -1069,6 +1089,24 @@ pub fn plan(
         });
     }
 
+    // 13c. 前端构建冒烟检查（可选）：编译冒烟之后、报告/交付文档前，对产物前端目录跑
+    // 包管理器 install + build 验证可构建性。仅模板含独立前端目录时规划
+    //（单体版 Thymeleaf 内嵌前端无前端工程）；UniApp 小程序工程依赖 HBuilderX 不参与。
+    // 未安装 Node.js / pnpm 时执行阶段自动 Skipped。
+    if params.enable_frontend_build_check && has_frontend(template) {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "前端构建冒烟检查（install + run build，未安装 Node.js/pnpm 自动跳过）".into(),
+            task_type: TaskType::FrontendBuildSmokeCheck,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 13. 生成交付文档（可选，默认开；实际在校验之前执行，见 pipeline::run_transform）
     if params.enable_delivery_doc {
         tasks.push(Task {
@@ -1260,42 +1298,79 @@ mod tests {
             .unwrap()
     }
 
+    /// 批次 G 新语义：PostgreSQL 已放开到全部模板，三模板均规划方言切换任务；
+    /// mysql 不规划。原「非 ruoyi-vue 不规划」的限制测试随拦截删除同步改写。
     #[test]
-    fn postgresql_not_planned_for_non_vue_template() {
+    fn postgresql_planned_for_all_templates() {
         let dir = tempfile::tempdir().unwrap();
         let template = load_vue_template();
         let mut params = CustomizeParams::default();
         params.db_type = "postgresql".into();
 
-        let ruoyi = dummy_info(dir.path(), "ruoyi");
-        assert!(!should_plan_switch_database_dialect(&ruoyi, &params));
-        let tasks = plan(&ruoyi, &params, &template);
-        assert!(
-            !tasks
-                .iter()
-                .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
-            "ruoyi 模板不应规划 PG 方言任务"
-        );
+        for tpl in ["ruoyi", "ruoyi-cloud", "ruoyi-vue"] {
+            let info = dummy_info(dir.path(), tpl);
+            assert!(
+                should_plan_switch_database_dialect(&info, &params),
+                "{tpl} 应规划 PG 方言任务"
+            );
+            let tasks = plan(&info, &params, &template);
+            assert!(
+                tasks
+                    .iter()
+                    .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
+                "{tpl} 应规划 PG 方言任务"
+            );
+        }
 
-        let cloud = dummy_info(dir.path(), "ruoyi-cloud");
-        assert!(!should_plan_switch_database_dialect(&cloud, &params));
-        let tasks = plan(&cloud, &params, &template);
-        assert!(
-            !tasks
-                .iter()
-                .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
-            "ruoyi-cloud 模板不应规划 PG 方言任务"
-        );
-
+        let mysql_params = CustomizeParams::default();
         let vue = dummy_info(dir.path(), "ruoyi-vue");
-        assert!(should_plan_switch_database_dialect(&vue, &params));
-        let tasks = plan(&vue, &params, &template);
+        assert!(!should_plan_switch_database_dialect(&vue, &mysql_params));
+        let tasks = plan(&vue, &mysql_params, &template);
         assert!(
-            tasks
+            !tasks
                 .iter()
                 .any(|t| t.task_type == TaskType::SwitchDatabaseDialect),
-            "ruoyi-vue 应规划 PG 方言任务"
+            "mysql 不应规划 PG 方言任务"
         );
+    }
+
+    /// 批次 F：Cloud 下 Redis 定制 / upload_path / demoEnabled 任一有写入需求
+    /// 即规划 Nacos 任务（即使配置重构与 SQL 定制都关、MySQL 方言），否则这些
+    /// 参数会静默失效；三参数全默认时规划条件不变（默认零改动 → 不规划）
+    #[test]
+    fn cloud_plans_nacos_when_batch_f_params_engaged() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = load_vue_template();
+        let info = dummy_info(dir.path(), "ruoyi-cloud");
+        let has_nacos = |params: &CustomizeParams| {
+            plan(&info, params, &template)
+                .iter()
+                .any(|t| t.task_type == TaskType::RewriteNacosConfig)
+        };
+
+        // 前置：配置重构 + SQL 定制全关、MySQL、三新参数默认 → 不规划（条件不变）
+        let mut off = CustomizeParams::default();
+        off.enable_config_rewrite = false;
+        off.enable_sql_customize = false;
+        assert!(
+            !has_nacos(&off),
+            "全部写入开关关闭且 MySQL 时不应规划 Nacos 任务"
+        );
+
+        // Redis 定制单独开启 → 规划
+        let mut p = off.clone();
+        p.enable_redis_customize = true;
+        assert!(has_nacos(&p), "enable_redis_customize 开启应规划 Nacos 任务");
+
+        // upload_path 单独填写 → 规划
+        let mut p = off.clone();
+        p.upload_path = "D:/data/upload".into();
+        assert!(has_nacos(&p), "upload_path 非空应规划 Nacos 任务");
+
+        // demoEnabled 单独显式取值（三态）→ 规划
+        let mut p = off.clone();
+        p.demo_enabled = Some(false);
+        assert!(has_nacos(&p), "demo_enabled 显式取值应规划 Nacos 任务");
     }
 
     #[test]
@@ -1377,6 +1452,60 @@ mod tests {
         assert!(
             !tasks.iter().any(|t| t.task_type == TaskType::CompileSmokeCheck),
             "无后端模块（非 Maven 工程形态）不应规划编译冒烟"
+        );
+    }
+
+    /// 前端构建冒烟：开关开且模板含前端目录 → 规划且位于 CompileSmokeCheck 之后、
+    /// 报告/交付文档之前；开关关（默认）→ 不规划；单体模板（无前端模块）不规划
+    #[test]
+    fn frontend_build_smoke_planned_after_compile_smoke_when_template_has_frontend() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = load_vue_template();
+        let mut info = dummy_info(dir.path(), "ruoyi-vue");
+        info.backend_modules = vec!["ruoyi-admin".into()];
+
+        // 默认关：不规划
+        let params = CustomizeParams::default();
+        let tasks = plan(&info, &params, &template);
+        assert!(
+            !tasks.iter().any(|t| t.task_type == TaskType::FrontendBuildSmokeCheck),
+            "默认应不规划前端构建冒烟任务"
+        );
+
+        // 开关开：规划，且位于编译冒烟之后（无编译冒烟时位于残留校验之后）、报告/交付文档之前
+        let mut params = CustomizeParams::default();
+        params.enable_compile_check = true;
+        params.enable_frontend_build_check = true;
+        let tasks = plan(&info, &params, &template);
+        let pos = |tt: TaskType| {
+            tasks
+                .iter()
+                .position(|t| t.task_type == tt)
+                .expect("任务应存在")
+        };
+        let fe_smoke = pos(TaskType::FrontendBuildSmokeCheck);
+        assert!(
+            fe_smoke > pos(TaskType::CompileSmokeCheck),
+            "前端构建冒烟应排在编译冒烟之后"
+        );
+        assert!(
+            fe_smoke > pos(TaskType::ValidateProject),
+            "前端构建冒烟应排在残留校验之后"
+        );
+        assert!(
+            fe_smoke < pos(TaskType::GenerateDeliveryDoc) && fe_smoke < pos(TaskType::GenerateReport),
+            "前端构建冒烟应排在报告与交付文档之前"
+        );
+
+        // 单体模板（frontend_modules 为空，Thymeleaf 内嵌前端）：不规划
+        let mut params_solo = CustomizeParams::default();
+        params_solo.enable_frontend_build_check = true;
+        let mut solo_template = template.clone();
+        solo_template.module.frontend_modules = vec![];
+        let tasks = plan(&info, &params_solo, &solo_template);
+        assert!(
+            !tasks.iter().any(|t| t.task_type == TaskType::FrontendBuildSmokeCheck),
+            "单体模板（无独立前端目录）不应规划前端构建冒烟"
         );
     }
 }

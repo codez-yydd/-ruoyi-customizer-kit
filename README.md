@@ -14,9 +14,9 @@
 - **模块重命名** — 后端模块 + 前端目录统一按前缀替换（如 `ruoyi-admin` → `demo-admin`）
 - **Maven 坐标修改** — groupId / artifactId / modules 依赖引用批量替换
 - **配置文件重构** — 分离版将 `application.yml` + `application-druid.yml` 改为 `application.yaml` + `application-dev.yaml` + `application-prod.yaml` 三件套；Cloud 改写 Nacos `sql/ry_config*.sql`，不生成 application.yaml 三件套
-- **RuoYi-Cloud** — 改写 Nacos 数据源 / Redis / Token、各微服务端口（含 bootstrap.yml）；可裁剪 gen / job / file / monitor；替换 UI 时叠加 cloud-overlay（登录 `/auth/login`、任务 `/schedule/**`、代码生成 `/code/**`、日志 / 在线等）；可新增业务模块短名（仅 Cloud），生成 `{prefix}-modules/{prefix}-{name}` 空骨架（pom / 启动类 / Health / Nacos `*-dev.yml` / 网关路由 / `run-{name}`），不生成 CRUD/SQL/菜单/feign
+- **RuoYi-Cloud** — 改写 Nacos 数据源 / Redis / Token、各微服务端口（含 bootstrap.yml）；Redis 连接、上传物理路径、`demoEnabled`、Nacos 地址与命名空间均可配（默认零改动）；可裁剪 gen / job / file / monitor；替换 UI 时叠加 cloud-overlay（登录 `/auth/login`、任务 `/schedule/**`、代码生成 `/code/**`、日志 / 在线等）；可新增业务模块短名（仅 Cloud），生成 `{prefix}-modules/{prefix}-{name}` 空骨架（pom / 启动类 / Health / Nacos `*-dev.yml` / 网关路由 / `run-{name}`），不生成 CRUD/SQL/菜单/feign
 - **MyBatis-Plus 集成** — 自动添加依赖、生成分页配置类、改造现有 Mapper/Service/ServiceImpl 继承体系、适配代码生成器模板
-- **PostgreSQL 方言** — RuoYi-Vue 可将数据源、驱动、分页、初始化脚本、代码生成器查询切换为 PostgreSQL（单体 / 微服务本期不支持）
+- **PostgreSQL 方言** — 三个模板（RuoYi-Vue / RuoYi 单体 / RuoYi-Cloud）均可切换 PostgreSQL：数据源 driver/url/验证查询、分页方言、初始化脚本、代码生成器查询；Cloud 的 Nacos 配置库（ry-config）与 Seata 库保持 MySQL（见约束区）
 - **Long ID 精度修复** — Long 主键自动添加 `@JsonSerialize(using = ToStringSerializer.class)`
 - **页脚版权与 ICP 备案** — 底部版权栏恒显示，年份自动延续（如 2026 → 2026-2027）；ICP 备案号配置于后端 `application.yaml`（`ruoyi.icp`），备案通过后改配置重启即生效，免登录 `/webInfo` 接口对经典 ruoyi-ui 与 Vben 前端均生效
 - **后台设置页面** — 一级目录「后台设置 → 站点设置」，运行时修改站点标题、后台 Logo、ICP 备案号（存 `sys_config`，保存即时生效）；侧边栏/登录页/浏览器标签页/页脚全站动态应用，经典 ruoyi-ui 与 Vben 前端均支持
@@ -30,13 +30,19 @@
 - **官方源码拉取** — 首页可从 Gitee（git 浅克隆，无需登录）/ GitHub（archive zip）选择 Spring Boot 档与 RuoYi-Vue / RuoYi-Cloud，一键拉取官方后端仓并进入识别
 - **延迟解压** — zip 压缩包在执行时才解压到用户指定的输出目录，不修改原始文件
 - **执行预览** — 改造前展示任务清单、影响范围、高风险项
+- **端口占用预检** — 预览页列出改造产物将占用的端口清单并检测本机占用状态（空闲 / 已占用）；执行前若端口被占用会弹窗确认后再继续。分离版为 admin 端口；Cloud 为网关与各微服务（含新增模块，被裁剪模块不占号）；单体开启配置重构时为后端端口
+- **增强件体检** — 项目识别页一键体检（GUI 入口与 CLI `doctor` 同一套检查逻辑）：逐项输出各增强件依赖的锚点是否齐备（✅ 可用 / ❌ 锚点缺失 / － 不适用），缺失项列明关键锚点与可选锚点
+- **外部服务连通性自检** — 参数配置页可对数据库 / SMTP 邮件 / OSS 三类外部服务做「测试连通」（本机 TCP 层探测，含往返耗时；地址兼容 `host:port` 与 endpoint URL，明确标注不验证账号密码）
 - **残留扫描** — 执行后自动校验旧包名/旧模块名残留
 - **执行报告** — 生成 Markdown 格式改造报告
+- **文件级改造 Diff** — 执行完成后在报告目录生成 `changes.patch`（unified diff，`git apply` 兼容，含新增/修改/删除/二进制变更统计）；zip 来源会重新解压原始压缩包构造改造前基准，目录来源直接以源目录为基准
 - **命令行模式** — 独立二进制 `forge-cli`，配置文件驱动，可无人值守 / CI 集成（不打进 GUI 安装包）
 
 ## RuoYi-Cloud 说明
 
-配置改写走 Nacos SQL，不改 admin 的 application.yaml 三件套。Nacos 地址保持 `127.0.0.1:8848`，Sentinel 端口保持 `8718`，均不改。注册名与 dataId 保持官方 `ruoyi-*`：只改 pom 模块目录前缀，不改 Nacos 服务名。
+配置改写走 Nacos SQL，不改 admin 的 application.yaml 三件套。Nacos 地址默认保持 `127.0.0.1:8848`，可通过 `nacos_server_addr` / `nacos_namespace` 改写各微服务 bootstrap.yml（discovery 与 config 两处）；Sentinel 端口保持 `8718` 不改。注册名与 dataId 保持官方 `ruoyi-*`：只改 pom 模块目录前缀，不改 Nacos 服务名。
+
+PostgreSQL（`db_type=postgresql`）：各服务的 Nacos 数据源条目整体切换（`driver-class-name` → `org.postgresql.Driver`、url → `jdbc:postgresql://host:5432/库?currentSchema=public`、`validationQuery` 去掉 `FROM DUAL`），system / gen / job 三个模块 pom 的 MySQL 驱动逐个替换为 PG 驱动，业务库 `ry_*.sql` 换 PG 资产。官方 Cloud 不显式配置 PageHelper 方言（按 JDBC url 自动探测），url 切换后分页自动跟随 PG。`ry_config`（Nacos 配置库）与 `ry_seata` 脚本保持 MySQL 原样；未开 SQL 定制时仅切方言（host / 库名保持原文，端口按 PG 默认 5432）。
 
 开启替换 UI 时，日志菜单的 component 才会从 `system/operlog`、`system/logininfor` 改为 `monitor/...`，perms 不改。
 
@@ -44,7 +50,7 @@
 
 开发请先启动 Nacos，再双击项目根目录 `run.bat`（或 `run.sh`）勾选服务启动。生产 / 打包 jar 使用 `scripts/start.bat`（需开启「启动脚本」）。
 
-注意：当前不改 docker-compose 与 Nacos 命名空间；Redis 固定写入 localhost:6379 / db1；上传物理路径与 Cloud 的 `demoEnabled` 未做成可配。
+注意：Redis 连接（`enable_redis_customize` + `redis_*`）、上传物理路径（`upload_path`）、Cloud 的 `demoEnabled`（`demo_enabled` 三态）、Nacos 地址与命名空间（`nacos_server_addr` / `nacos_namespace`）均已可配；docker-compose 仍不改。live Nacos 发布凭据（`nacos_username` / `nacos_password`）仅用于工具回填运行中的 Nacos，不写入产物文件。
 
 ## 界面预览
 
@@ -178,7 +184,7 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 
 #### preview
 
-`forge-cli preview --config forge.json [--json]` — 预览改造任务，不写盘。必须使用配置里的 `_source`（该子命令没有 `--source`）。
+`forge-cli preview --config forge.json [--json]` — 预览改造任务，不写盘。必须使用配置里的 `_source`（该子命令没有 `--source`）。参数校验与执行一致（PostgreSQL 已对三个模板开放，预览通过即可执行）。
 
 #### run
 
@@ -188,7 +194,7 @@ forge-cli run --config forge.json [--source <zip或目录>] [--set k=v ...] [--j
 
 - 无 `--source` 时必须用配置里的 `_source`
 - 路径后缀为 `.zip` 时按 zip 处理，否则按目录处理
-- `--json`：进度 NDJSON（`{"type":"log",...}`），最后一行 `{"type":"result",...}`；`result` 会脱敏 JWT secret
+- `--json`：进度 NDJSON（`{"type":"log",...}`），最后一行 `{"type":"result",...}`；进度日志与 `result` 均脱敏 JWT secret 与参数中的敏感密钥（GUI 报告仍保留明文，属既有行为）
 - `--quiet`：只打印最终汇总
 - `--set`：按点路径覆盖 `CustomizeParams` 的 serde 字段名，值按 JSON 解析（bool / 数字 / 字符串）。非法字段或类型错误时退出码 2
 - 环境变量 `FORGE_SET="k=v;k2=v2"` 与 `--set` 同格式，可叠加（`init-config` / `preview` / `run` 均生效）
@@ -203,6 +209,11 @@ forge-cli run --config forge.json [--source <zip或目录>] [--set k=v ...] [--j
 --set ui_template=arco
 --set enable_cloud_custom_ports=true
 --set enable_compile_check=true
+--set enable_frontend_build_check=true
+--set enable_redis_customize=true
+--set upload_path=D:/data/upload
+--set 'demo_enabled=false'
+--set nacos_server_addr=10.0.0.5:8848
 --set 'new_modules=["order","member"]'
 ```
 
@@ -252,7 +263,7 @@ forge-cli pull --edition vue --boot 3 --tag v3.9.2 --dest D:\src\RuoYi-Vue-v3.9.
 
 #### doctor
 
-增强件锚点自检：自动识别项目类型，并对各增强件（短信登录 / 邮件 / 滑块验证码 / 接口 AES / 微信登录 / OSS / MyBatis-Plus / 替换后台 UI 等）依赖的关键锚点（文件 / 类名 / 源码片段）做存在性检查。锚点清单来自各增强件模块的实际查找逻辑（`core/health.rs` 集中定义），GUI 后续可复用同一检查。
+增强件锚点自检：自动识别项目类型，并对各增强件（短信登录 / 邮件 / 滑块验证码 / 接口 AES / 微信登录 / OSS / MyBatis-Plus / 替换后台 UI 等）依赖的关键锚点（文件 / 类名 / 源码片段）做存在性检查。锚点清单来自各增强件模块的实际查找逻辑（`core/health.rs` 集中定义），GUI 项目识别页的「增强件体检」按钮提供同款入口（同一份检查逻辑，弹窗展示逐项结论）。
 
 ```text
 forge-cli doctor --dir <项目目录>
@@ -291,9 +302,10 @@ forge-cli doctor --dir <项目目录>
 | enable_generator_mybatis_plus | boolean | `true` | 代码生成器模板适配 MyBatis-Plus |
 | enable_long_id_json_string | boolean | `true` | Long 主键序列化为字符串，避免前端精度丢失 |
 | enable_snowflake_id | boolean | `false` | 全局雪花 ID：insert 手动 setId，禁用自增 |
-| enable_report | boolean | `true` | 生成 Markdown 改造报告 |
+| enable_report | boolean | `true` | 生成 Markdown 改造报告（同目录附 `changes.patch` 文件级 Diff 补丁） |
 | enable_delivery_doc | boolean | `true` | 生成交付文档 `DELIVERY.md`（项目概览 / 服务与端口 / 数据库与中间件 / 启动指南 / 安全清单） |
 | enable_compile_check | boolean | `false` | 编译冒烟检查：执行阶段对产物跑 `mvn -q -DskipTests compile` 验证可编译性。需本机安装 Maven 与 JDK，未安装自动跳过（任务置 Skipped）；首次运行需联网下载依赖，耗时较长（超时上限 10 分钟） |
+| enable_frontend_build_check | boolean | `false` | 前端构建冒烟检查：执行阶段对产物前端目录跑包管理器 `install + run build` 验证可构建性。需本机安装 Node.js（替换 UI 为 vben 模板时需 pnpm，未装自动跳过）；首次运行需联网下载依赖，耗时较长（install 与 build 各 15 分钟超时） |
 | enable_clear_home | boolean | `true` | 清空若依前端首页为空白页 |
 | enable_remove_github | boolean | `true` | 移除顶部栏 GitHub / Gitee 外链 |
 | enable_remove_docs | boolean | `true` | 移除顶部栏文档外链 |
@@ -332,10 +344,21 @@ forge-cli doctor --dir <项目目录>
 | cloud_port_job | number | `0` | Cloud job 端口；`0` = 自动递增 |
 | cloud_port_file | number | `0` | Cloud file 端口；`0` = 自动递增 |
 | cloud_port_monitor | number | `0` | Cloud monitor 端口；`0` = 自动递增 |
-| db_type | string | `mysql` | 数据库类型，仅 `mysql` 或 `postgresql`；`postgresql` 仅 ruoyi-vue |
+| db_type | string | `mysql` | 数据库类型，仅 `mysql` 或 `postgresql`；三个模板均支持 PG（数据源 / 驱动 / 分页方言 / 初始化脚本 / 生成器查询整体切换） |
 | admin_username | string | `""` | 管理员登录账号；空则保持 `admin`（仅改 `user_id=1` 种子行） |
 | admin_nickname | string | `""` | 管理员昵称；空则保持 `若依` |
 | clean_quartz | boolean | `false` | 清除 quartz 定时任务相关表和数据 |
+| enable_redis_customize | boolean | `false` | 是否定制 Redis 连接。关闭时 redis_* 字段不生效（各产物 Redis 配置保持现状）；开启后 Cloud 写入 Nacos 配置条目（需开启配置重构或 SQL 定制），分离版 / 单体写入 application-dev/prod.yaml（需开启重构配置文件） |
+| redis_host | string | `127.0.0.1` | Redis 地址；仅 `enable_redis_customize=true` 时写入 |
+| redis_port | number | `6379` | Redis 端口（1-65535）；仅 Redis 定制开启时写入 |
+| redis_database | number | `1` | Redis 数据库索引（0-15）；仅 Redis 定制开启时写入 |
+| redis_password | string | `""` | Redis 密码，可空（空 = 无密码连接）；报告、CLI 输出与 DELIVERY.md 脱敏。建议避免反斜杠（见约束区） |
+| upload_path | string | `""` | 上传物理路径；空 = 不改。非空须为绝对路径（Windows 盘符或 `/` 开头），反斜杠自动转正斜杠。分离版 / 单体写入 `ruoyi.profile`（需开启重构配置文件）；Cloud 写入 Nacos 的 `ruoyi.profile` 与 file 服务 `file.path` |
+| demo_enabled | boolean/null | `null` | Cloud `ruoyi.demoEnabled` 三态：`null` = 不改；`true` / `false` 写入 Nacos 配置 |
+| nacos_server_addr | string | `""` | Cloud 各微服务 bootstrap.yml 的 Nacos `server-addr`；空 = 保持官方 `127.0.0.1:8848`。docker-compose 不改 |
+| nacos_namespace | string | `""` | Cloud Nacos 命名空间 ID；空 = 不改。非空写入 bootstrap.yml 的 discovery 与 config `namespace`（官方无此字段，非空才新增），并作为 live 发布的 tenant |
+| nacos_username | string | `""` | live Nacos 发布登录用户名；空 = 回退官方 `nacos`。仅用于工具回填运行中的 Nacos，不写入产物文件 |
+| nacos_password | string | `""` | live Nacos 发布登录密码；空 = 回退官方 `nacos`。不写入产物文件；报告、CLI 输出与 DELIVERY.md 脱敏 |
 | enable_frontend_split | boolean | `false` | 前后端分离：前端目录拆出根目录，与后端平级 |
 | enable_ai_rules | boolean | `true` | 生成 AI 规范文件（`AGENTS.md` + `CLAUDE.md`） |
 | enable_sub_agents | boolean | `false` | 向 `AGENTS.md` 注入子智能体协作说明 |
@@ -389,10 +412,15 @@ forge-cli doctor --dir <项目目录>
 约束：
 
 - 旧 JSON 无 `db_type` 时按 `mysql`
-- `ruoyi` / `ruoyi-cloud` 不能使用 `postgresql`
-- PostgreSQL 初始化脚本不含建库语句，需用户自行建库
+- PostgreSQL 初始化脚本不含建库语句，需用户自行建库（`createdb` 后再导入 `sql/ry.sql`）
+- Cloud + PostgreSQL：Nacos 配置库（`ry-config`，Nacos Server 自身数据源）与 `ry_seata` 脚本保持 MySQL，不随业务库切换；Seata / Nacos Server 仍需 MySQL 实例
+- PG 初始化脚本由官方 MySQL 版 `ry_*.sql` 按锻造台方言规则转换（int8/int4/char 标志列、identity 主键、comment 外移、索引重建、setval 序列推进），Cloud 保留 Sentinel / Nacos 控制台菜单种子，单体保留 `sys_user_online`（Shiro 在线用户表）；生成器 mapper 的 `selectGenTableList` 日期筛选右侧 `date_format(#{...})` 为分离版既有遗留，PG 下该筛选不可用（列表无日期条件时不受影响）
 - Cloud 保持官方 `ruoyi-*` dataId / 注册名
-- Nacos `8848`、Sentinel `8718` 不改
+- Nacos `8848` 默认不改；`nacos_server_addr` 非空时改写各服务 bootstrap.yml（docker-compose 不动）；Sentinel `8718` 不改
+- Redis 定制 / 上传路径 / demoEnabled / Nacos 地址与命名空间均遵循「默认值零改动」：开关关闭或字段留空时产物与不填完全一致
+- live Nacos 发布凭据（`nacos_username` / `nacos_password`）仅用于工具向运行中的 Nacos 回填配置，不写入任何产物文件
+- 分离版 / 单体的 `upload_path` 与 Redis 定制依赖「重构配置文件」任务；Cloud 依赖 Nacos 任务（配置重构或 SQL 定制任一开启）
+- ry_config SQL 的转义格式对反斜杠不无损：`redis_password`（与既有 `db_password` 同理）含反斜杠时建议改用其它字符，`upload_path` 已自动转正斜杠规避
 - `remove_modules` 仅允许 `gen` / `job` / `file` / `monitor`，非法值拒绝
 - `new_modules` 仅 Cloud；短名须 `^[a-z][a-z0-9-]*$`；不可与 `remove_modules` 或现有模块短名冲突
 - 增强件开关默认全关；关则零改动
@@ -406,7 +434,7 @@ forge-cli doctor --dir <项目目录>
 - 开启 `enable_mail` 时 `mail_host` / `mail_username` / `mail_password` 必填；`mail_port` 范围 1–65535
 - 开启邮件时请把 `sys_user.email` 当登录标识维护，同一邮箱绑定多个未删除账号会被拒绝登录
 - SMTP 授权码会写入产物配置（分离版 yaml / Cloud 的 `sql/ry_config_*.sql` Nacos 条目），勿把产物密钥提交到公开仓库
-- 不做 SMTP 连通性测试，配置正确性靠人工冒烟
+- 增强件本身不发测试邮件、不验证 SMTP 账号/授权码；参数配置页提供的是 TCP 层连通性探测（不验证凭据），发信正确性仍需人工冒烟
 
 ## 打包构建
 

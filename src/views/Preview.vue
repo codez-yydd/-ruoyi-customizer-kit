@@ -1,12 +1,12 @@
 <script setup lang="ts">
-// 执行预览页：展示任务清单、影响范围统计、高风险项，确认后才执行。
+// 执行预览页：展示任务清单、影响范围统计、高风险项、端口占用检查，确认后才执行。
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
 import * as api from '@/api'
 import { View } from '@element-plus/icons-vue'
-import type { PreviewResponse } from '@/types'
+import type { PortBusyStatus, PortInfo, PreviewResponse } from '@/types'
 
 const router = useRouter()
 const store = useProjectStore()
@@ -14,6 +14,11 @@ const { projectInfo, params, sourceType, outputDir } = storeToRefs(store)
 
 const loading = ref(false)
 const preview = ref<PreviewResponse | null>(null)
+
+// ===== 端口占用检查（本页会话级状态，不持久化） =====
+/** 各端口最近一次探测结果（空 = 未检测） */
+const portStatuses = ref<PortBusyStatus[]>([])
+const portChecking = ref(false)
 
 const riskTag = (level: string) => {
   if (level === 'High') return 'danger'
@@ -27,6 +32,40 @@ const riskLabel = (level: string) => {
   return '低'
 }
 
+/** 预览产物将占用的端口清单（旧后端/旧持久化数据无 ports 字段时为空，跳过检测） */
+const previewPorts = ref<PortInfo[]>([])
+
+/** 单端口探测状态：绿「空闲」/红「已占用」/灰「未检测」 */
+function portStatusOf(port: number): PortBusyStatus | undefined {
+  return portStatuses.value.find((s) => s.port === port)
+}
+
+const portTagType = (port: number) => {
+  const s = portStatusOf(port)
+  if (!s) return 'info'
+  return s.busy ? 'danger' : 'success'
+}
+
+const portTagLabel = (port: number) => {
+  const s = portStatusOf(port)
+  if (!s) return '未检测'
+  return s.busy ? '已占用' : '空闲'
+}
+
+/** 探测端口占用（预览成功进入本页时自动执行一次，可手动重测） */
+async function checkPorts() {
+  if (!previewPorts.value.length || portChecking.value) return
+  portChecking.value = true
+  try {
+    portStatuses.value = await api.checkPortsBusy(previewPorts.value.map((p) => p.port))
+  } catch (e) {
+    store.log(`端口占用检测失败：${e}`, 'WARN')
+    portStatuses.value = []
+  } finally {
+    portChecking.value = false
+  }
+}
+
 onMounted(async () => {
   if (!projectInfo.value || !params.value) {
     router.push({ name: 'home' })
@@ -38,6 +77,11 @@ onMounted(async () => {
     preview.value = resp
     store.setPreview(resp)
     store.log(resp.message, resp.success ? 'SUCCESS' : 'WARN')
+    // 预览成功且有端口清单：自动探测一次占用状态
+    previewPorts.value = resp.ports ?? []
+    if (resp.success && previewPorts.value.length) {
+      await checkPorts()
+    }
   } catch (e) {
     store.log(`预览失败：${e}`, 'ERROR')
   } finally {
@@ -108,6 +152,24 @@ function goExecute() {
           <ul>
             <li v-for="r in preview.summary.high_risk_items" :key="r">{{ r }}</li>
           </ul>
+        </div>
+      </div>
+
+      <!-- 端口占用检查：预览成功且有端口清单时展示 -->
+      <div v-if="preview?.success && previewPorts.length" class="rf-card">
+        <div class="ports-head">
+          <h3 class="section-title">端口占用检查</h3>
+          <el-button size="small" :loading="portChecking" @click="checkPorts">重新检测</el-button>
+        </div>
+        <div class="ports">
+          <div v-for="p in previewPorts" :key="`${p.label}-${p.port}`" class="port-chip">
+            <span class="port-chip__label">{{ p.label }}</span>
+            <code class="port-chip__port">{{ p.port }}</code>
+            <el-tag :type="portTagType(p.port)" size="small">{{ portTagLabel(p.port) }}</el-tag>
+          </div>
+        </div>
+        <div class="muted ports-hint">
+          以上为改造产物启动时将占用的端口；执行前会再次检测，被占用时将弹窗确认
         </div>
       </div>
 
@@ -214,6 +276,44 @@ function goExecute() {
   font-size: 13px;
   color: #f56c6c;
   line-height: 1.8;
+}
+.ports-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ports-head .section-title {
+  margin-bottom: 0;
+}
+.ports {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+.port-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #f5f7fa;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.port-chip__label {
+  color: #606266;
+}
+.port-chip__port {
+  background: #e9edf2;
+  padding: 1px 8px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.ports-hint {
+  margin-top: 10px;
+  font-size: 12.5px;
 }
 .actions {
   display: flex;

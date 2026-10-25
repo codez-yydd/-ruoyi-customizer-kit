@@ -81,13 +81,17 @@ pub struct ReplaceUiResult {
 /// - `template_dir`：模板目录（templates/ruoyi-vue/ui/{ui_template}）
 /// - `output_dir`：用户选择的最终输出目录
 /// - `params`：改造参数（取 new_module_prefix / server_port / server_name 等）
+/// - `boot_major`：识别到的 Spring Boot 大版本（来自 ProjectInfo.spring_boot_major，
+///   决定 {{BACKEND_STACK}} 文案；None 时回退 3，保持既有默认）
 /// - `log`：日志回调
+#[allow(clippy::too_many_arguments)]
 pub fn generate_ui_project(
     template_dir: &Path,
     output_dir: &Path,
     params: &CustomizeParams,
     overlay: Option<&Path>,
     is_cloud: bool,
+    boot_major: Option<u32>,
     log: &dyn Fn(&str),
 ) -> Result<ReplaceUiResult, String> {
     if !template_dir.is_dir() {
@@ -123,7 +127,7 @@ pub fn generate_ui_project(
     }
 
     // 构建占位符映射
-    let placeholders = build_placeholders(params, is_cloud);
+    let placeholders = build_placeholders(params, is_cloud, boot_major);
 
     // 递归复制模板目录
     let mut files_created = 0usize;
@@ -178,8 +182,13 @@ pub fn generate_ui_project(
 /// - {{API_BASE_URL_PROD}}：生产环境后端绝对地址（小程序等场景）
 /// - {{COPYRIGHT}} / {{COPYRIGHT_YEAR}} / {{COPYRIGHT_HOLDER}}：版权
 /// - {{SERVER_PORT}}：后端端口
-/// - {{BACKEND_STACK}}：首页「后端框架」文案（Cloud / Vue 不同）
-fn build_placeholders(params: &CustomizeParams, is_cloud: bool) -> HashMap<String, String> {
+/// - {{BACKEND_STACK}}：首页「后端框架」文案（Cloud / Vue 与 Boot 大版本共同决定；
+///   官方源码支持 Boot 2/3/4 档位，按识别结果生成，不再写死 Boot 3）
+fn build_placeholders(
+    params: &CustomizeParams,
+    is_cloud: bool,
+    boot_major: Option<u32>,
+) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let year = if params.copyright_year.is_empty() {
         chrono::Local::now().format("%Y").to_string()
@@ -208,13 +217,17 @@ fn build_placeholders(params: &CustomizeParams, is_cloud: bool) -> HashMap<Strin
     map.insert("{{COPYRIGHT_HOLDER}}".into(), holder.clone());
     map.insert("{{COPYRIGHT}}".into(), format!("{} {}", year, holder));
     map.insert("{{SERVER_PORT}}".into(), params.server_port.to_string());
+    // 按识别到的 Spring Boot 大版本动态生成（A5）：Boot 2/3/4 档位与用户拉取的
+    // 官方源码一致；未识别（None）回退 3，保持既有行为
+    let boot = boot_major.unwrap_or(3);
+    let edition = if is_cloud {
+        "RuoYi-Cloud"
+    } else {
+        "RuoYi-Vue"
+    };
     map.insert(
         "{{BACKEND_STACK}}".into(),
-        if is_cloud {
-            "RuoYi-Cloud（Spring Boot 3）".into()
-        } else {
-            "RuoYi-Vue（Spring Boot 3）".into()
-        },
+        format!("{edition}（Spring Boot {boot}）"),
     );
     map
 }
@@ -326,7 +339,7 @@ mod tests {
 
     #[test]
     fn placeholders_include_title_port_copyright() {
-        let map = build_placeholders(&base_params(), false);
+        let map = build_placeholders(&base_params(), false, Some(3));
         assert_eq!(map.get("{{FRONTEND_TITLE}}").map(String::as_str), Some("演示系统"));
         assert_eq!(
             map.get("{{API_BASE_URL_DEV}}").map(String::as_str),
@@ -342,10 +355,41 @@ mod tests {
             map.get("{{BACKEND_STACK}}").map(String::as_str),
             Some("RuoYi-Vue（Spring Boot 3）")
         );
-        let cloud_map = build_placeholders(&base_params(), true);
+        let cloud_map = build_placeholders(&base_params(), true, Some(3));
         assert_eq!(
             cloud_map.get("{{BACKEND_STACK}}").map(String::as_str),
             Some("RuoYi-Cloud（Spring Boot 3）")
+        );
+    }
+
+    /// A5 回归：{{BACKEND_STACK}} 按识别到的 Boot 大版本生成（2/3/4），
+    /// 不再写死 Spring Boot 3；未识别（None）回退 3 保持既有行为
+    #[test]
+    fn backend_stack_follows_detected_boot_major() {
+        for (boot, expect_vue, expect_cloud) in [
+            (2u32, "RuoYi-Vue（Spring Boot 2）", "RuoYi-Cloud（Spring Boot 2）"),
+            (3, "RuoYi-Vue（Spring Boot 3）", "RuoYi-Cloud（Spring Boot 3）"),
+            (4, "RuoYi-Vue（Spring Boot 4）", "RuoYi-Cloud（Spring Boot 4）"),
+        ] {
+            assert_eq!(
+                build_placeholders(&base_params(), false, Some(boot))
+                    .get("{{BACKEND_STACK}}")
+                    .map(String::as_str),
+                Some(expect_vue)
+            );
+            assert_eq!(
+                build_placeholders(&base_params(), true, Some(boot))
+                    .get("{{BACKEND_STACK}}")
+                    .map(String::as_str),
+                Some(expect_cloud)
+            );
+        }
+        // 未识别到 Boot 大版本：回退 3（与旧版写死行为一致）
+        assert_eq!(
+            build_placeholders(&base_params(), false, None)
+                .get("{{BACKEND_STACK}}")
+                .map(String::as_str),
+            Some("RuoYi-Vue（Spring Boot 3）")
         );
     }
 
@@ -372,7 +416,9 @@ mod tests {
 
         let params = base_params();
         let log = |_m: &str| {};
-        let result = generate_ui_project(&template, tmp.path(), &params, None, false, &log).unwrap();
+        let result =
+            generate_ui_project(&template, tmp.path(), &params, None, false, Some(3), &log)
+                .unwrap();
         assert!(result.output_dir.exists());
         assert!(!result.output_dir.join("old.txt").exists());
         let env = fs::read_to_string(result.output_dir.join("apps/web-ele/.env")).unwrap();

@@ -78,6 +78,13 @@ export const useProjectStore = defineStore('project', () => {
   const sourceVersionInfo = ref<SourceVersionInfo | null>(
     persisted?.sourceVersionInfo ?? null
   )
+  /**
+   * 改造是否正在后台执行（会话级，不持久化）。
+   * Execute.vue 的 run() 开始时置位、finally 清除；执行期间从侧边栏离开再返回
+   * 执行页时不重复触发改造，仅恢复进度监听。刷新窗口会丢失该内存状态，
+   * 由后端 run_transform 的进程内在途互斥兜底（重复触发立即报错，不会并发改造）。
+   */
+  const executing = ref(false)
 
   // 状态变化时写回 localStorage；resetFlow 清空状态也会同步清空持久化。
   // 静默失败：localStorage 不可用（满/禁用）不阻断主流程。
@@ -202,6 +209,11 @@ export const useProjectStore = defineStore('project', () => {
     sourceVersionInfo.value = v
   }
 
+  /** 设置改造执行中标记（run() 开始置位、finally 清除） */
+  function setExecuting(v: boolean) {
+    executing.value = v
+  }
+
   return {
     rootPath,
     projectInfo,
@@ -215,6 +227,7 @@ export const useProjectStore = defineStore('project', () => {
     extractRoot,
     outputDir,
     sourceVersionInfo,
+    executing,
     log,
     clearLogs,
     setRootPath,
@@ -227,6 +240,7 @@ export const useProjectStore = defineStore('project', () => {
     setZipPath,
     setExtractRoot,
     setOutputDir,
-    setSourceVersionInfo
+    setSourceVersionInfo,
+    setExecuting
   }
 })

@@ -996,6 +996,7 @@ fn yaml_has_spring_direct_redis(content: &str) -> bool {
 }
 
 /// PostgreSQL 改造后校验：yaml url/driver、MP 分页方言为失败级；pom 仍含 MySQL 驱动为警告级。
+/// Cloud 布局额外检查 ry_config SQL 的数据源方言（Cloud 无 application 三件套）。
 fn validate_postgresql(
     root: &Path,
     params: &crate::core::CustomizeParams,
@@ -1003,6 +1004,7 @@ fn validate_postgresql(
     scan: &crate::core::scanner::ScanResult,
 ) -> Vec<CheckItem> {
     let mut items = Vec::new();
+    let is_cloud = crate::core::detector::is_cloud_layout(root);
     if let Some(res) = find_resources_dir(root, template) {
         for f in ["application-dev.yaml", "application-prod.yaml"] {
             let p = res.join(f);
@@ -1029,6 +1031,42 @@ fn validate_postgresql(
                 } else {
                     "未找到 org.postgresql.Driver".into()
                 },
+            });
+        }
+    }
+
+    // Cloud：数据源落点在 ry_config SQL 的 Nacos 配置条目，检查业务库连接与驱动均已切换
+    if is_cloud {
+        if let Some(cfg_sql) = crate::core::detector::find_ry_config_sql(root) {
+            let content = read_text_plain(&cfg_sql).unwrap_or_default();
+            let url_ok = content.contains("jdbc:postgresql://");
+            items.push(CheckItem {
+                item: "PostgreSQL 数据源 url（Nacos ry_config）".into(),
+                result: if url_ok { CheckResult::Pass } else { CheckResult::Fail },
+                message: if url_ok {
+                    "Nacos 配置条目业务库 url 已切换 jdbc:postgresql".into()
+                } else {
+                    "ry_config SQL 中未找到 jdbc:postgresql 业务库连接".into()
+                },
+            });
+            let driver_ok = content.contains("org.postgresql.Driver");
+            items.push(CheckItem {
+                item: "PostgreSQL 驱动（Nacos ry_config）".into(),
+                result: if driver_ok { CheckResult::Pass } else { CheckResult::Fail },
+                message: if driver_ok {
+                    "Nacos 配置条目 driver-class-name 为 org.postgresql.Driver".into()
+                } else {
+                    "ry_config SQL 中未找到 org.postgresql.Driver".into()
+                },
+            });
+            // 约束说明：Nacos 配置库（ry-config）自身保持 MySQL，不属于校验失败项
+            items.push(CheckItem {
+                item: "Nacos 配置库保持 MySQL（预期行为）".into(),
+                result: CheckResult::Pass,
+                message: format!(
+                    "ry-config / ry_seata 脚本保持 MySQL（Nacos Server 与 Seata Server 自身数据源不随业务库切换）：{}",
+                    cfg_sql.display()
+                ),
             });
         }
     }

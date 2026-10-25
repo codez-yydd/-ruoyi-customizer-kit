@@ -135,7 +135,7 @@ where
         TaskType::CreateWechatCertDir => do_create_wechat_cert_dir(root, params, info, &mut r, log),
         TaskType::SetupOss => do_setup_oss(root, params, info, &mut r, log),
         TaskType::ApplySecurityHardening => do_apply_security(root, params, &mut r, log),
-        TaskType::SwitchDatabaseDialect => do_switch_db_dialect(root, params, &mut r, log),
+        TaskType::SwitchDatabaseDialect => do_switch_db_dialect(root, info, params, &mut r, log),
         TaskType::CustomizeSqlScripts => do_customize_sql(root, params, &mut r, log),
         TaskType::RenameAdminAccount => do_rename_admin_account(root, params, &mut r, log),
         TaskType::CustomizeWebFooter => do_customize_web_footer(root, params, &mut r, log),
@@ -159,6 +159,9 @@ where
         TaskType::SetupCaptchaSlider => do_setup_captcha_slider(root, params, info, &mut r, log),
         TaskType::SetupApiEncrypt => do_setup_api_encrypt(root, params, info, &mut r, log),
         TaskType::CompileSmokeCheck => do_compile_smoke_check(root, &mut r, log),
+        TaskType::FrontendBuildSmokeCheck => {
+            do_frontend_build_smoke_check(root, params, &mut r, log)
+        }
         TaskType::ValidateProject | TaskType::GenerateReport | TaskType::GenerateDeliveryDoc => {
             r.status = TaskStatus::Skipped;
             r.message = "校验/报告/交付文档在执行后单独触发".into();
@@ -1135,6 +1138,9 @@ where
         params,
         overlay.as_deref(),
         crate::core::detector::is_cloud_project(root, &info.template_dir),
+        // Boot 大版本由识别结果传递（A5）：{{BACKEND_STACK}} 文案据此生成，
+        // 不在 replace_ui 内重新扫描 pom，避免文件重扫
+        info.spring_boot_major,
         &|msg| log(msg),
     )?;
     r.created_files = result.files_created;
@@ -1271,12 +1277,19 @@ where
     Ok(())
 }
 
-/// 12g-2. 数据库方言切换：pom 驱动、PG 脚本资产、代码生成器 mapper
-fn do_switch_db_dialect<F>(root: &Path, params: &CustomizeParams, r: &mut TaskResult, log: &F) -> Result<(), String>
+/// 12g-2. 数据库方言切换：pom 驱动、PG 脚本资产（按模板取）、代码生成器 mapper、PageHelper 方言
+fn do_switch_db_dialect<F>(
+    root: &Path,
+    info: &crate::core::ProjectInfo,
+    params: &CustomizeParams,
+    r: &mut TaskResult,
+    log: &F,
+) -> Result<(), String>
 where
     F: Fn(&str),
 {
-    let outcome = crate::core::db_dialect::switch(root, params, &|msg| log(msg))?;
+    let outcome =
+        crate::core::db_dialect::switch(root, &info.template_dir, params, &|msg| log(msg))?;
     r.modified_files = outcome.modified_files;
     r.created_files = outcome.created_files;
     if !outcome.summary.is_empty() {
@@ -1837,6 +1850,48 @@ where
         }
         crate::core::compile_smoke::SmokeStatus::Failed => {
             log(&format!("编译冒烟失败：{}", outcome.message));
+            if outcome.detail.is_empty() {
+                Err(outcome.message)
+            } else {
+                Err(format!("{}\n{}", outcome.message, outcome.detail))
+            }
+        }
+    }
+}
+
+/// 13c. 前端构建冒烟检查（可选）：定位产物前端目录并执行包管理器 install + run build。
+/// 未找到前端目录 / 缺 build 脚本 / 未检测到 Node.js 或包管理器 → 显式置 Skipped
+///（沿用编译冒烟语义：handler 显式 Skipped 不被外层覆盖）；
+/// 失败/超时 → Err（外层置 Failed，与编译冒烟一同计入 failed_count）；
+/// 成功 → 保持 Pending 由外层置 Success，message 含耗时。
+/// 日志输出一行摘要；失败输出尾部只进任务 message，避免刷爆日志流。
+fn do_frontend_build_smoke_check<F>(
+    root: &Path,
+    params: &CustomizeParams,
+    r: &mut TaskResult,
+    log: &F,
+) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    log("前端构建冒烟：定位前端工程并探测 Node.js / 包管理器，执行 install + run build ...");
+    let probe = crate::core::frontend_smoke::FrontendEnvProbe::from_env();
+    let outcome =
+        crate::core::frontend_smoke::run_frontend_smoke(root, &params.new_module_prefix, &probe);
+    match outcome.status {
+        crate::core::compile_smoke::SmokeStatus::Skipped => {
+            r.status = TaskStatus::Skipped;
+            r.message = outcome.message.clone();
+            log(&outcome.message);
+            Ok(())
+        }
+        crate::core::compile_smoke::SmokeStatus::Success => {
+            r.message = outcome.message.clone();
+            log(&format!("前端构建冒烟通过：{}", outcome.message));
+            Ok(())
+        }
+        crate::core::compile_smoke::SmokeStatus::Failed => {
+            log(&format!("前端构建冒烟失败：{}", outcome.message));
             if outcome.detail.is_empty() {
                 Err(outcome.message)
             } else {

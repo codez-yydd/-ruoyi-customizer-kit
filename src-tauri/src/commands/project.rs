@@ -217,6 +217,21 @@ fn make_extract_dest() -> PathBuf {
     std::env::temp_dir().join(dir_name)
 }
 
+/// 解压 zip 到指定目标目录；失败时清理已创建（可能已部分解压）的目标目录。
+/// A3：解压失败时前端拿不到目标路径无法清理，残留会随失败次数累积，
+/// 必须由后端在返回前自行清理；清理自身的失败不得掩盖原始错误，仅忽略。
+/// 独立成函数并接受注入的目标路径，便于单测（避免依赖全局临时目录计数）。
+fn extract_zip_cleaning(
+    zip: &Path,
+    dest: &Path,
+) -> Result<(), crate::utils::archive::ExtractError> {
+    let result = crate::utils::archive::extract_zip(zip, dest);
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(dest);
+    }
+    result
+}
+
 /// 解压 zip 压缩包并定位真正的项目根目录。
 ///
 /// 行为：
@@ -254,7 +269,7 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
 
     // 解压到系统临时目录下的唯一子目录
     let dest = make_extract_dest();
-    if let Err(e) = crate::utils::archive::extract_zip(&zip, &dest) {
+    if let Err(e) = extract_zip_cleaning(&zip, &dest) {
         return ExtractResponse {
             success: false,
             message: format!("解压失败：{e}"),
@@ -340,6 +355,34 @@ pub fn cleanup_temp_file(path: String) -> CleanupResponse {
     }
 }
 
+/// 增强件体检命令：对项目目录做「识别 + 各增强件锚点存在性检查」。
+/// 与 CLI `forge-cli doctor` 同语义：识别失败是错误（success=false + message）；
+/// 锚点缺失不是错误（success=true，逐项体现在 items 的 status 里）。
+/// 计算层在 core::health（CLI doctor 消费同一份 check_anchor_health）。
+// async 标记：识别 + 锚点扫描需遍历项目树读取大量文件，与 detect_project 一致
+#[tauri::command(async)]
+pub fn run_health_check(root_path: String) -> crate::core::health::HealthCheckReport {
+    use crate::core::health::HealthCheckReport;
+
+    let fail = |message: String| HealthCheckReport {
+        success: false,
+        message,
+        project_type: String::new(),
+        items: vec![],
+    };
+
+    let root = PathBuf::from(&root_path);
+    if !root.is_dir() {
+        return fail(format!("项目目录不存在或不是目录：{root_path}"));
+    }
+    let resp = detect_auto(&root, None);
+    if !resp.success {
+        return fail(resp.message);
+    }
+    let project = resp.project.expect("识别成功时 project 必有值");
+    crate::core::health::build_health_check_report(&root, &project)
+}
+
 /// 模板识别优先级表：越靠前越严格（先尝试），避免宽松模板抢先命中。
 /// ruoyi-vue 要求 ruoyi-ui（最严格）→ ruoyi 单体（5 个后端 pom）→ ruoyi-cloud（gateway）。
 /// 未列出的模板按字母序排在末尾。
@@ -381,6 +424,70 @@ mod tests {
         let mut single = vec!["ruoyi-cloud".into()];
         sort_templates_by_specificity(&mut single);
         assert_eq!(single, vec!["ruoyi-cloud"]);
+    }
+
+    /// A3 回归：损坏 zip 解压失败后，目标临时目录必须被清理
+    ///（失败路径前端拿不到路径无法清理，必须由后端在返回前自行清理）。
+    /// 直接驱动 extract_zip_cleaning（extract_zip_project 的解压核心，目标路径可注入），
+    /// 不依赖系统临时目录的全局计数，避免与并行测试互扰。
+    #[test]
+    fn extract_zip_failure_cleans_dest_dir() {
+        let src = tempfile::tempdir().unwrap();
+        let bad_zip = src.path().join("broken.zip");
+        std::fs::write(&bad_zip, b"this is definitely not a zip archive").unwrap();
+        let dest = src.path().join("ruoyi-forge-extract-test-dest");
+
+        let err = extract_zip_cleaning(&bad_zip, &dest).expect_err("损坏 zip 应解压失败");
+        assert!(!dest.exists(), "解压失败后目标目录应被清理而非残留");
+
+        // 命令层行为：失败响应不返回临时目录路径
+        let resp = extract_zip_project(bad_zip.to_string_lossy().to_string());
+        assert!(!resp.success, "损坏 zip 应解压失败");
+        assert!(resp.message.contains("解压失败"), "{}", resp.message);
+        assert_eq!(resp.extract_root, "", "失败时不应返回临时目录路径");
+    }
+
+    /// 增强件体检命令：目录不存在 → success=false；非若依目录 → 识别失败（success=false）；
+    /// 可识别骨架 → success=true 且 items 非空（锚点缺失不阻断）
+    #[test]
+    fn health_check_command_semantics() {
+        let missing = run_health_check("Z:/definitely/not/exist".into());
+        assert!(!missing.success);
+        assert!(missing.message.contains("不存在"), "{}", missing.message);
+        assert!(missing.items.is_empty());
+
+        let plain = tempfile::tempdir().unwrap();
+        std::fs::write(plain.path().join("readme.txt"), "not a project").unwrap();
+        let resp = run_health_check(plain.path().to_string_lossy().to_string());
+        assert!(!resp.success, "非若依目录应识别失败");
+        assert!(resp.items.is_empty());
+
+        // 最小可识别分离版骨架（与 CLI doctor 测试同构）
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let write = |rel: &str, content: &str| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        };
+        write(
+            "pom.xml",
+            "<project><groupId>com.ruoyi</groupId><artifactId>ruoyi</artifactId></project>",
+        );
+        for m in ["admin", "common", "framework", "system"] {
+            write(&format!("ruoyi-{m}/pom.xml"), "<project/>");
+        }
+        write(
+            "ruoyi-framework/src/main/java/com/ruoyi/web/service/SysLoginService.java",
+            "public class SysLoginService {}",
+        );
+        write("ruoyi-ui/package.json", "{\"name\":\"ruoyi\"}");
+
+        let ok = run_health_check(root.to_string_lossy().to_string());
+        assert!(ok.success, "识别成功即 success（锚点缺失不是错误）：{}", ok.message);
+        assert!(!ok.project_type.is_empty());
+        assert_eq!(ok.items.len(), 9, "分离版九项功能");
+        assert!(ok.items.iter().all(|i| !i.key.is_empty()));
     }
 }
 

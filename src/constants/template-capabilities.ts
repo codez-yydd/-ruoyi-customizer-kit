@@ -36,7 +36,9 @@ export const TEMPLATE_META: Record<string, TemplateMeta> = {
 /**
  * 各模板「不支持」的功能开关字段。
  * 单体版（ruoyi）无独立 ruoyi-ui 前端目录、用 Shiro 认证、Thymeleaf 内嵌前端，
- * 故前端品牌化、前后端分离、UniApp 小程序、Nginx 反代等依赖独立前端目录的功能均不适用。
+ * 故前端品牌化、前后端分离、UniApp 小程序、Nginx 反代、前端构建冒烟等
+ * 依赖独立前端工程的功能均不适用（前端构建冒烟仅对含前端目录的模板规划，
+ * 与 planner 的 has_frontend 口径一致）。
  */
 export const DISABLED_FEATURES: Record<string, (keyof CustomizeParams)[]> = {
   'ruoyi-vue': [
@@ -56,12 +58,10 @@ export const DISABLED_FEATURES: Record<string, (keyof CustomizeParams)[]> = {
     'enable_api_encrypt',
     'enable_nginx_config', // Nginx 反代（单体版通常内嵌 Tomcat 单体运行）
     'enable_replace_ui', // 替换后台 UI（单体版无独立前端目录，不适用）
-    'db_type', // PostgreSQL 方言仅对 ruoyi-vue 开放
+    'enable_frontend_build_check', // 前端构建冒烟（单体版无前端工程，规划器不会规划该任务）
     'new_modules' // 单体 Thymeleaf 结构不适用业务模块生成器
-  ],
-  'ruoyi-cloud': [
-    'db_type' // 微服务版本期不做方言支持
   ]
+  // ruoyi-cloud：无禁用项。db_type（PostgreSQL）批次 G 起对三个模板全部开放
 }
 
 /** 默认元信息（未知模板目录时回退） */

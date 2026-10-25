@@ -37,6 +37,8 @@ bcrypt = "0.15"
 rand = "0.8"
 # 文本编码检测与 GBK 转码（非 UTF-8 项目文件参与改造）
 encoding_rs = "0.8"
+# 文件级改造 Diff：unified diff 补丁生成（changes.patch）
+similar = "2"
 # Nacos config_info 写回后重算 md5（对反转义 yaml 原文做 hex 小写）
 md-5 = "0.10"
 clap = { version = "4", features = ["derive"] }

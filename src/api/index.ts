@@ -17,7 +17,10 @@ import type {
   OfficialHost,
   OfficialEdition,
   OfficialBootMajor,
-  OfficialVersionsResponse
+  OfficialVersionsResponse,
+  PortBusyStatus,
+  ConnectivityResult,
+  HealthCheckReport
 } from '@/types'
 
 /** 健康检查 */
@@ -123,6 +126,35 @@ export function previewTasks(projectInfo: ProjectInfo, params: CustomizeParams):
     projectInfo,
     params
   })
+}
+
+/**
+ * 检测一组端口在本机是否已被占用（127.0.0.1 回环 TCP 探测，约 300ms/端口）。
+ * @param ports 端口号列表
+ */
+export function checkPortsBusy(ports: number[]): Promise<PortBusyStatus[]> {
+  return invoke<PortBusyStatus[]>('check_ports_busy', { ports })
+}
+
+/**
+ * 测试外部服务（数据库 / SMTP 邮件 / OSS）的 TCP 连通性。
+ * target 由 Rust 侧解析，兼容两种形态：host:port（如 smtp.qq.com:465）与
+ * 完整/裸 endpoint URL（如 https://oss-cn-hangzhou.aliyuncs.com、play.min.io、
+ * http://192.168.1.10:9000）；无端口时按 scheme / 默认 443 回落。
+ * 仅检测网络连通性，不验证账号密码；地址无法解析时 reject（后端中文提示）。
+ * @param target 目标地址原始值
+ */
+export function testConnectivity(target: string): Promise<ConnectivityResult> {
+  return invoke<ConnectivityResult>('test_connectivity', { target })
+}
+
+/**
+ * 增强件体检：识别项目 + 各增强件锚点存在性检查（与 CLI `forge-cli doctor` 同一套检查逻辑）。
+ * 识别失败时 success=false；锚点缺失不是错误，体现在逐项 items 的 status 中。
+ * @param rootPath 项目根目录绝对路径
+ */
+export function runHealthCheck(rootPath: string): Promise<HealthCheckReport> {
+  return invoke<HealthCheckReport>('run_health_check', { rootPath })
 }
 
 /**

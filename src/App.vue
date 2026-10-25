@@ -15,7 +15,7 @@ const appVersion = pkg.version
 const route = useRoute()
 const router = useRouter()
 const store = useProjectStore()
-const { maxStep } = storeToRefs(store)
+const { maxStep, executing } = storeToRefs(store)
 
 // 菜单项：step 为该步骤序号（首页为 -1，始终可点）
 const menus = [
@@ -33,7 +33,12 @@ const activeName = computed(() => route.name as string)
 
 /** 某菜单是否可点击（已解锁或始终可点） */
 function isReachable(step: number) {
-  return step < 0 || step <= maxStep.value
+  if (step < 0 || step <= maxStep.value) {
+    // 改造执行中禁点「执行改造」项（置灰）：防止离开执行页后再进入引发重复触发
+    // 提示；真正的防重入由 Execute.vue 的 executing 检查与后端进程内在途互斥兜底
+    return !(executing.value && step === 4)
+  }
+  return false
 }
 
 function go(m: { name: string; step: number }) {

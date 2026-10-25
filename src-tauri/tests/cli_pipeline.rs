@@ -101,6 +101,33 @@ fn run_transform_on_temp_directory() {
         "应写出 application-dev.yaml"
     );
     assert!(!resp.report_path.is_empty(), "应生成报告路径");
+
+    // 文件级改造 Diff：changes.patch 应随报告生成，且与 report.md 同一时间戳目录
+    assert!(!resp.diff_path.is_empty(), "应生成 Diff 补丁路径");
+    let patch = PathBuf::from(&resp.diff_path);
+    assert!(patch.is_file(), "changes.patch 应存在：{}", resp.diff_path);
+    assert_eq!(
+        patch.file_name().and_then(|n| n.to_str()),
+        Some("changes.patch")
+    );
+    assert_eq!(
+        patch.parent(),
+        PathBuf::from(&resp.report_path).parent(),
+        "patch 与报告应同目录（同一时间戳目录）"
+    );
+    let patch_text = fs::read_to_string(&patch).unwrap();
+    assert!(
+        patch_text.contains("--- a/pom.xml\n") && patch_text.contains("+++ b/pom.xml\n"),
+        "patch 应含 pom.xml 的 git 风格 unified diff 头：\n{}",
+        patch_text.chars().take(2000).collect::<String>()
+    );
+    // 报告目录文件不应作为 diff 条目出现（排除的是条目路径；
+    // 产物文件内容中合法提及 .ry-forge-report 字样不算）
+    assert!(
+        !patch_text.contains("--- a/.ry-forge-report")
+            && !patch_text.contains("+++ b/.ry-forge-report"),
+        "报告目录自身不应参与 diff"
+    );
 }
 
 #[test]

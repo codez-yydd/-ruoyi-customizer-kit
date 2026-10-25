@@ -34,11 +34,14 @@
 
 use crate::core::enhance_util;
 use crate::core::ProjectInfo;
+use serde::Serialize;
 use std::path::Path;
 
 /// 单项功能健康结论
 #[derive(Debug, Clone)]
 pub struct FeatureHealth {
+    /// 功能英文标识（稳定 key，供 GUI 按功能定位：sms_login / replace_ui 等）
+    pub key: String,
     /// 功能名（中文，doctor 表格第一列）
     pub feature: String,
     /// 当前项目类型是否支持该功能（单体版多数增强件不适用，不再检查锚点）
@@ -57,6 +60,38 @@ pub struct FeatureHealth {
 #[derive(Debug, Clone)]
 pub struct HealthReport {
     pub checks: Vec<FeatureHealth>,
+}
+
+/// 单项体检结论（GUI 序列化视图，run_health_check 命令返回项）
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthItem {
+    /// 功能英文标识（如 sms_login / replace_ui）
+    pub key: String,
+    /// 功能中文名
+    pub name: String,
+    /// 结论：ok = 锚点齐备；missing = 关键锚点缺失；n/a = 当前项目类型不适用
+    pub status: String,
+    /// 一句话结论说明
+    pub summary: String,
+    /// 缺失的关键锚点（开启该功能会执行失败）
+    pub missing_required: Vec<String>,
+    /// 缺失的可选锚点（相关子步骤会跳过/告警）
+    pub optional_note: Vec<String>,
+    /// 信息性说明（不影响可用性）
+    pub notes: Vec<String>,
+}
+
+/// 完整体检报告（识别结论 + 逐项锚点检查，GUI 序列化视图）
+#[derive(Debug, Clone, Serialize)]
+pub struct HealthCheckReport {
+    /// 识别是否成功（识别失败是错误；锚点缺失不是，见 CLI doctor 同语义）
+    pub success: bool,
+    /// 识别结论或失败原因
+    pub message: String,
+    /// 识别出的项目类型（识别失败时为空串）
+    pub project_type: String,
+    /// 逐项体检结论
+    pub items: Vec<HealthItem>,
 }
 
 impl HealthReport {
@@ -197,6 +232,7 @@ pub fn check_anchor_health(root: &Path, info: &ProjectInfo) -> HealthReport {
 
 /// 组装单项结论的便捷构造器
 fn build(
+    key: &str,
     feature: &str,
     applicable: bool,
     mut required: Vec<(&str, bool)>,
@@ -214,6 +250,7 @@ fn build(
         .map(|(desc, _)| desc.to_string())
         .collect::<Vec<_>>();
     FeatureHealth {
+        key: key.to_string(),
         feature: feature.to_string(),
         applicable,
         ok: applicable && missing_required.is_empty(),
@@ -223,10 +260,63 @@ fn build(
     }
 }
 
+/// 由识别成功的项目构建完整体检报告（GUI 序列化视图）。
+/// 与 CLI doctor 同语义：识别成功即 success=true；锚点缺失只体现在逐项 status。
+pub fn build_health_check_report(root: &Path, info: &ProjectInfo) -> HealthCheckReport {
+    let report = check_anchor_health(root, info);
+    HealthCheckReport {
+        success: true,
+        message: format!(
+            "识别成功：{}（模板 {}）",
+            info.project_type, info.template_dir
+        ),
+        project_type: info.project_type.clone(),
+        items: report.checks.into_iter().map(health_item_of).collect(),
+    }
+}
+
+/// FeatureHealth → HealthItem 的视图转换（状态与一句话结论）
+fn health_item_of(c: FeatureHealth) -> HealthItem {
+    let status = if !c.applicable {
+        "n/a"
+    } else if c.ok {
+        "ok"
+    } else {
+        "missing"
+    };
+    let summary = match status {
+        "n/a" => "当前项目类型不支持该功能".to_string(),
+        "ok" => {
+            if c.missing_optional.is_empty() {
+                "锚点齐备，可直接开启".to_string()
+            } else {
+                format!(
+                    "锚点齐备；{} 个可选锚点缺失（相关子步骤会跳过或告警）",
+                    c.missing_optional.len()
+                )
+            }
+        }
+        _ => format!(
+            "缺失 {} 个关键锚点，开启该功能会执行失败",
+            c.missing_required.len()
+        ),
+    };
+    HealthItem {
+        key: c.key,
+        name: c.feature,
+        status: status.to_string(),
+        summary,
+        missing_required: c.missing_required,
+        optional_note: c.missing_optional,
+        notes: c.notes,
+    }
+}
+
 /// MyBatis-Plus 集成：依赖注入需可写后端 pom（mybatis_plus::first_writable_module）；
 /// 生成器模板适配任务仅在检测到 .vm 模板时规划（planner 条件）
 fn check_mybatis_plus(ctx: &Ctx) -> FeatureHealth {
     build(
+        "mybatis_plus",
         "MyBatis-Plus 集成",
         true,
         vec![("后端 Maven pom（依赖注入落点）", ctx.has_backend_pom())],
@@ -251,13 +341,13 @@ fn check_replace_ui(ctx: &Ctx, monolith: bool) -> FeatureHealth {
             notes.push("源前端目录不存在：将以生成模式写入新前缀对应的 -ui 目录（官方拆仓形态）".into());
         }
     }
-    build("替换后台 UI", !monolith, vec![], vec![], notes)
+    build("replace_ui", "替换后台 UI", !monolith, vec![], vec![], notes)
 }
 
 /// 短信登录：源码锚点 + SysLoginService 硬依赖；SecurityConfig 放行与 admin yaml 为可选
 fn check_sms_login(ctx: &Ctx, monolith: bool) -> FeatureHealth {
     if monolith {
-        return build("短信登录", false, vec![], vec![], vec![]);
+        return build("sms_login", "短信登录", false, vec![], vec![], vec![]);
     }
     let mut required = vec![
         (
@@ -283,13 +373,13 @@ fn check_sms_login(ctx: &Ctx, monolith: bool) -> FeatureHealth {
             ctx.has_admin_yaml(),
         ));
     }
-    build("短信登录", true, required, optional, vec![])
+    build("sms_login", "短信登录", true, required, optional, vec![])
 }
 
 /// 邮件发送：分离版需 framework/admin 模块；Cloud 需 system 模块；admin yaml 为可选
 fn check_mail(ctx: &Ctx, monolith: bool) -> FeatureHealth {
     if monolith {
-        return build("邮件发送", false, vec![], vec![], vec![]);
+        return build("mail", "邮件发送", false, vec![], vec![], vec![]);
     }
     let (required, optional) = if ctx.cloud {
         (
@@ -305,13 +395,13 @@ fn check_mail(ctx: &Ctx, monolith: bool) -> FeatureHealth {
             )],
         )
     };
-    build("邮件发送", true, required, optional, vec![])
+    build("mail", "邮件发送", true, required, optional, vec![])
 }
 
 /// 邮箱验证码登录（依赖邮件发送）：Mapper 双文件 + 源码锚点 + SysLoginService 硬依赖
 fn check_email_login(ctx: &Ctx, monolith: bool) -> FeatureHealth {
     if monolith {
-        return build("邮箱验证码登录", false, vec![], vec![], vec![]);
+        return build("email_login", "邮箱验证码登录", false, vec![], vec![], vec![]);
     }
     let mut required = vec![
         (
@@ -339,13 +429,13 @@ fn check_email_login(ctx: &Ctx, monolith: bool) -> FeatureHealth {
             ctx.security_config_permits(),
         ));
     }
-    build("邮箱验证码登录", true, required, optional, vec![])
+    build("email_login", "邮箱验证码登录", true, required, optional, vec![])
 }
 
 /// 滑块验证码：Cloud 需 auth 模块；分离版 SecurityConfig 放行与 admin yaml 为可选
 fn check_captcha_slider(ctx: &Ctx, monolith: bool) -> FeatureHealth {
     if monolith {
-        return build("滑块验证码", false, vec![], vec![], vec![]);
+        return build("captcha_slider", "滑块验证码", false, vec![], vec![], vec![]);
     }
     let (required, optional) = if ctx.cloud {
         (
@@ -367,13 +457,13 @@ fn check_captcha_slider(ctx: &Ctx, monolith: bool) -> FeatureHealth {
             ],
         )
     };
-    build("滑块验证码", true, required, optional, vec![])
+    build("captcha_slider", "滑块验证码", true, required, optional, vec![])
 }
 
 /// 接口 AES 加密：后端资产全新建；前端 request 文件与 admin yaml 为可选
 fn check_api_encrypt(ctx: &Ctx, monolith: bool) -> FeatureHealth {
     if monolith {
-        return build("接口 AES 加密", false, vec![], vec![], vec![]);
+        return build("api_encrypt", "接口 AES 加密", false, vec![], vec![], vec![]);
     }
     let (required, optional) = if ctx.cloud {
         (
@@ -401,13 +491,20 @@ fn check_api_encrypt(ctx: &Ctx, monolith: bool) -> FeatureHealth {
             ],
         )
     };
-    build("接口 AES 加密", true, required, optional, vec![])
+    build("api_encrypt", "接口 AES 加密", true, required, optional, vec![])
 }
 
 /// 微信登录后端（enable_uniapp 场景）：Cloud 需 system 模块；分离版 SecurityConfig 放行为可选
 fn check_wechat_login(ctx: &Ctx, monolith: bool) -> FeatureHealth {
     if monolith {
-        return build("微信登录后端（UniApp）", false, vec![], vec![], vec![]);
+        return build(
+            "wechat_login",
+            "微信登录后端（UniApp）",
+            false,
+            vec![],
+            vec![],
+            vec![],
+        );
     }
     let (required, optional) = if ctx.cloud {
         (
@@ -423,19 +520,19 @@ fn check_wechat_login(ctx: &Ctx, monolith: bool) -> FeatureHealth {
             )],
         )
     };
-    build("微信登录后端（UniApp）", true, required, optional, vec![])
+    build("wechat_login", "微信登录后端（UniApp）", true, required, optional, vec![])
 }
 
 /// OSS 对象存储：依赖注入需可写 pom；Cloud 配置类落 system 模块
 fn check_oss(ctx: &Ctx, monolith: bool) -> FeatureHealth {
     if monolith {
-        return build("OSS 对象存储", false, vec![], vec![], vec![]);
+        return build("oss", "OSS 对象存储", false, vec![], vec![], vec![]);
     }
     let mut required = vec![("后端 Maven pom（SDK 依赖注入落点）", ctx.has_backend_pom())];
     if ctx.cloud {
         required.push(("system 模块（配置类落点）", ctx.has_module_leaf("system")));
     }
-    build("OSS 对象存储", true, required, vec![], vec![])
+    build("oss", "OSS 对象存储", true, required, vec![], vec![])
 }
 
 #[cfg(test)]
@@ -723,5 +820,73 @@ mod tests {
                 c.missing_required
             );
         }
+    }
+
+    /// GUI 体检报告视图：识别成功骨架 → success=true、逐项 key/status/summary 映射正确
+    #[test]
+    fn health_check_report_maps_items_for_gui() {
+        let dir = build_vue_skeleton();
+        let mut info = info_for(dir.path(), "ruoyi-vue");
+        info.project_type = "RuoYi-Vue".into();
+        info.backend_modules = vec![
+            "ruoyi-admin".into(),
+            "ruoyi-framework".into(),
+            "ruoyi-common".into(),
+            "ruoyi-system".into(),
+        ];
+        info.frontend_dirs = vec!["ruoyi-ui".into()];
+        info.generator_template_files = vec!["ruoyi-generator/src/main/resources/vm/mapper.java.vm".into()];
+        let report = build_health_check_report(dir.path(), &info);
+        assert!(report.success);
+        assert!(report.message.contains("识别成功"));
+        assert_eq!(report.project_type, "RuoYi-Vue");
+        assert_eq!(report.items.len(), 9, "分离版九项功能");
+
+        // 完整骨架：全部 ok，key 与中文名对应
+        let sms = report.items.iter().find(|i| i.key == "sms_login").unwrap();
+        assert_eq!(sms.name, "短信登录");
+        assert_eq!(sms.status, "ok");
+        assert!(sms.summary.contains("锚点齐备"));
+        assert!(report.items.iter().all(|i| i.status == "ok"));
+
+        // 序列化产物含核心字段（GUI invoke 拿到的即该 JSON 形态）
+        let json = serde_json::to_string(&report).unwrap();
+        for field in ["\"success\"", "\"project_type\"", "\"items\"", "\"key\"", "\"status\"", "\"missing_required\"", "\"optional_note\""] {
+            assert!(json.contains(field), "序列化应含字段 {field}");
+        }
+    }
+
+    /// GUI 体检报告视图：锚点缺失 → status=missing 且 summary 点明缺失数量；
+    /// 单体 → status=n/a
+    #[test]
+    fn health_check_report_marks_missing_and_na() {
+        // 删掉 SysLoginService → 短信登录/邮箱验证码登录 missing
+        let dir = build_vue_skeleton();
+        std::fs::remove_file(
+            dir.path()
+                .join("ruoyi-framework/src/main/java/com/ruoyi/web/service/SysLoginService.java"),
+        )
+        .unwrap();
+        let mut info = info_for(dir.path(), "ruoyi-vue");
+        info.backend_modules = vec![
+            "ruoyi-admin".into(),
+            "ruoyi-framework".into(),
+            "ruoyi-common".into(),
+            "ruoyi-system".into(),
+        ];
+        info.frontend_dirs = vec!["ruoyi-ui".into()];
+        let report = build_health_check_report(dir.path(), &info);
+        let sms = report.items.iter().find(|i| i.key == "sms_login").unwrap();
+        assert_eq!(sms.status, "missing");
+        assert!(sms.summary.contains("1 个关键锚点"), "{}", sms.summary);
+        assert!(sms.missing_required.iter().any(|m| m.contains("SysLoginService.java")));
+
+        // 单体：增强件 n/a，summary 说明不支持
+        let mono_dir = tempfile::tempdir().unwrap();
+        let mono_info = info_for(mono_dir.path(), "ruoyi");
+        let mono_report = build_health_check_report(mono_dir.path(), &mono_info);
+        let ui = mono_report.items.iter().find(|i| i.key == "replace_ui").unwrap();
+        assert_eq!(ui.status, "n/a");
+        assert!(ui.summary.contains("不支持"));
     }
 }

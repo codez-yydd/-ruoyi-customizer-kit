@@ -224,6 +224,19 @@ pub fn rewrite(
         ));
     }
 
+    // 批次 F：上传物理路径（非空写入）。base 保留原 ruoyi 业务块（含官方 profile），
+    // 此处把顶层 ruoyi 块下的 profile 改为定制值；块内无 profile 则补写，无 ruoyi 块则追加。
+    // 空串 = 零改动（保持原 profile 行不动）。
+    // 反斜杠统一归一为正斜杠（Java 两种分隔符等价，亦避免 yaml/SQL 转义歧义）。
+    let upload = params.upload_path.trim().replace('\\', "/");
+    if !upload.is_empty() {
+        let before = base_out.clone();
+        base_out = crate::core::nacos_config::upsert_top_level_scalar(&base_out, "ruoyi", "profile", &upload);
+        if base_out != before {
+            log(&format!("上传物理路径已写入 ruoyi.profile：{upload}"));
+        }
+    }
+
     // 5. 构建 dev / prod：统一用「标准完整模板」明文写入 datasource + redis
     //    （druid 全量连接池参数 + lettuce 连接池）
     //    dev 与 prod 内容完全一致：都明文，无 ${ENV} 占位（由部署人员后续按需替换）
@@ -725,55 +738,32 @@ pub(crate) fn build_standard_datasource_redis(
     let username = yaml_quote_scalar(&username);
     let password = yaml_quote_scalar(&password);
     let druid_password = generate_druid_console_password();
+    // 批次 F：Redis 定制。关闭时保持官方默认（localhost:6379 / database 1 / 空密码），
+    // 与旧硬编码逐字节一致；开启后按参数写入（密码空 = 裸键，非空 = yaml 引号转义）
+    let (redis_host, redis_port, redis_database, redis_password_line) =
+        if params.enable_redis_customize {
+            let pass_line = if params.redis_password.is_empty() {
+                "password:".to_string()
+            } else {
+                format!("password: {}", yaml_quote_scalar(&params.redis_password))
+            };
+            (
+                yaml_quote_scalar(params.redis_host.trim()),
+                params.redis_port.to_string(),
+                params.redis_database.to_string(),
+                pass_line,
+            )
+        } else {
+            ("localhost".into(), "6379".into(), "1".into(), "password:".into())
+        };
     let redis_block = if boot_major == Some(2) {
-        r#"  # redis 配置
-  redis:
-    # 地址
-    host: localhost
-    # 端口，默认为6379
-    port: 6379
-    # 数据库索引
-    database: 1
-    # 密码
-    password:
-    # 连接超时时间
-    timeout: 10s
-    lettuce:
-      pool:
-        # 连接池中的最小空闲连接
-        min-idle: 0
-        # 连接池中的最大空闲连接
-        max-idle: 8
-        # 连接池的最大数据库连接数
-        max-active: 8
-        # #连接池最大阻塞等待时间（使用负值表示没有限制）
-        max-wait: -1ms
-"#
+        format!(
+            "  # redis 配置\n  redis:\n    # 地址\n    host: {redis_host}\n    # 端口，默认为6379\n    port: {redis_port}\n    # 数据库索引\n    database: {redis_database}\n    # 密码\n    {redis_password_line}\n    # 连接超时时间\n    timeout: 10s\n    lettuce:\n      pool:\n        # 连接池中的最小空闲连接\n        min-idle: 0\n        # 连接池中的最大空闲连接\n        max-idle: 8\n        # 连接池的最大数据库连接数\n        max-active: 8\n        # #连接池最大阻塞等待时间（使用负值表示没有限制）\n        max-wait: -1ms\n"
+        )
     } else {
-        r#"  data:
-    # redis 配置
-    redis:
-      # 地址
-      host: localhost
-      # 端口，默认为6379
-      port: 6379
-      # 数据库索引
-      database: 1
-      # 密码
-      password:
-      # 连接超时时间
-      timeout: 10s
-      lettuce:
-        pool:
-          # 连接池中的最小空闲连接
-          min-idle: 0
-          # 连接池中的最大空闲连接
-          max-idle: 8
-          # 连接池的最大数据库连接数
-          max-active: 8
-          # #连接池最大阻塞等待时间（使用负值表示没有限制）
-          max-wait: -1ms
-"#
+        format!(
+            "  data:\n    # redis 配置\n    redis:\n      # 地址\n      host: {redis_host}\n      # 端口，默认为6379\n      port: {redis_port}\n      # 数据库索引\n      database: {redis_database}\n      # 密码\n      {redis_password_line}\n      # 连接超时时间\n      timeout: 10s\n      lettuce:\n        pool:\n          # 连接池中的最小空闲连接\n          min-idle: 0\n          # 连接池中的最大空闲连接\n          max-idle: 8\n          # 连接池的最大数据库连接数\n          max-active: 8\n          # #连接池最大阻塞等待时间（使用负值表示没有限制）\n          max-wait: -1ms\n"
+        )
     };
     format!(
         r#"# ===== 数据源 + Redis 配置（dev/prod 明文，部署时按需替换密码/地址） =====
@@ -983,5 +973,104 @@ mod tests {
         // master url 可解析时，不应取到 slave 的空 url 或其他值
         let yaml = "spring:\n  datasource:\n    druid:\n      slave:\n        enabled: false\n        url:\n      master:\n        url: jdbc:mysql://localhost:3306/masterdb?x=1\n        username: root\n";
         assert_eq!(parse_master_db_name(yaml).as_deref(), Some("masterdb"));
+    }
+
+    // ---------- 批次 F：Redis 定制 / 上传路径 ----------
+
+    /// 默认零改动：未开启 enable_redis_customize 时，redis_* 字段填值也不影响输出，
+    /// 且与官方默认模板一致（密码行为裸键 `password:`；
+    /// Druid 控制台口令每次执行随机生成，比较前归一化该行）
+    #[test]
+    fn redis_customize_off_keeps_official_template_bytes() {
+        let normalize_druid = |yaml: &str| -> String {
+            let re = regex::Regex::new(r"(login-password: )\S+").unwrap();
+            re.replace_all(yaml, "${1}<RANDOM>").to_string()
+        };
+        let dialect = crate::core::db_dialect::from_params(&CustomizeParams::default());
+        let mut filled = CustomizeParams::default();
+        filled.redis_host = "192.168.9.9".into();
+        filled.redis_port = 6381;
+        filled.redis_database = 7;
+        filled.redis_password = "should-not-write".into();
+        for major in [Some(2), Some(3), Some(4), None] {
+            let plain = build_standard_datasource_redis(dialect, "ry", major, &CustomizeParams::default());
+            let off = build_standard_datasource_redis(dialect, "ry", major, &filled);
+            assert_eq!(
+                normalize_druid(&plain),
+                normalize_druid(&off),
+                "Boot {major:?} 关闭开关时输出必须一致"
+            );
+            assert!(plain.contains("host: localhost\n"), "{plain}");
+            assert!(plain.contains("port: 6379\n"), "{plain}");
+            assert!(plain.contains("database: 1\n"), "{plain}");
+            assert!(plain.contains("\n    password:\n") || plain.contains("\n      password:\n"), "{plain}");
+            assert!(!plain.contains("192.168.9.9"), "{plain}");
+        }
+    }
+
+    /// 生效路径：开启后 host/port/database/password 写入 dev/prod 标准模板（含密码 yaml 转义）
+    #[test]
+    fn redis_customize_writes_params_into_dev_prod() {
+        let dialect = crate::core::db_dialect::from_params(&CustomizeParams::default());
+        let mut p = CustomizeParams::default();
+        p.enable_redis_customize = true;
+        p.redis_host = "192.168.1.30".into();
+        p.redis_port = 6380;
+        p.redis_database = 5;
+        p.redis_password = "r'dis\\pass".into();
+        let yaml = build_standard_datasource_redis(dialect, "ry", Some(3), &p);
+        assert!(yaml.contains("host: 192.168.1.30\n"), "{yaml}");
+        assert!(yaml.contains("port: 6380\n"), "{yaml}");
+        assert!(yaml.contains("database: 5\n"), "{yaml}");
+        assert!(
+            yaml.contains("password: \"r'dis\\\\pass\"\n"),
+            "密码应按 yaml 双引号转义：{yaml}"
+        );
+        // Boot 2 键位仍是 spring 直挂 redis
+        let yaml2 = build_standard_datasource_redis(dialect, "ry", Some(2), &p);
+        assert!(yaml2.contains("\n  redis:\n") && !yaml2.contains("\n  data:\n"), "{yaml2}");
+    }
+
+    /// rewrite：upload_path 非空写入 base 的 ruoyi.profile（已有替换 / 缺失补写 / 空串零改动）
+    #[test]
+    fn rewrite_writes_upload_path_into_base_ruoyi_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let res = dir.path();
+        std::fs::create_dir_all(res).unwrap();
+        std::fs::write(
+            res.join("application.yml"),
+            "ruoyi:\n  name: RuoYi\n  # 文件路径\n  profile: D:/ruoyi/uploadPath\n  addressEnabled: false\n",
+        )
+        .unwrap();
+
+        let mut p = CustomizeParams::default();
+        p.new_package = "com.demo".into();
+        p.new_project_name = "demo".into();
+        p.upload_path = "/data/upload".into();
+        let outcome = rewrite(res, &p, Some(3), &|_| {}).unwrap();
+        let base = std::fs::read_to_string(outcome.base_path).unwrap();
+        assert!(
+            base.contains("profile: /data/upload"),
+            "已有 profile 应替换：{base}"
+        );
+        assert!(!base.contains("D:/ruoyi/uploadPath"), "{base}");
+        assert!(base.contains("name: RuoYi"), "兄弟键不得丢：{base}");
+        assert!(base.contains("addressEnabled: false"), "兄弟键不得丢：{base}");
+
+        // 空串零改动：保持原 profile 行
+        let dir2 = tempfile::tempdir().unwrap();
+        let res2 = dir2.path();
+        std::fs::create_dir_all(res2).unwrap();
+        std::fs::write(
+            res2.join("application.yml"),
+            "ruoyi:\n  name: RuoYi\n  profile: D:/ruoyi/uploadPath\n",
+        )
+        .unwrap();
+        let mut p2 = CustomizeParams::default();
+        p2.new_package = "com.demo".into();
+        p2.new_project_name = "demo".into();
+        let outcome2 = rewrite(res2, &p2, Some(3), &|_| {}).unwrap();
+        let base2 = std::fs::read_to_string(outcome2.base_path).unwrap();
+        assert!(base2.contains("profile: D:/ruoyi/uploadPath"), "空串不得改：{base2}");
     }
 }

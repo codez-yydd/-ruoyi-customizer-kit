@@ -2,6 +2,7 @@
 // 从 commands/execute.rs 下沉，日志通过回调输出，不依赖 Tauri AppHandle。
 
 use crate::core::delivery;
+use crate::core::diff;
 use crate::core::executor::{self, TaskResult};
 use crate::core::planner;
 use crate::core::report;
@@ -55,6 +56,8 @@ pub struct ExecuteResponse {
     pub report_path: String,
     /// 交付文档 DELIVERY.md 路径；未开启或生成失败时为空串
     pub delivery_doc_path: String,
+    /// 文件级改造 Diff 补丁 changes.patch 路径；报告目录创建失败或 diff 生成失败时为空串
+    pub diff_path: String,
     pub failed_count: usize,
     /// 实际输出目录（改造后的项目位置）
     pub output_dir: String,
@@ -67,6 +70,46 @@ pub struct TransformOptions {
     pub params: CustomizeParams,
     /// None = 按严格度遍历全部模板自动识别
     pub template_dir: Option<String>,
+}
+
+// ---------- 进程内在途改造互斥（A1 防重入） ----------
+
+/// 进程内唯一的改造执行槽锁。`Mutex::new` 为 const fn，编译期初始化无懒加载竞争。
+static TRANSFORM_RUNNING_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 在途改造持有凭证：Drop 时自动释放互斥锁（覆盖正常返回、提前 return 与
+/// panic 栈展开路径——panic 时 guard 随展开 Drop，锁已被释放，仅残留中毒标记）。
+struct TransformGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+/// 非阻塞尝试获取进程内唯一的改造执行槽。
+/// 返回 None 表示已有改造任务正在执行中（调用方应立即报错，不得排队等待）。
+/// 场景：GUI 执行页可重入（刷新窗口、改造期间从侧边栏离开再返回会再次触发
+/// executeTransform），若放行会与仍在后端运行的第一条管线并发——交错写同一
+/// 输出目录、全局编码登记表（utils/encoding.rs 的 REGISTRY）被第二次 reset
+/// 污染、日志流交错。前端另有 executing 状态防重入（stores/project.ts），
+/// 此处是刷新窗口导致前端内存状态丢失后的最终兜底。
+fn try_acquire_transform_slot() -> Option<TransformGuard> {
+    // 显式标注 'static：static 项的引用生命周期为 'static，保证 guard 可存入结构体
+    let lock: &'static std::sync::Mutex<()> = &TRANSFORM_RUNNING_LOCK;
+    acquire_guard(lock).map(|_lock| TransformGuard { _lock })
+}
+
+/// 尝试取锁并返回持锁凭证：Ok 直接用；WouldBlock 返回 None（占用中）；
+/// Poisoned 取回锁继续用（视同空闲）。
+/// 该锁仅做「进程内并发占用」计数，不保护任何需要回滚/修复的共享不变量——
+/// 持锁执行 panic 时锁已随栈展开释放，中毒标记没有实际语义；若按中毒即永久
+/// 失败处理，GUI 到进程重启前会一直误报「已有改造任务正在执行中」。
+/// 抽成独立函数便于对中毒语义做单测（static 锁无法在测试中定向构造中毒）。
+fn acquire_guard(
+    lock: &'static std::sync::Mutex<()>,
+) -> Option<std::sync::MutexGuard<'static, ()>> {
+    match lock.try_lock() {
+        Ok(g) => Some(g),
+        Err(std::sync::TryLockError::WouldBlock) => None,
+        Err(std::sync::TryLockError::Poisoned(e)) => Some(e.into_inner()),
+    }
 }
 
 /// 执行改造管线。log 回调接收进度事件（GUI 转发 emit，CLI 打印到 stdout）。
@@ -85,6 +128,7 @@ pub fn run_transform(
             checks: vec![],
             report_path: String::new(),
             delivery_doc_path: String::new(),
+            diff_path: String::new(),
             failed_count: 0,
             output_dir: String::new(),
         });
@@ -99,10 +143,16 @@ pub fn run_transform(
             checks: vec![],
             report_path: String::new(),
             delivery_doc_path: String::new(),
+            diff_path: String::new(),
             failed_count: 0,
             output_dir: String::new(),
         });
     }
+
+    // 1b. 进程内在途互斥（A1）：参数校验为纯函数无副作用，先校验再抢占执行槽，
+    // 避免无效请求占锁；抢占失败立即报错，不阻塞等待
+    let _transform_guard = try_acquire_transform_slot()
+        .ok_or_else(|| "已有改造任务正在执行中，请等待完成后再试".to_string())?;
 
     // 2. 准备输出目录：解压或复制到唯一临时目录，再移入输出目录。
     // 临时目录用「时间戳+线程号」唯一命名（与 commands::project::make_extract_dest
@@ -137,21 +187,8 @@ pub fn run_transform(
     let mut info = crate::core::detector::detect(&root, &template);
     info.template_dir = tpl_name;
 
-    if let Some(err) =
-        crate::core::db_dialect::postgresql_unsupported_template_error(&info.template_dir, &params.db_type)
-    {
-        log(&LogEvent::error(err.clone()));
-        return Ok(ExecuteResponse {
-            success: false,
-            message: err,
-            task_results: vec![],
-            checks: vec![],
-            report_path: String::new(),
-            delivery_doc_path: String::new(),
-            failed_count: 0,
-            output_dir: root.to_string_lossy().to_string(),
-        });
-    }
+    // 注：批次 G 起 PostgreSQL 已放开到全部模板（vue / 单体 / Cloud），
+    // 原「非 ruoyi-vue + postgresql 在规划前拦截」的门槛已删除。
     if let Some(err) = crate::core::new_module::validate_against_project(&info, params) {
         log(&LogEvent::error(err.clone()));
         return Ok(ExecuteResponse {
@@ -161,6 +198,7 @@ pub fn run_transform(
             checks: vec![],
             report_path: String::new(),
             delivery_doc_path: String::new(),
+            diff_path: String::new(),
             failed_count: 0,
             output_dir: root.to_string_lossy().to_string(),
         });
@@ -228,20 +266,62 @@ pub fn run_transform(
     // 9. 校验
     let checks = validator::validate(&root, params, &template);
 
-    // 10. 报告
+    // 10. 报告目录：report.md 与 changes.patch 共用同一时间戳目录（先建目录，
+    // 再依次生成两类产物，避免落在两个时间戳目录）；创建失败仅 log error，不中断
+    let report_dir = match report::create_report_dir(&root) {
+        Ok(d) => d,
+        Err(e) => {
+            log(&LogEvent::error(format!("创建报告目录失败：{e}")));
+            PathBuf::new()
+        }
+    };
+
+    // 11. 文件级改造 Diff（校验之后、报告之前）：基准（改造前原始版本）vs 输出
+    // （改造后）。directory 来源以 source_path 为基准；zip 来源重新解压原始压缩包。
+    // 失败容忍：仅 log warn + 空 path，不影响改造结果（与交付文档同模式）
+    let (diff_summary, diff_path) = if report_dir.as_os_str().is_empty() {
+        (None, PathBuf::new())
+    } else {
+        match diff::run_transform_diff(
+            &opts.source_type,
+            &opts.source_path,
+            &root,
+            &report_dir,
+            &|msg: &str| log(&LogEvent::info(msg.to_string())),
+        ) {
+            Ok((summary, patch_path)) => (Some(summary), patch_path),
+            Err(e) => {
+                log(&LogEvent::warn(format!("生成改造 Diff 失败：{e}")));
+                (None, PathBuf::new())
+            }
+        }
+    };
+
+    // 12. 报告（含文件变更概览小节，引用 diff 统计）
     let delivery_ref = if delivery_doc_path.as_os_str().is_empty() {
         None
     } else {
         Some(delivery_doc_path.as_path())
     };
-    let report_path =
-        match report::generate_report(&root, &info, params, &task_results, &checks, delivery_ref) {
+    let report_path = if report_dir.as_os_str().is_empty() {
+        PathBuf::new()
+    } else {
+        match report::generate_report(
+            &report_dir,
+            &info,
+            params,
+            &task_results,
+            &checks,
+            delivery_ref,
+            diff_summary.as_ref(),
+        ) {
             Ok(p) => p,
             Err(e) => {
                 log(&LogEvent::error(format!("生成报告失败：{e}")));
                 PathBuf::new()
             }
-        };
+        }
+    };
 
     let failed_count = task_results
         .iter()
@@ -269,6 +349,7 @@ pub fn run_transform(
         checks,
         report_path: report_path.to_string_lossy().to_string(),
         delivery_doc_path: delivery_doc_path.to_string_lossy().to_string(),
+        diff_path: diff_path.to_string_lossy().to_string(),
         failed_count,
         output_dir: root.to_string_lossy().to_string(),
     })
@@ -308,7 +389,13 @@ fn stage_to_output(
     }
 
     let project_root_in_temp = if opts.source_type == "zip" {
-        crate::utils::archive::find_project_root(temp_dest)
+        let root = crate::utils::archive::find_project_root(temp_dest);
+        // zip 内项目根之外的顶层条目不会迁入输出目录（随临时目录清理被删除）。
+        // 迁移语义保持不变，但丢弃前显式列明（A6），避免多顶层条目被静默丢弃。
+        if let Some(note) = extra_top_level_note(temp_dest, &root) {
+            log(&LogEvent::warn(note));
+        }
+        root
     } else {
         temp_dest.to_path_buf()
     };
@@ -369,6 +456,32 @@ fn moved_note(moved: &[String]) -> String {
     }
 }
 
+/// zip 解压后若定位到的项目根不是解压根本身，收集「项目根之外」的顶层条目说明。
+/// 这些条目不会迁入输出目录（随临时目录清理被丢弃），返回 Some(warn 文案)
+/// 提示用户；项目根即解压根（无包装目录）或无额外条目时返回 None。
+fn extra_top_level_note(temp_dest: &Path, project_root: &Path) -> Option<String> {
+    if project_root == temp_dest {
+        return None;
+    }
+    let root_name = project_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string());
+    let extras: Vec<String> = std::fs::read_dir(temp_dest)
+        .ok()?
+        .flatten()
+        .filter(|e| Some(e.file_name().to_string_lossy().to_string()) != root_name)
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    if extras.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "以下顶层内容未迁入输出目录（zip 内项目根之外的条目）：{}",
+            extras.join("、")
+        ))
+    }
+}
+
 fn resolve_template(
     root: &Path,
     template_dir: Option<&str>,
@@ -398,4 +511,86 @@ fn resolve_template(
     let set = TemplateSet::load_from_dir(&tpl_dir).map_err(|e| format!("加载模板失败：{e}"))?;
     let template = set.into_full_template().ok_or("模板缺少必要规则")?;
     Ok((tpl_name, template))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A1 回归：在途互斥。持有 guard 期间再次 try_acquire 应返回 None；
+    /// drop 释放后（含 panic 时 Drop 兜底）可再次获取。
+    /// 并行安全性：lib 单测中仅 commands/execute.rs 的用例会调用 run_transform，
+    /// 且走参数校验失败快速路径（不经过本互斥段）；集成测试进程内已用
+    /// TRANSFORM_TEST_LOCK 串行化全部 run_transform 用例，与本测试无交集。
+    #[test]
+    fn transform_slot_mutual_exclusion() {
+        let g1 = try_acquire_transform_slot().expect("空闲时应能获取执行槽");
+        assert!(
+            try_acquire_transform_slot().is_none(),
+            "在途时再次获取执行槽应返回 None"
+        );
+        drop(g1);
+        let g2 = try_acquire_transform_slot().expect("释放后应能再次获取执行槽");
+        drop(g2);
+    }
+
+    /// P2-1 回归：持锁线程 panic 后锁中毒，执行槽仍应视同空闲可再次获取
+    ///（该锁仅做占用计数、无可恢复不变量；若中毒即永久失败，GUI 到重启前
+    /// 会一直误报「已有改造任务正在执行中」）
+    #[test]
+    fn poisoned_transform_lock_is_treated_as_free() {
+        // static 锁无法在测试中定向构造中毒，用独立泄漏锁验证同一取锁语义
+        let lock: &'static std::sync::Mutex<()> =
+            Box::leak(Box::new(std::sync::Mutex::new(())));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _g = lock.lock().unwrap();
+            panic!("模拟持锁执行 panic，使锁中毒");
+        }));
+        assert!(
+            lock.is_poisoned(),
+            "前置条件：锁应已中毒"
+        );
+        // 中毒后仍能取回锁（视同空闲），而非永远 None
+        assert!(
+            acquire_guard(lock).is_some(),
+            "锁中毒后应视同空闲可再次获取"
+        );
+    }
+
+    /// A6 回归：zip 内项目根之外的顶层条目在丢弃前应生成 warn 文案列明；
+    /// 单包装目录（项目根即解压根）或无额外条目时不生成。
+    #[test]
+    fn extra_top_level_note_lists_dropped_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let temp_dest = tmp.path().join("stage");
+        // 项目根：唯一含 pom.xml 的包装目录
+        std::fs::create_dir_all(temp_dest.join("RuoYi-Vue/ruoyi-admin")).unwrap();
+        std::fs::write(temp_dest.join("RuoYi-Vue/pom.xml"), "<project/>").unwrap();
+        // 项目根之外的顶层条目（将被丢弃）
+        std::fs::write(temp_dest.join("README-EXTRA.txt"), "extra").unwrap();
+        std::fs::create_dir_all(temp_dest.join("docs-extra")).unwrap();
+
+        let root = crate::utils::archive::find_project_root(&temp_dest);
+        let note = extra_top_level_note(&temp_dest, &root)
+            .expect("存在项目根之外的顶层条目时应生成提示");
+        assert!(note.contains("未迁入输出目录"), "{note}");
+        assert!(note.contains("README-EXTRA.txt"), "{note}");
+        assert!(note.contains("docs-extra"), "{note}");
+        assert!(
+            !note.contains("ruoyi-admin"),
+            "项目根内部的条目不应列入：{note}"
+        );
+
+        // 单包装目录且无额外条目：仅项目根一个顶层条目 → None
+        let single = tmp.path().join("single");
+        std::fs::create_dir_all(single.join("RuoYi-Vue/ruoyi-admin")).unwrap();
+        std::fs::write(single.join("RuoYi-Vue/pom.xml"), "<project/>").unwrap();
+        let root2 = crate::utils::archive::find_project_root(&single);
+        assert!(
+            extra_top_level_note(&single, &root2).is_none(),
+            "仅项目根一个顶层条目时不应提示"
+        );
+        // 项目根即解压根（zip 无包装目录）：None
+        assert!(extra_top_level_note(&single, &single).is_none());
+    }
 }

@@ -24,7 +24,8 @@ pub const COMPILE_TIMEOUT: Duration = Duration::from_secs(600);
 /// 进程树终止后等待输出读取线程收尾的宽限上限。正常情况读线程毫秒级收到 EOF 返回；
 /// Windows 下 taskkill 启动失败、回退只杀 cmd.exe 时，孙进程仍持有管道写端，
 /// 读线程永远收不到 EOF —— 宽限超限后放弃收尾（记警告），彻底消除调用方挂起可能。
-const OUTPUT_COLLECT_GRACE: Duration = Duration::from_secs(5);
+///（frontend_smoke 复用同一宽限语义）
+pub(crate) const OUTPUT_COLLECT_GRACE: Duration = Duration::from_secs(5);
 
 /// 失败输出尾部截断长度（字符）：避免报告与日志被海量构建输出淹没
 const OUTPUT_TAIL_CHARS: usize = 2000;
@@ -228,7 +229,8 @@ pub fn run_mvn_compile(mvn: &Path, root: &Path, timeout: Duration) -> Result<Mvn
 /// - 收到结果 → Some(文本)
 /// - 读线程在回传前崩溃（通道断开且无数据）→ Some(空串)，与旧 join().unwrap_or_default() 同语义
 /// - 宽限期内未回传 → None（读线程可能被未死透的孙进程卡在管道读取上）
-fn recv_with_grace(rx: Receiver<String>, grace: Duration) -> Option<String> {
+///（frontend_smoke 复用：进程树终止后的输出收尾语义一致）
+pub(crate) fn recv_with_grace(rx: Receiver<String>, grace: Duration) -> Option<String> {
     match rx.recv_timeout(grace) {
         Ok(text) => Some(text),
         Err(RecvTimeoutError::Disconnected) => Some(String::new()),
@@ -252,10 +254,10 @@ fn collect_output(name: &str, rx: Receiver<String>) -> String {
     }
 }
 
-// ---------- 探测辅助 ----------
+// ---------- 探测辅助（frontend_smoke 复用） ----------
 
 /// PATH 按平台分隔符切分为目录清单（过滤空段，避免空段退化为相对当前目录查找）
-fn path_dirs(path: Option<&OsStr>) -> Vec<PathBuf> {
+pub(crate) fn path_dirs(path: Option<&OsStr>) -> Vec<PathBuf> {
     match path {
         Some(p) => std::env::split_paths(p)
             .filter(|d| !d.as_os_str().is_empty())
@@ -282,7 +284,7 @@ fn java_candidates() -> &'static [&'static str] {
 }
 
 /// 逐目录搜索候选文件名，返回首个存在的文件
-fn find_program(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
+pub(crate) fn find_program(dirs: &[PathBuf], names: &[&str]) -> Option<PathBuf> {
     for dir in dirs {
         for name in names {
             let p = dir.join(name);
@@ -310,10 +312,10 @@ fn java_home_bin(java_home: Option<&OsStr>) -> Option<PathBuf> {
     None
 }
 
-// ---------- 展示辅助 ----------
+// ---------- 展示辅助（frontend_smoke 复用） ----------
 
-/// 取文本尾部（按字符截断，保留尾部是编译错误通常所在的位置）
-fn tail(s: &str, max_chars: usize) -> String {
+/// 取文本尾部（按字符截断，保留尾部是构建错误通常所在的位置）
+pub(crate) fn tail(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim_end();
     if trimmed.chars().count() <= max_chars {
         return trimmed.to_string();
@@ -328,7 +330,7 @@ fn tail(s: &str, max_chars: usize) -> String {
 }
 
 /// 耗时展示：秒数 < 60 直接秒；否则分秒
-fn format_duration(d: Duration) -> String {
+pub(crate) fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();
     if secs == 0 {
         "不足 1 秒".into()
@@ -342,7 +344,8 @@ fn format_duration(d: Duration) -> String {
 /// 超时终止：Windows 下 mvn.cmd 由 cmd.exe 代理启动，仅 kill 父进程会留下
 /// java（或测试里的 ping）等子进程继续占用管道句柄，读线程因此收不到 EOF；
 /// 用 `taskkill /T /F` 连同进程树一起终止。其他平台直接 kill 子进程。
-fn kill_process_tree(child: &mut std::process::Child) {
+///（npm.cmd / pnpm.cmd 同为由 cmd.exe 代理启动的形态，frontend_smoke 复用本函数）
+pub(crate) fn kill_process_tree(child: &mut std::process::Child) {
     #[cfg(windows)]
     {
         let mut cmd = Command::new("taskkill");
@@ -363,7 +366,7 @@ fn kill_process_tree(child: &mut std::process::Child) {
     let _ = child.kill();
 }
 
-fn read_all_lossy<R: Read>(r: &mut R) -> String {
+pub(crate) fn read_all_lossy<R: Read>(r: &mut R) -> String {
     let mut buf = Vec::new();
     let _ = r.read_to_end(&mut buf);
     String::from_utf8_lossy(&buf).to_string()

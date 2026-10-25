@@ -1,8 +1,10 @@
 // Cloud 子模块端口解析、bootstrap.yml 写入、业务库控制台菜单 URL 改写。
 //
 // 官方核实 2026-09-05：Nacos 地址保持 127.0.0.1:8848，不改 8848。
+// 批次 F：`nacos_server_addr` / `nacos_namespace` 非空时按参数改写 bootstrap.yml 的
+// spring.cloud.nacos（discovery 与 config 两处）；两参留空时行为与旧版完全一致。
 // Sentinel 不是若依模块，端口保持 8718，只改 localhost → 127.0.0.1。
-// Admin 控制台跟 monitor 模块端口走。
+// Admin 控制台跟 monitor 模块端口走。docker-compose 不改。
 
 use crate::core::detector;
 use crate::core::CustomizeParams;
@@ -200,7 +202,7 @@ fn apply_bootstrap_ports(
         let Some(module) = detector::find_module_by_leaf_suffix(root, &dirs, suffix) else {
             continue;
         };
-        if apply_one_bootstrap(root, suffix, port, &module, log)? {
+        if apply_one_bootstrap(root, suffix, port, &module, params, log)? {
             changed += 1;
         }
     }
@@ -211,7 +213,7 @@ fn apply_bootstrap_ports(
         let Some(module) = detector::find_module_by_leaf_suffix(root, &dirs, &name) else {
             continue;
         };
-        if apply_one_bootstrap(root, &name, port, &module, log)? {
+        if apply_one_bootstrap(root, &name, port, &module, params, log)? {
             changed += 1;
         }
     }
@@ -223,6 +225,7 @@ fn apply_one_bootstrap(
     suffix: &str,
     port: i32,
     module: &str,
+    params: &CustomizeParams,
     log: &dyn Fn(&str),
 ) -> Result<bool, String> {
     let resources = root.join(module).join("src/main/resources");
@@ -238,7 +241,20 @@ fn apply_one_bootstrap(
     let content = crate::utils::file::read_text(&path).ok_or_else(|| {
         format!("读取 {} 失败（UTF-8/GBK 均无法识别）", path.display())
     })?;
-    let new_content = upsert_yaml_server_port(&content, port);
+    let mut new_content = upsert_yaml_server_port(&content, port);
+    // 批次 F：Nacos 地址 / 命名空间（两参留空时原样返回，零改动）
+    let addr = params.nacos_server_addr.trim();
+    let namespace = params.nacos_namespace.trim();
+    if !addr.is_empty() || !namespace.is_empty() {
+        if content.contains("nacos:") {
+            new_content = rewrite_bootstrap_nacos(&new_content, addr, namespace);
+        } else {
+            log(&format!(
+                "Cloud bootstrap 无 spring.cloud.nacos 块，{suffix} 跳过 Nacos 地址/命名空间改写：{}",
+                path.display()
+            ));
+        }
+    }
     if new_content != content {
         std::fs::write(&path, new_content)
             .map_err(|e| format!("写入 {} 失败：{e}", path.display()))?;
@@ -249,6 +265,175 @@ fn apply_one_bootstrap(
         return Ok(true);
     }
     Ok(false)
+}
+
+/// 批次 F：改写 bootstrap.yml 的 `spring.cloud.nacos` 子树。
+///
+/// - `server_addr` 非空：改写 nacos 块内 discovery / config 子块的 `server-addr` 标量行；
+///   子块缺失时补建（保证服务注册与配置中心地址一致）。
+/// - `namespace` 非空：在 discovery 与 config 两处新增 / 改写 `namespace`
+///  （官方 bootstrap.yml 无该字段，非空才写；Spring Cloud Alibaba 标准键位）。
+/// - 两参皆空：原样返回（零改动）。无 `nacos:` 块时原样返回（不凭空造整棵 spring.cloud 树）。
+/// 缺失字段插到「同块内最后一个被替换的 server-addr / namespace 行」之后；都没有则插块首。
+/// 幂等：重复调用输出不变。
+pub fn rewrite_bootstrap_nacos(content: &str, server_addr: &str, namespace: &str) -> String {
+    if server_addr.trim().is_empty() && namespace.trim().is_empty() {
+        return content.to_string();
+    }
+    let addr = server_addr.trim().to_string();
+    let ns = namespace.trim().to_string();
+    let lines: Vec<&str> = content.lines().collect();
+    // 定位 `nacos:` 键行（bootstrap.yml 中唯一出现在 spring.cloud 下，任意缩进）
+    let Some(nacos_idx) = lines
+        .iter()
+        .position(|l| !l.trim().is_empty() && l.trim_start() == "nacos:")
+    else {
+        return content.to_string();
+    };
+    let nacos_indent = indent_of(lines[nacos_idx]);
+    // nacos 块边界：到下一个缩进 <= nacos_indent 的非空行
+    let mut block_end = lines.len();
+    for (i, l) in lines.iter().enumerate().skip(nacos_idx + 1) {
+        if l.trim().is_empty() {
+            continue;
+        }
+        if indent_of(l) <= nacos_indent {
+            block_end = i;
+            break;
+        }
+    }
+    // 子块缩进：nacos 块内首个更深的非注释行；缺省 +2
+    let child_indent = lines[nacos_idx + 1..block_end]
+        .iter()
+        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .map(|l| indent_of(l))
+        .find(|&w| w > nacos_indent)
+        .unwrap_or(nacos_indent + 2);
+    let step = (child_indent - nacos_indent).max(2);
+    let field_indent = child_indent + step;
+    let addr_line = (!addr.is_empty())
+        .then(|| format!("{}server-addr: {}", " ".repeat(field_indent), yaml_scalar(&addr)))
+        .unwrap_or_default();
+    let ns_line = (!ns.is_empty())
+        .then(|| format!("{}namespace: {}", " ".repeat(field_indent), yaml_scalar(&ns)))
+        .unwrap_or_default();
+
+    let mut out: Vec<String> = lines[..=nacos_idx].iter().map(|s| s.to_string()).collect();
+    let mut seen = [false, false]; // [discovery, config]
+    let mut i = nacos_idx + 1;
+    while i < block_end {
+        let line = lines[i];
+        let t = line.trim_start();
+        let is_child_header = !t.is_empty() && !t.starts_with('#') && indent_of(line) == child_indent;
+        if !is_child_header {
+            out.push(line.to_string());
+            i += 1;
+            continue;
+        }
+        let key = t.split(':').next().unwrap_or("").trim().to_string();
+        let slot = match key.as_str() {
+            "discovery" => Some(0),
+            "config" => Some(1),
+            _ => None,
+        };
+        // 子块边界
+        let mut sub_end = block_end;
+        for (j, l2) in lines.iter().enumerate().skip(i + 1).take(block_end - (i + 1)) {
+            if l2.trim().is_empty() {
+                continue;
+            }
+            if indent_of(l2) <= child_indent {
+                sub_end = j;
+                break;
+            }
+        }
+        out.push(line.to_string());
+        i += 1;
+        let Some(slot) = slot else {
+            // 其它子块（如 sentinel 配置）：原样透传
+            for l2 in &lines[i..sub_end] {
+                out.push(l2.to_string());
+            }
+            i = sub_end;
+            continue;
+        };
+        seen[slot] = true;
+        // 处理子块内容：原位替换 server-addr / namespace，其余行透传
+        let mut sub_lines: Vec<String> = Vec::new();
+        let mut anchor: Option<usize> = None; // 缺失字段插入点（最后一个被替换行之后）
+        let mut wrote_addr = false;
+        let mut wrote_ns = false;
+        while i < sub_end {
+            let l2 = lines[i];
+            let t2 = l2.trim_start();
+            if !t2.is_empty() && !t2.starts_with('#') && indent_of(l2) == field_indent {
+                let k2 = t2.split(':').next().unwrap_or("").trim();
+                if !addr.is_empty() && k2 == "server-addr" {
+                    sub_lines.push(addr_line.clone());
+                    wrote_addr = true;
+                    anchor = Some(sub_lines.len());
+                    i += 1;
+                    continue;
+                }
+                if !ns.is_empty() && k2 == "namespace" {
+                    sub_lines.push(ns_line.clone());
+                    wrote_ns = true;
+                    anchor = Some(sub_lines.len());
+                    i += 1;
+                    continue;
+                }
+            }
+            sub_lines.push(l2.to_string());
+            i += 1;
+        }
+        let mut additions: Vec<String> = Vec::new();
+        if !addr.is_empty() && !wrote_addr {
+            additions.push(addr_line.clone());
+        }
+        if !ns.is_empty() && !wrote_ns {
+            additions.push(ns_line.clone());
+        }
+        let insert_at = anchor.unwrap_or(0).min(sub_lines.len());
+        for (n, a) in additions.into_iter().enumerate() {
+            sub_lines.insert(insert_at + n, a);
+        }
+        out.extend(sub_lines);
+    }
+    // 缺失的 discovery / config 子块：在 nacos 块末尾补建
+    for (slot, key) in [(0, "discovery"), (1, "config")] {
+        if seen[slot] {
+            continue;
+        }
+        if addr.is_empty() && ns.is_empty() {
+            continue;
+        }
+        out.push(format!("{}{key}:", " ".repeat(child_indent)));
+        if !addr.is_empty() {
+            out.push(addr_line.clone());
+        }
+        if !ns.is_empty() {
+            out.push(ns_line.clone());
+        }
+    }
+
+    for l in &lines[block_end..] {
+        out.push(l.to_string());
+    }
+    let mut joined = out.join("\n");
+    if content.ends_with('\n') && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// yaml 标量：官方风格裸标量（`10.0.0.5:8848`、`dev-ns` 不加引号），
+/// 命中危险序列才退回双引号转义（规则见 core::yaml_plain_scalar）
+fn yaml_scalar(v: &str) -> String {
+    crate::core::yaml_plain_scalar(v)
 }
 
 fn apply_console_urls(
@@ -610,5 +795,90 @@ insert into sys_menu values ('system/logininfor/index', 'system:logininfor:*');\
         assert!(out.contains("'system/operlog/index'"));
         assert!(!out.contains("'monitor/operlog/index'"));
         assert!(out.contains("http://127.0.0.1:8848/nacos"));
+    }
+
+    // ---------- 批次 F：bootstrap.yml 的 Nacos 地址 / 命名空间改写 ----------
+
+    /// 官方 Boot3/4 形态：discovery + config 双块，server-addr 原位替换；
+    /// namespace 非空才新增（插到 server-addr 之后）
+    #[test]
+    fn bootstrap_nacos_rewrites_both_blocks_boot4_shape() {
+        let boot4 = "server:\n  port: 8080\nspring:\n  application:\n    name: ruoyi-auth\n  cloud:\n    nacos:\n      discovery:\n        server-addr: 127.0.0.1:8848\n      config:\n        server-addr: 127.0.0.1:8848\n        file-extension: yml\n  config:\n    import:\n      - nacos:application-dev.yml\n";
+        // 仅地址：两处 server-addr 改写，不新增 namespace
+        let addr_only = rewrite_bootstrap_nacos(boot4, "10.0.0.5:8848", "");
+        assert_eq!(
+            addr_only.matches("server-addr: 10.0.0.5:8848").count(),
+            2,
+            "discovery 与 config 两处都应改：{addr_only}"
+        );
+        assert!(!addr_only.contains("namespace"), "namespace 留空不得新增：{addr_only}");
+        assert!(!addr_only.contains("127.0.0.1:8848"), "{addr_only}");
+        assert!(addr_only.contains("file-extension: yml"), "兄弟键不得丢：{addr_only}");
+        assert!(addr_only.contains("nacos:application-dev.yml"), "锚点 import 不得动：{addr_only}");
+
+        // 地址 + 命名空间：两处各新增一行 namespace（server-addr 之后）
+        let both = rewrite_bootstrap_nacos(boot4, "10.0.0.5:8848", "dev-ns");
+        assert_eq!(both.matches("server-addr: 10.0.0.5:8848").count(), 2, "{both}");
+        assert_eq!(both.matches("namespace: dev-ns").count(), 2, "{both}");
+        assert!(
+            both.contains("server-addr: 10.0.0.5:8848\n        namespace: dev-ns"),
+            "namespace 应插在 server-addr 之后：{both}"
+        );
+        // 幂等
+        let twice = rewrite_bootstrap_nacos(&both, "10.0.0.5:8848", "dev-ns");
+        assert_eq!(both, twice);
+    }
+
+    /// 官方 Boot2 形态（shared-configs）：config 内含 file-extension 与 shared-configs 列表，
+    /// namespace 插到 server-addr 后、file-extension 前，列表不动
+    #[test]
+    fn bootstrap_nacos_rewrites_boot2_shape() {
+        let boot2 = "server:\n  port: 8080\nspring:\n  cloud:\n    nacos:\n      discovery:\n        server-addr: 127.0.0.1:8848\n      config:\n        server-addr: 127.0.0.1:8848\n        file-extension: yml\n        shared-configs:\n          - application-dev.yml\n";
+        let out = rewrite_bootstrap_nacos(boot2, "nacos.example.com:8848", "prod-ns");
+        assert_eq!(out.matches("server-addr: nacos.example.com:8848").count(), 2, "{out}");
+        assert_eq!(out.matches("namespace: prod-ns").count(), 2, "{out}");
+        assert!(out.contains("shared-configs:"), "{out}");
+        assert!(out.contains("- application-dev.yml"), "{out}");
+        assert!(out.contains("file-extension: yml"), "{out}");
+    }
+
+    /// 精简骨架（仅 config 块，集成测试 fixture 形态）：discovery 缺失时补建
+    #[test]
+    fn bootstrap_nacos_creates_missing_discovery_block() {
+        let only_config = "server:\n  port: 8080\nspring:\n  cloud:\n    nacos:\n      config:\n        server-addr: 127.0.0.1:8848\n        file-extension: yml\n";
+        let out = rewrite_bootstrap_nacos(only_config, "10.0.0.5:8848", "dev-ns");
+        assert_eq!(out.matches("server-addr: 10.0.0.5:8848").count(), 2, "{out}");
+        assert_eq!(out.matches("namespace: dev-ns").count(), 2, "{out}");
+        assert!(
+            out.contains("\n      discovery:\n        server-addr: 10.0.0.5:8848\n        namespace: dev-ns"),
+            "缺失的 discovery 块应按同缩进补建（nacos 块内）：{out}"
+        );
+        let config_pos = out.find("config:").expect("config 块应保留");
+        let discovery_pos = out.find("discovery:").expect("discovery 块应补建");
+        assert!(config_pos < discovery_pos, "原有块顺序保持，补建块追加在后：{out}");
+        assert!(out.contains("file-extension: yml"), "{out}");
+        // 幂等：补建后再跑一遍不变
+        let twice = rewrite_bootstrap_nacos(&out, "10.0.0.5:8848", "dev-ns");
+        assert_eq!(out, twice);
+    }
+
+    /// 零改动：两参皆空原样返回；无 nacos 块原样返回；已有 namespace 被改写
+    #[test]
+    fn bootstrap_nacos_empty_params_and_missing_block_unchanged() {
+        let boot = "server:\n  port: 8080\nspring:\n  cloud:\n    nacos:\n      config:\n        server-addr: 127.0.0.1:8848\n";
+        assert_eq!(rewrite_bootstrap_nacos(boot, "", ""), boot, "两参皆空必须零改动");
+        assert_eq!(rewrite_bootstrap_nacos(boot, "  ", "  "), boot, "空白串视同空");
+        let no_nacos = "server:\n  port: 8080\nspring:\n  application:\n    name: app\n";
+        assert_eq!(
+            rewrite_bootstrap_nacos(no_nacos, "10.0.0.5:8848", "ns"),
+            no_nacos,
+            "无 nacos 块时不得凭空造树"
+        );
+        // 已有 namespace（旧 fork）：非空时改写为新值
+        let with_ns = "spring:\n  cloud:\n    nacos:\n      discovery:\n        server-addr: 127.0.0.1:8848\n        namespace: old-ns\n";
+        let out = rewrite_bootstrap_nacos(with_ns, "", "new-ns");
+        assert!(out.contains("namespace: new-ns"), "{out}");
+        assert!(!out.contains("old-ns"), "{out}");
+        assert!(out.contains("server-addr: 127.0.0.1:8848"), "addr 留空不得改：{out}");
     }
 }

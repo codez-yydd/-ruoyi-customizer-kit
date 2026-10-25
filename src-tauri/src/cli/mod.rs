@@ -36,6 +36,7 @@ pub fn default_params() -> CustomizeParams {
         enable_report: true,
         enable_delivery_doc: true,
         enable_compile_check: false,
+        enable_frontend_build_check: false,
         enable_clear_home: true,
         enable_remove_github: true,
         enable_remove_docs: true,
@@ -127,6 +128,18 @@ pub fn default_params() -> CustomizeParams {
         cloud_port_monitor: 0,
         // 官方源码版本信息：CLI 不做官方拉取，恒为 None（GUI 拉取流程才记录）
         source_version_info: None,
+        // 批次 F：中间件与环境定制，默认全关 / 空（关则零改动）
+        enable_redis_customize: false,
+        redis_host: "127.0.0.1".into(),
+        redis_port: 6379,
+        redis_database: 1,
+        redis_password: String::new(),
+        upload_path: String::new(),
+        demo_enabled: None,
+        nacos_server_addr: String::new(),
+        nacos_namespace: String::new(),
+        nacos_username: String::new(),
+        nacos_password: String::new(),
     }
 }
 
@@ -370,7 +383,7 @@ fn cmd_init_config(
     if let Value::Object(map) = &mut value {
         map.insert(
             "_comment".into(),
-            json!("若依锻造台配置模板。敏感字段（admin_password / wx_appsecret / 支付密钥 / jwt_secret / oss_secret_key）为明文，请勿提交到公开仓库。可用 --set 或 FORGE_SET 覆盖。"),
+            json!("若依锻造台配置模板。敏感字段（admin_password / wx_appsecret / 支付密钥 / jwt_secret / oss_secret_key / mail_password / redis_password / nacos_password）为明文，请勿提交到公开仓库。可用 --set 或 FORGE_SET 覆盖。"),
         );
         map.insert("_source".into(), json!(source_record));
     }
@@ -401,6 +414,17 @@ fn cmd_preview(config: &Path, as_json: bool) -> Result<ExitCode, String> {
             println!("预计修改文件：{}", resp.summary.modify_file_count);
             println!("预计新增文件：{}", resp.summary.create_file_count);
             println!("预计重命名目录：{}", resp.summary.rename_dir_count);
+            // 端口占用预检：只打印清单，不做占用检测（CLI 不引入网络探测行为）
+            if !resp.ports.is_empty() {
+                println!(
+                    "占用端口：{}",
+                    resp.ports
+                        .iter()
+                        .map(|p| format!("{}（{}）", p.port, p.label))
+                        .collect::<Vec<_>>()
+                        .join("、")
+                );
+            }
             if !resp.summary.high_risk_items.is_empty() {
                 println!("高风险项：");
                 for h in &resp.summary.high_risk_items {
@@ -449,8 +473,17 @@ fn cmd_run(
         template_dir: None,
     };
 
+    // CLI 日志流脱敏（A2）：进度日志可能携带 secret 明文（典型如 JWT secret 留空时
+    // 随机生成的密钥，见 core/executor.rs execute_all 的日志），最终结果已有
+    // sanitize_execute_response_for_cli，日志流不得旁路该防线。收集参数中的
+    // 实际敏感值做按值替换（覆盖「secret 值出现在任意 message」的场景），
+    // 运行时随机生成的值则由 redact_cli_secrets 的已知文案模式兜底。
+    // --json（NDJSON）与普通文本两种输出共用同一脱敏。GUI 链路（AppHandle emit）
+    // 保持明文（既有行为，本次不改）。
+    let secret_values = collect_secret_values(&opts.params);
     let resp = pipeline::run_transform(&opts, &|ev: &LogEvent| {
-        emit_log(ev, as_json, quiet);
+        let sanitized = sanitize_log_event_for_cli(ev, &secret_values);
+        emit_log(&sanitized, as_json, quiet);
     })?;
     // CLI 输出脱敏：GUI 报告仍保留明文（既有行为）
     let resp = sanitize_execute_response_for_cli(&resp);
@@ -641,11 +674,7 @@ fn cmd_pull(
         }
         (root, cleanups)
     } else if resp.source_type == "zip" {
-        let temp = std::env::temp_dir().join(format!("ruoyi-forge-cli-pull-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&temp);
-        crate::utils::archive::extract_zip(Path::new(&resp.zip_path), &temp)
-            .map_err(|e| format!("解压官方源码 zip 失败：{e}"))?;
-        let root = crate::utils::archive::find_project_root(&temp);
+        let (root, temp) = stage_official_zip(Path::new(&resp.zip_path))?;
         (root, vec![temp])
     } else {
         return Err(format!("未知拉取产物类型：{}", resp.source_type));
@@ -782,15 +811,38 @@ fn emit_log(ev: &LogEvent, as_json: bool, quiet: bool) {
     }
 }
 
+/// 解压官方源码 zip 到固定临时目录（`ruoyi-forge-cli-pull-<pid>`）并定位项目根。
+/// 返回 (项目根, 临时目录)；临时目录由调用方在移入输出目录后统一清理。
+/// A3：解压失败时先清理已创建（可能已部分解压）的临时目录再返回错误，
+/// 避免残留；清理自身的失败不得掩盖原始错误，仅忽略。
+fn stage_official_zip(zip_path: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let temp = std::env::temp_dir().join(format!("ruoyi-forge-cli-pull-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp);
+    if let Err(e) = crate::utils::archive::extract_zip(zip_path, &temp) {
+        let _ = std::fs::remove_dir_all(&temp);
+        return Err(format!("解压官方源码 zip 失败：{e}"));
+    }
+    let root = crate::utils::archive::find_project_root(&temp);
+    Ok((root, temp))
+}
+
 /// 脱敏 CLI 可见的密钥明文（任务/校验 message）。
+/// 按已知文案模式替换；executor 进度日志的「已生成随机强密钥（…）」文案
+/// 与 task message 的「已随机生成（…）」是两种格式，均需覆盖（A2）。
 pub fn redact_cli_secrets(text: &str) -> String {
     let generated = regex::Regex::new(r"(?i)JWT secret 已随机生成（[^）]*）").unwrap();
     let assigned = regex::Regex::new(r"(?i)JWT secret 已设置为「[^」]*」").unwrap();
+    // core/executor.rs execute_all 的进度日志文案：secret 留空时随机生成的密钥明文
+    let runtime_generated =
+        regex::Regex::new(r"(?i)已生成随机强密钥（[^）]*）").unwrap();
     let mut out = generated
         .replace_all(text, "JWT secret 已随机生成（***）")
         .into_owned();
     out = assigned
         .replace_all(&out, "JWT secret 已设置为「***」")
+        .into_owned();
+    out = runtime_generated
+        .replace_all(&out, "已生成随机强密钥（***）")
         .into_owned();
     let sms_sk = regex::Regex::new(r"(?i)sms_secret_key[=:：]\s*\S+").unwrap();
     out = sms_sk.replace_all(&out, "sms_secret_key=***").into_owned();
@@ -800,7 +852,58 @@ pub fn redact_cli_secrets(text: &str) -> String {
     out = wx.replace_all(&out, "wx_appsecret=***").into_owned();
     let mail_pwd = regex::Regex::new(r"(?i)mail_password[=:：]\s*\S+").unwrap();
     out = mail_pwd.replace_all(&out, "mail_password=***").into_owned();
+    // 批次 F：Redis / Nacos 密码同样按键名模式脱敏（值级替换见 collect_secret_values）
+    let redis_pwd = regex::Regex::new(r"(?i)redis_password[=:：]\s*\S+").unwrap();
+    out = redis_pwd.replace_all(&out, "redis_password=***").into_owned();
+    let nacos_pwd = regex::Regex::new(r"(?i)nacos_password[=:：]\s*\S+").unwrap();
+    out = nacos_pwd.replace_all(&out, "nacos_password=***").into_owned();
     out
+}
+
+/// 收集改造参数中的敏感值清单，供 CLI 日志按值脱敏（A2）。
+/// 覆盖「用户显式设置的 secret 值出现在任意 message」的场景（模式匹配之外）。
+/// 阈值 6：过短的值（如 "abc"）做全局替换会大面积误伤普通日志文案；
+/// 按长度降序替换，避免一个值是另一值前缀时先替换短的导致残留。
+fn collect_secret_values(params: &CustomizeParams) -> Vec<String> {
+    let mut vals: Vec<String> = vec![
+        params.jwt_secret.clone(),
+        params.admin_password.clone(),
+        params.db_password.clone(),
+        params.wx_appsecret.clone(),
+        params.pay_api_v3_key.clone(),
+        params.pay_api_key.clone(),
+        params.sms_secret_key.clone(),
+        params.oss_secret_key.clone(),
+        params.aes_secret.clone(),
+        params.mail_password.clone(),
+        // 批次 F：Redis / Nacos 密码（会写入 Nacos SQL / yaml 与 live 发布表单）
+        params.redis_password.clone(),
+        params.nacos_password.clone(),
+    ];
+    vals.retain(|v| v.len() >= 6);
+    vals.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    vals.dedup();
+    vals
+}
+
+/// CLI 日志消息脱敏：先按已知文案模式（含运行时随机生成的 secret），
+/// 再按参数中的实际敏感值做字符串替换。
+fn redact_log_message(message: &str, secret_values: &[String]) -> String {
+    let mut out = redact_cli_secrets(message);
+    for v in secret_values {
+        if out.contains(v.as_str()) {
+            out = out.replace(v.as_str(), "***");
+        }
+    }
+    out
+}
+
+/// 对日志事件做 CLI 输出前的脱敏（普通文本与 --json NDJSON 共用）。
+fn sanitize_log_event_for_cli(ev: &LogEvent, secret_values: &[String]) -> LogEvent {
+    LogEvent {
+        level: ev.level.clone(),
+        message: redact_log_message(&ev.message, secret_values),
+    }
 }
 
 fn sanitize_execute_response_for_cli(resp: &ExecuteResponse) -> ExecuteResponse {
@@ -830,6 +933,10 @@ fn print_run_summary(resp: &ExecuteResponse) {
         resp.report_path,
         resp.delivery_doc_path
     );
+    // 文件级改造 Diff 补丁路径（有才打；--json 模式由 serde 自动带出 diff_path 字段）
+    if !resp.diff_path.is_empty() {
+        println!("补丁：{}", resp.diff_path);
+    }
 }
 
 fn detect_source(source: &Path) -> Result<(crate::core::ProjectInfo, String), String> {
@@ -844,8 +951,12 @@ fn detect_source(source: &Path) -> Result<(crate::core::ProjectInfo, String), St
         }
         let temp = std::env::temp_dir().join(format!("ruoyi-forge-cli-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&temp);
-        crate::utils::archive::extract_zip(source, &temp)
-            .map_err(|e| format!("解压失败：{e}"))?;
+        // A3：解压失败时清理已创建（可能已部分解压）的临时目录后再返回错误；
+        // 清理自身的失败不得掩盖原始错误，仅忽略
+        if let Err(e) = crate::utils::archive::extract_zip(source, &temp) {
+            let _ = std::fs::remove_dir_all(&temp);
+            return Err(format!("解压失败：{e}"));
+        }
         let root = crate::utils::archive::find_project_root(&temp);
         let resp = detect_auto(&root, None);
         let _ = std::fs::remove_dir_all(&temp);
@@ -1062,6 +1173,17 @@ mod tests {
         assert!(p.enable_compile_check);
         // 类型不符被拒（沿用既有类型校验）
         let err = apply_set_list(&mut p, &["enable_compile_check=1".into()]).unwrap_err();
+        assert!(err.contains("类型不符"), "{err}");
+    }
+
+    /// 前端构建冒烟开关可经 --set 覆盖（serde bool 字段天然支持）
+    #[test]
+    fn apply_set_enable_frontend_build_check_bool() {
+        let mut p = default_params();
+        assert!(!p.enable_frontend_build_check, "CLI 默认应关闭前端构建冒烟");
+        apply_set_list(&mut p, &["enable_frontend_build_check=true".into()]).unwrap();
+        assert!(p.enable_frontend_build_check);
+        let err = apply_set_list(&mut p, &["enable_frontend_build_check=1".into()]).unwrap_err();
         assert!(err.contains("类型不符"), "{err}");
     }
 
@@ -1296,6 +1418,8 @@ mod tests {
             }],
             report_path: String::new(),
             delivery_doc_path: String::new(),
+            // 路径非敏感：sanitize 不应脱敏 diff_path（redact 模式只匹配 secret 键值）
+            diff_path: "D:/out/.ry-forge-report/20260101-000000/changes.patch".into(),
             failed_count: 0,
             output_dir: String::new(),
         };
@@ -1303,5 +1427,160 @@ mod tests {
         assert!(!resp.message.contains(secret));
         assert!(!resp.task_results[0].message.contains(secret));
         assert!(!resp.checks[0].message.contains(secret));
+        assert_eq!(
+            resp.diff_path,
+            "D:/out/.ry-forge-report/20260101-000000/changes.patch",
+            "diff_path 为非敏感路径，脱敏不应误伤"
+        );
+    }
+
+    // ---------- A2：CLI 进度日志流脱敏 ----------
+
+    /// executor 进度日志的实际文案（core/executor.rs execute_all）携带随机生成的
+    /// JWT secret 明文，经 CLI 日志输出路径（sanitize_log_event_for_cli → emit_log）
+    /// 后不得含明文；普通文本与 --json NDJSON 共用同一脱敏入口
+    #[test]
+    fn cli_log_stream_redacts_runtime_generated_jwt_secret() {
+        let secret = "super-secret-jwt-token-value-123456";
+        let ev = LogEvent::info(format!(
+            "JWT secret 留空，已生成随机强密钥（{secret}）并下发各任务，请妥善保管"
+        ));
+        let sanitized = sanitize_log_event_for_cli(&ev, &[]);
+        assert!(
+            !sanitized.message.contains(secret),
+            "日志流脱敏后不应含明文：{}",
+            sanitized.message
+        );
+        assert!(sanitized.message.contains("***"), "{}", sanitized.message);
+        assert_eq!(sanitized.level, "INFO", "level 不应被改写");
+    }
+
+    /// 用户显式设置的 secret 值出现在任意 message（无已知文案模式）时，
+    /// 按参数敏感值清单做值替换，同样不泄漏明文
+    #[test]
+    fn cli_log_stream_redacts_explicit_secret_values_anywhere() {
+        let mut params = default_params();
+        params.jwt_secret = "my-jwt-secret-abcdef123456".into();
+        params.mail_password = "mail-pass-987654321".into();
+        params.frontend_title = "正常文案不应被误伤".into();
+        let secrets = collect_secret_values(&params);
+        assert!(secrets.contains(&"my-jwt-secret-abcdef123456".to_string()));
+        assert!(secrets.contains(&"mail-pass-987654321".to_string()));
+
+        let ev = LogEvent::info("已写入 jwt_secret=my-jwt-secret-abcdef123456 到配置文件");
+        let sanitized = sanitize_log_event_for_cli(&ev, &secrets);
+        assert!(
+            !sanitized.message.contains("my-jwt-secret-abcdef123456"),
+            "{}",
+            sanitized.message
+        );
+        assert!(sanitized.message.contains("***"), "{}", sanitized.message);
+
+        // 过短的值（<6 字符）不纳入值替换，避免误伤普通文案
+        let mut short = default_params();
+        short.db_password = "abc".into();
+        assert!(collect_secret_values(&short).is_empty());
+        let ev2 = LogEvent::info("普通日志 abc 与无关内容");
+        let sanitized2 = sanitize_log_event_for_cli(&ev2, &collect_secret_values(&short));
+        assert_eq!(sanitized2.message, "普通日志 abc 与无关内容");
+    }
+
+    /// 批次 F：redis_password / nacos_password 的键名模式脱敏与值级替换
+    #[test]
+    fn cli_redacts_redis_and_nacos_passwords() {
+        // 键名模式（k=v / k: v / 中文冒号）
+        let redis = redact_cli_secrets("redis_password=Sup3rRedis!");
+        assert!(!redis.contains("Sup3rRedis!"), "{redis}");
+        assert!(redis.contains("redis_password=***"), "{redis}");
+        let nacos = redact_cli_secrets("nacos_password: nac-Pass123456");
+        assert!(!nacos.contains("nac-Pass123456"), "{nacos}");
+        assert!(nacos.contains("nacos_password=***"), "{nacos}");
+        let nacos_cn = redact_cli_secrets("nacos_password：nacos-Secret-99");
+        assert!(!nacos_cn.contains("nacos-Secret-99"), "{nacos_cn}");
+
+        // 值级替换：用户设置的密码出现在任意 message
+        let mut params = default_params();
+        params.redis_password = "redis-Pass-987654321".into();
+        params.nacos_password = "nacos-Pass-987654321".into();
+        let secrets = collect_secret_values(&params);
+        assert!(secrets.contains(&"redis-Pass-987654321".to_string()));
+        assert!(secrets.contains(&"nacos-Pass-987654321".to_string()));
+        let ev = LogEvent::info("已写入 Redis 密码 redis-Pass-987654321 与 nacos-Pass-987654321");
+        let sanitized = sanitize_log_event_for_cli(&ev, &secrets);
+        assert!(!sanitized.message.contains("redis-Pass-987654321"), "{}", sanitized.message);
+        assert!(!sanitized.message.contains("nacos-Pass-987654321"), "{}", sanitized.message);
+        assert!(sanitized.message.contains("***"), "{}", sanitized.message);
+
+        // 空密码不进清单（零长度 < 阈值 6），普通文案不受影响
+        let empty = default_params();
+        assert!(!collect_secret_values(&empty).iter().any(|v| v.is_empty()));
+    }
+
+    /// 批次 F：--set 覆盖新参数（含 demo_enabled 三态 JSON）
+    #[test]
+    fn apply_set_batch_f_fields() {
+        let mut p = default_params();
+        apply_set_list(
+            &mut p,
+            &[
+                "enable_redis_customize=true".into(),
+                "redis_host=192.168.1.30".into(),
+                "redis_port=6380".into(),
+                "redis_database=5".into(),
+                "upload_path=D:/data/upload".into(),
+                "nacos_server_addr=10.0.0.5:8848".into(),
+                "nacos_namespace=dev-ns".into(),
+                "nacos_username=ops".into(),
+            ],
+        )
+        .unwrap();
+        assert!(p.enable_redis_customize);
+        assert_eq!(p.redis_host, "192.168.1.30");
+        assert_eq!(p.redis_port, 6380);
+        assert_eq!(p.redis_database, 5);
+        assert_eq!(p.upload_path, "D:/data/upload");
+        assert_eq!(p.nacos_server_addr, "10.0.0.5:8848");
+        assert_eq!(p.nacos_namespace, "dev-ns");
+        assert_eq!(p.nacos_username, "ops");
+        assert_eq!(p.demo_enabled, None, "未设置时保持 None（不改）");
+
+        // demo_enabled 三态：null / true / false
+        apply_set_list(&mut p, &["demo_enabled=null".into()]).unwrap();
+        assert_eq!(p.demo_enabled, None);
+        apply_set_list(&mut p, &["demo_enabled=false".into()]).unwrap();
+        assert_eq!(p.demo_enabled, Some(false));
+        apply_set_list(&mut p, &["demo_enabled=true".into()]).unwrap();
+        assert_eq!(p.demo_enabled, Some(true));
+        // 类型不符被拒
+        let err = apply_set_list(&mut p, &["demo_enabled=1".into()]).unwrap_err();
+        assert!(err.contains("类型不符"), "{err}");
+    }
+
+    // ---------- A3：zip 解压失败清理临时目录（CLI 路径） ----------
+
+    /// cmd_pull 的 zip 落位分支：损坏 zip 解压失败后，固定临时目录不得残留
+    #[test]
+    fn stage_official_zip_failure_cleans_temp_dir() {
+        let src = tempfile::tempdir().unwrap();
+        let bad_zip = src.path().join("bad-official.zip");
+        std::fs::write(&bad_zip, b"garbage bytes not a zip").unwrap();
+
+        let err = stage_official_zip(&bad_zip).expect_err("损坏 zip 应解压失败");
+        assert!(err.contains("解压官方源码 zip 失败"), "{err}");
+        let temp = std::env::temp_dir().join(format!("ruoyi-forge-cli-pull-{}", std::process::id()));
+        assert!(!temp.exists(), "解压失败后临时目录应被清理：{}", temp.display());
+    }
+
+    /// detect_source 的 zip 分支：损坏 zip 解压失败后，固定临时目录不得残留
+    #[test]
+    fn detect_source_zip_failure_cleans_temp_dir() {
+        let src = tempfile::tempdir().unwrap();
+        let bad_zip = src.path().join("bad-source.zip");
+        std::fs::write(&bad_zip, b"garbage bytes not a zip").unwrap();
+
+        let err = detect_source(&bad_zip).expect_err("损坏 zip 应解压失败");
+        assert!(err.contains("解压失败"), "{err}");
+        let temp = std::env::temp_dir().join(format!("ruoyi-forge-cli-{}", std::process::id()));
+        assert!(!temp.exists(), "解压失败后临时目录应被清理：{}", temp.display());
     }
 }

@@ -7,12 +7,15 @@ pub mod download;
 
 pub use project::{
     cleanup_extract_dir, cleanup_temp_file, detect_project, extract_zip_project, load_config_json,
-    ping, save_config_json,
+    ping, run_health_check, save_config_json,
 };
 pub use template::list_templates;
 pub use download::{download_official_archive, list_official_versions};
+pub mod connectivity;
 pub mod preview;
 pub mod execute;
 pub mod sub_agents;
 
+pub use connectivity::test_connectivity;
+pub use preview::check_ports_busy;
 pub use sub_agents::build_sub_agents_description;

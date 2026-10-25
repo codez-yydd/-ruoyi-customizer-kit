@@ -145,6 +145,8 @@ export interface CustomizeParams {
   enable_delivery_doc: boolean
   /** 编译冒烟检查：执行阶段对产物跑 mvn compile 验证可编译性（需本机 Maven+JDK，未安装自动跳过） */
   enable_compile_check: boolean
+  /** 前端构建冒烟检查：执行阶段对产物前端目录跑包管理器 install+build 验证可构建性（需本机 Node.js，vben 模板需 pnpm，未安装自动跳过） */
+  enable_frontend_build_check: boolean
   /** 清空若依前端首页为空白页 */
   enable_clear_home: boolean
   /** 移除顶部栏 github/gitee 外链 */
@@ -324,6 +326,29 @@ export interface CustomizeParams {
   // ---- 官方源码版本（拉取流程记录，仅展示用） ----
   /** 官方拉取时记录的源码版本信息；本地项目 / 旧配置为 null，报告不出现该节 */
   source_version_info?: SourceVersionInfo | null
+  // ---- 中间件与环境定制（批次 F，默认全关 / 空 = 零改动） ----
+  /** 是否定制 Redis 连接（默认关；关闭时各产物 Redis 配置保持现状） */
+  enable_redis_customize: boolean
+  /** Redis 地址，默认 127.0.0.1；仅开启 Redis 定制时写入 */
+  redis_host: string
+  /** Redis 端口，默认 6379；仅开启 Redis 定制时写入 */
+  redis_port: number
+  /** Redis 数据库索引（0-15），默认 1；仅开启 Redis 定制时写入 */
+  redis_database: number
+  /** Redis 密码（可空）；不写入报告 / CLI / 交付文档明文 */
+  redis_password: string
+  /** 上传物理路径（空 = 不改；非空须为绝对路径，Windows 盘符或 / 开头；反斜杠自动转正斜杠） */
+  upload_path: string
+  /** Cloud demoEnabled 三态：null = 不改；true / false 写入 Nacos 配置 */
+  demo_enabled: boolean | null
+  /** Cloud 各微服务 bootstrap.yml 的 Nacos server-addr（空 = 保持官方 127.0.0.1:8848） */
+  nacos_server_addr: string
+  /** Cloud Nacos 命名空间 ID（空 = 不改；非空写 bootstrap.yml 并作为 live 发布 tenant） */
+  nacos_namespace: string
+  /** live Nacos 发布登录用户名（空 = 回退官方 nacos）；不写入产物文件 */
+  nacos_username: string
+  /** live Nacos 发布登录密码（空 = 回退官方 nacos）；不写入产物文件与报告明文 */
+  nacos_password: string
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -375,6 +400,7 @@ export type TaskType =
   | 'SetupApiEncrypt'
   | 'ValidateProject'
   | 'CompileSmokeCheck'
+  | 'FrontendBuildSmokeCheck'
   | 'GenerateDeliveryDoc'
   | 'GenerateReport'
 
@@ -410,6 +436,65 @@ export interface PreviewResponse {
   tasks: Task[]
   summary: PreviewSummary
   project: ProjectInfo | null
+  /** 改造产物将占用的端口清单（预览失败为空数组；旧后端/旧持久化数据无该字段） */
+  ports?: PortInfo[]
+}
+
+/** 预检端口清单项（preview_tasks 返回） */
+export interface PortInfo {
+  /** 端口号 */
+  port: number
+  /** 服务名（admin / 网关 / auth / system / gen / job / file / monitor / 新模块短名） */
+  label: string
+}
+
+/** check_ports_busy 返回的单端口占用状态 */
+export interface PortBusyStatus {
+  port: number
+  /** true = 已被本机其它进程监听 */
+  busy: boolean
+}
+
+/** test_connectivity 返回的外部服务连通性检测结果（数据库 / SMTP / OSS 共用） */
+export interface ConnectivityResult {
+  /** 解析出的主机（域名或 IPv4；IPv6 字面量不支持，会在解析阶段报错） */
+  host: string
+  /** 解析出的端口（显式端口，或按 scheme http→80 / https→443、裸域名默认 443 回落） */
+  port: number
+  /** TCP 是否可达 */
+  reachable: boolean
+  /** 连接往返耗时（毫秒）；不可达时为 null */
+  latency_ms: number | null
+  /** 中文结论：可达（含耗时）或不可达（含 DNS 失败 / 超时 / 拒绝类别提示），
+   *  固定以「（仅检测网络连通性，不验证账号密码）」结尾 */
+  message: string
+}
+
+/** 增强件体检单项（run_health_check 返回） */
+export interface HealthItem {
+  /** 功能英文标识（如 sms_login / replace_ui） */
+  key: string
+  /** 功能中文名 */
+  name: string
+  /** 结论：ok = 锚点齐备；missing = 关键锚点缺失；n/a = 当前项目类型不适用 */
+  status: 'ok' | 'missing' | 'n/a'
+  /** 一句话结论说明 */
+  summary: string
+  /** 缺失的关键锚点（开启该功能会执行失败） */
+  missing_required: string[]
+  /** 缺失的可选锚点（相关子步骤会跳过/告警） */
+  optional_note: string[]
+  /** 信息性说明（不影响可用性，如替换 UI 的替换/生成语义） */
+  notes: string[]
+}
+
+/** run_health_check 命令响应（与 CLI doctor 同语义：识别失败是错误，锚点缺失不是） */
+export interface HealthCheckReport {
+  success: boolean
+  message: string
+  /** 识别出的项目类型（识别失败时为空串） */
+  project_type: string
+  items: HealthItem[]
 }
 
 /** 任务执行结果 */
@@ -440,6 +525,8 @@ export interface ExecuteResponse {
   report_path: string
   /** 交付文档 DELIVERY.md 路径；未开启或生成失败时为空串 */
   delivery_doc_path: string
+  /** 文件级改造 Diff 补丁 changes.patch 路径；报告目录创建失败或 diff 生成失败时为空串 */
+  diff_path: string
   failed_count: number
   /** 实际输出目录 */
   output_dir: string

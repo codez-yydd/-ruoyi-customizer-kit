@@ -628,14 +628,25 @@ fn rewrite_one_yaml(
     has_system: bool,
     log: &dyn Fn(&str),
 ) {
+    let is_pg = crate::core::db_dialect::is_postgresql(params);
+    // seata-server.properties 等条目不得改业务库连接，避免误伤 ry-seata
+    let is_seata = data_id.to_ascii_lowercase().contains("seata");
     if params.enable_sql_customize {
-        // seata-server.properties 等条目不得改业务库连接，避免误伤 ry-seata
-        if !data_id.to_ascii_lowercase().contains("seata") {
+        if !is_seata {
+            let dialect = crate::core::db_dialect::from_params(params);
             let host = resolve_db_host(params);
             let port = resolve_db_port(params);
-            *yaml = replace_jdbc_mysql_connection(yaml, &host, port, biz_db);
+            *yaml = replace_jdbc_connection(yaml, dialect, &host, port, biz_db);
             *yaml = rewrite_datasource_credentials(yaml, &resolve_db_username(params), &params.db_password);
+            if is_pg {
+                *yaml = rewrite_datasource_dialect_lines(yaml, &data_id, log);
+            }
         }
+    } else if is_pg && !is_seata {
+        // PG 模式且未开 SQL 定制：业务库连接仅切方言（scheme/端口/参数 + 库名），
+        // host 保持原文；连接账号密码不动。MySQL 模式保持既有库名替换行为。
+        *yaml = switch_jdbc_dialect_only(yaml, biz_db);
+        *yaml = rewrite_datasource_dialect_lines(yaml, &data_id, log);
     } else {
         *yaml = replace_jdbc_db_name(yaml, biz_db);
     }
@@ -649,7 +660,7 @@ fn rewrite_one_yaml(
     if suffix == Some("gen") {
         *yaml = unwrap_simple_dynamic_master_to_flat(yaml);
     }
-    *yaml = rewrite_redis_in_place(yaml);
+    *yaml = rewrite_redis_from_params(yaml, params);
     // P1：token 块改写必须与 security 侧的 enable_jwt 门控对齐——
     // 未开启 JWT 时 Java 常量保持官方默认，此处也不得改写 yaml，
     // 否则前端残留的手填 jwt_secret 会只写入 Nacos 造成双写点密钥分叉。
@@ -711,6 +722,35 @@ fn rewrite_one_yaml(
         if params.enable_mail {
             // 通用邮件能力落在 system（业务侧发信）；auth 的邮箱登录见下方 is_auth
             *yaml = upsert_mail_yaml(yaml, params);
+        }
+    }
+    // 批次 F：上传物理路径。两条写入点——
+    // 1) 已有顶层 ruoyi 块的条目改写 ruoyi.profile（RuoYiConfig 消费，如头像上传）；
+    // 2) file 服务条目的 file.path（官方本地文件上传落盘位置）。
+    // 共享条目（system / 回退 application）兜底写入，保证无 ruoyi 块的官方包也能生效。
+    // 空串 = 完全不改（零改动原则）。反斜杠统一归一为正斜杠：Java 两种分隔符等价，
+    // 且避免 ry_config SQL 转义格式对反斜杠不无损（详见批次 F 遗留风险说明）。
+    let upload = params.upload_path.trim().replace('\\', "/");
+    if !upload.is_empty() {
+        if has_top_level_key(yaml, "ruoyi") {
+            *yaml = upsert_top_level_scalar(yaml, "ruoyi", "profile", &upload);
+            log(&format!("{data_id}：ruoyi.profile → {upload}"));
+        } else if write_shared {
+            *yaml = upsert_top_level_scalar(yaml, "ruoyi", "profile", &upload);
+            log(&format!("{data_id}：新增 ruoyi.profile = {upload}（共享条目兜底）"));
+        }
+        if suffix == Some("file") && has_top_level_key(yaml, "file") {
+            *yaml = upsert_top_level_scalar(yaml, "file", "path", &upload);
+            log(&format!("{data_id}：file.path → {upload}"));
+        }
+    }
+    // 批次 F：Cloud demoEnabled 三态（None = 不改）。写 ruoyi.demoEnabled，
+    // 已有 ruoyi 块的条目改值；无块时落共享条目（system / 回退 application）。
+    if let Some(demo) = params.demo_enabled {
+        let want = demo.to_string();
+        if has_top_level_key(yaml, "ruoyi") || write_shared {
+            *yaml = upsert_top_level_scalar(yaml, "ruoyi", "demoEnabled", &want);
+            log(&format!("{data_id}：ruoyi.demoEnabled = {want}"));
         }
     }
     // 短信在 auth 模块消费，Nacos 必须写入 auth 的 *-dev.yml（2026-09-06）。
@@ -793,32 +833,151 @@ fn replace_jdbc_db_name(yaml: &str, new_db: &str) -> String {
     re.replace_all(yaml, format!("${{1}}{new_db}").as_str()).to_string()
 }
 
-/// 仅改写业务库 `jdbc:mysql://...`：替换 host/port/库名，保留 query string。
-/// 库名取 `?` 前最后一个 `/` 之后；仅 `ry-cloud` / `ry_cloud` 或等于本次业务库才改写。
-fn replace_jdbc_mysql_connection(yaml: &str, host: &str, port: u16, db: &str) -> String {
-    let re = regex::Regex::new(r#"jdbc:mysql://[^\s'"\\]+"#).unwrap();
+/// 改写业务库 `jdbc:(mysql|postgresql)://...` 连接（方言感知）：
+/// - MySQL：替换 host/port/库名，保留原 query string（既有行为，产物零改动）。
+/// - PostgreSQL：scheme 换 `jdbc:postgresql`，query 统一替换为方言参数
+///   （`currentSchema=public`，丢弃 useSSL/serverTimezone 等 MySQL 专有参数）。
+/// 仅 `ry-cloud` / `ry_cloud` 或等于本次业务库的 url 才改写。
+fn replace_jdbc_connection(
+    yaml: &str,
+    dialect: &crate::core::db_dialect::DbDialect,
+    host: &str,
+    port: u16,
+    db: &str,
+) -> String {
+    let re = regex::Regex::new(r#"jdbc:(mysql|postgresql)://[^\s'"\\]+"#).unwrap();
     re.replace_all(yaml, |caps: &regex::Captures| {
         let orig = &caps[0];
-        if !jdbc_mysql_db_is_business(orig, db) {
+        if !jdbc_url_db_is_business(orig, db) {
             return orig.to_string();
         }
-        let after = orig.trim_start_matches("jdbc:mysql://");
-        let query = after.find('?').map(|i| &after[i..]).unwrap_or("");
-        format!("jdbc:mysql://{host}:{port}/{db}{query}")
+        let after = orig
+            .trim_start_matches("jdbc:mysql://")
+            .trim_start_matches("jdbc:postgresql://");
+        let query: String = if dialect.name == "mysql" {
+            after.find('?').map(|i| after[i..].to_string()).unwrap_or_default()
+        } else {
+            // PG：MySQL 专有参数不可用，统一用方言参数（与分离版 url 拼装一致）
+            format!("?{}", dialect.url_params)
+        };
+        format!("{}://{host}:{port}/{db}{query}", dialect.url_scheme)
     })
     .into_owned()
 }
 
-/// 从 `jdbc:mysql://...` 解析库名（`?` 前最后一个 `/` 之后）。
-fn jdbc_mysql_db_name(url: &str) -> &str {
-    let after = url.trim_start_matches("jdbc:mysql://");
+/// 从 `jdbc:(mysql|postgresql)://...` 解析库名（`?` 前最后一个 `/` 之后）。
+fn jdbc_url_db_name(url: &str) -> &str {
+    let after = url
+        .trim_start_matches("jdbc:mysql://")
+        .trim_start_matches("jdbc:postgresql://");
     let path = after.split('?').next().unwrap_or(after);
     path.rsplit('/').next().unwrap_or("")
 }
 
-fn jdbc_mysql_db_is_business(url: &str, biz_db: &str) -> bool {
-    let name = jdbc_mysql_db_name(url);
+fn jdbc_url_db_is_business(url: &str, biz_db: &str) -> bool {
+    let name = jdbc_url_db_name(url);
     name == "ry-cloud" || name == "ry_cloud" || (!biz_db.is_empty() && name == biz_db)
+}
+
+/// PG 模式且未开 SQL 定制：业务库 jdbc:mysql 连接仅切方言。
+/// host 与库名保持原文（库名按入参替换），端口切到 PG 默认 5432（与分离版
+/// 未开 SQL 定制时按方言默认端口重建数据源的行为一致），参数换 currentSchema=public。
+fn switch_jdbc_dialect_only(yaml: &str, biz_db: &str) -> String {
+    let re = regex::Regex::new(r#"jdbc:mysql://[^\s'"\\]+"#).unwrap();
+    re.replace_all(yaml, |caps: &regex::Captures| {
+        let orig = &caps[0];
+        if !jdbc_url_db_is_business(orig, biz_db) {
+            return orig.to_string();
+        }
+        let after = orig.trim_start_matches("jdbc:mysql://");
+        let path = after.split('?').next().unwrap_or(after);
+        let (host_port, db) = match path.rsplit_once('/') {
+            Some(v) => v,
+            None => return orig.to_string(),
+        };
+        let host = host_port.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_port);
+        let db = if db == "ry-cloud" || db == "ry_cloud" { biz_db } else { db };
+        format!("jdbc:postgresql://{host}:5432/{db}?currentSchema=public")
+    })
+    .into_owned()
+}
+
+/// PG 方言行级改写（仅 db_type=postgresql 时调用，MySQL 模式零调用）：
+/// - `spring.datasource` 作用域内的 driver-class-name / driverClassName：
+///   com.mysql.cj.jdbc.Driver（或旧版 com.mysql.jdbc.Driver）→ org.postgresql.Driver
+/// - 同作用域内 validationQuery 的 `FROM DUAL` 移除（SELECT 1 FROM DUAL → SELECT 1）
+/// - `pagehelper.helperDialect: mysql` → postgresql（官方 Cloud 无此配置，兼容自定义包）
+/// 返回改写后的 yaml。data_id 仅用于日志。
+fn rewrite_datasource_dialect_lines(yaml: &str, data_id: &str, log: &dyn Fn(&str)) -> String {
+    let mysql_drivers = ["com.mysql.cj.jdbc.Driver", "com.mysql.jdbc.Driver"];
+    let mut out = String::with_capacity(yaml.len() + 64);
+    let mut changed_driver = false;
+    let mut changed_validation = false;
+    let mut changed_helper = false;
+    let mut in_ds = false;
+    let mut ds_indent = 0usize;
+    for line in yaml.lines() {
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if key == "datasource" {
+            in_ds = true;
+            ds_indent = indent;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_ds && !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= ds_indent {
+            in_ds = false;
+        }
+        if in_ds && (key == "driver-class-name" || key == "driverClassName") {
+            if mysql_drivers.iter().any(|d| trimmed.contains(d)) {
+                let mut nl = line.to_string();
+                for d in mysql_drivers {
+                    nl = nl.replace(d, "org.postgresql.Driver");
+                }
+                out.push_str(&nl);
+                out.push('\n');
+                changed_driver = true;
+                continue;
+            }
+        }
+        if in_ds && (key == "validationQuery" || key == "validation-query") {
+            let re = regex::Regex::new(r"(?i)^(\s*validation[-_]?[Qq]uery\s*:\s*SELECT\s+1)\s+FROM\s+DUAL\s*$").unwrap();
+            if re.is_match(line) {
+                out.push_str(&re.replace(line, "${1}").to_string());
+                out.push('\n');
+                changed_validation = true;
+                continue;
+            }
+        }
+        if key == "helperDialect" && trimmed.trim_end().ends_with("mysql") {
+            let nl = regex::Regex::new(r"(?i)^(helperDialect\s*:\s*)mysql\s*$")
+                .unwrap()
+                .replace(trimmed, "${1}postgresql")
+                .to_string();
+            let pad = &line[..line.len() - trimmed.len()];
+            out.push_str(&format!("{pad}{nl}"));
+            out.push('\n');
+            changed_helper = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !yaml.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    if changed_driver {
+        log(&format!("{data_id}：数据源驱动 → org.postgresql.Driver"));
+    }
+    if changed_validation {
+        log(&format!("{data_id}：validationQuery 移除 FROM DUAL"));
+    }
+    if changed_helper {
+        log(&format!("{data_id}：pagehelper.helperDialect → postgresql"));
+    }
+    out
 }
 
 /// 在 `datasource:` 缩进作用域内改写恰好为 `username` / `password` 的行。
@@ -1249,7 +1408,42 @@ fn try_unwrap_simple_dynamic_master(ds_indent: usize, block: &[&str]) -> Option<
     Some(lifted)
 }
 
+/// 官方默认 Redis 连接（改写现状）：localhost:6379 / database 1 / 空密码。
 fn rewrite_redis_in_place(yaml: &str) -> String {
+    rewrite_redis_values(
+        yaml,
+        "localhost",
+        "6379",
+        "1",
+        "",
+    )
+}
+
+/// 批次 F：按参数改写 Redis 块。`enable_redis_customize` 关闭时回落官方默认，
+/// 与旧 `rewrite_redis_in_place` 输出逐字节一致（关则零改动）。
+fn rewrite_redis_from_params(yaml: &str, params: &CustomizeParams) -> String {
+    if params.enable_redis_customize {
+        let host = params.redis_host.trim().to_string();
+        rewrite_redis_values(
+            yaml,
+            &host,
+            &params.redis_port.to_string(),
+            &params.redis_database.to_string(),
+            &params.redis_password,
+        )
+    } else {
+        rewrite_redis_in_place(yaml)
+    }
+}
+
+/// Redis 块行级改写核心：host / port / database / password 四键，保留注释与缩进。
+fn rewrite_redis_values(
+    yaml: &str,
+    host: &str,
+    port: &str,
+    database: &str,
+    password: &str,
+) -> String {
     let mut out = String::with_capacity(yaml.len());
     let mut in_redis = false;
     let mut redis_indent = 0usize;
@@ -1269,10 +1463,10 @@ fn rewrite_redis_in_place(yaml: &str) -> String {
         }
         if in_redis {
             let replaced = match key {
-                "host" => replace_yaml_scalar_line(line, "host", "localhost"),
-                "port" => replace_yaml_scalar_line(line, "port", "6379"),
-                "database" => replace_yaml_scalar_line(line, "database", "1"),
-                "password" => replace_yaml_scalar_line(line, "password", ""),
+                "host" => replace_yaml_scalar_line(line, "host", host),
+                "port" => replace_yaml_scalar_line(line, "port", port),
+                "database" => replace_yaml_scalar_line(line, "database", database),
+                "password" => replace_yaml_scalar_line(line, "password", password),
                 _ => None,
             };
             if let Some(nl) = replaced {
@@ -1360,6 +1554,112 @@ fn replace_yaml_scalar_line(line: &str, key: &str, new_val: &str) -> Option<Stri
         "{indent}{key}: {}{comment_part}",
         yaml_quote_scalar(new_val)
     ))
+}
+
+/// 同 `replace_yaml_scalar_line`，但值由调用方给定已格式化文本
+/// （批次 F 的 upsert_top_level_scalar 用 `yaml_plain_scalar` 走官方风格裸标量）。
+fn replace_yaml_scalar_line_fmt(line: &str, key: &str, formatted: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let prefix = format!("{key}:");
+    if !trimmed.starts_with(&prefix) {
+        return None;
+    }
+    let indent = &line[..line.len() - trimmed.len()];
+    let after = trimmed[prefix.len()..].trim_start();
+    let comment = after
+        .find('#')
+        .map(|i| after[i..].trim_end().to_string())
+        .unwrap_or_default();
+    let comment_part = if comment.is_empty() {
+        String::new()
+    } else {
+        format!(" {comment}")
+    };
+    Some(format!("{indent}{key}: {formatted}{comment_part}"))
+}
+
+/// 批次 F：在顶层块 `{top_key}:` 下 upsert 标量子键 `{child_key}: value`（替换或插入）。
+/// - 已有子键：仅替换该行的值（保留缩进与行内注释），其余行不动；
+/// - 块内无该子键：插入到块末尾（缩进取块内首个子行，缺省 2 空格）；
+/// - 无 `{top_key}:` 顶层块：文件末尾追加 `{top_key}:\n  {child_key}: value`。
+/// 幂等：同值重复调用输出不变。value 为空串时写裸键（`key:`）。
+/// 值走 `yaml_plain_scalar`（官方风格裸标量，如 `D:/upload`、`false` 不加引号）。
+pub(crate) fn upsert_top_level_scalar(
+    yaml: &str,
+    top_key: &str,
+    child_key: &str,
+    value: &str,
+) -> String {
+    use crate::core::yaml_plain_scalar;
+    let top = format!("{top_key}:");
+    let lines: Vec<&str> = yaml.lines().collect();
+    let mut top_idx = None;
+    for (i, line) in lines.iter().enumerate() {
+        if !line.starts_with(' ') && !line.starts_with('\t') && line.trim_end() == top {
+            top_idx = Some(i);
+            break;
+        }
+    }
+    let Some(start) = top_idx else {
+        // 无顶层块：文件末尾追加（保持末尾换行风格）
+        let mut out = yaml.to_string();
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&top);
+        out.push('\n');
+        out.push_str(&format!("  {child_key}: {}\n", yaml_plain_scalar(value)));
+        return out;
+    };
+    // 块范围：直到下一个顶格非空行（与 enhance_util::upsert_top_level_child 同语义）
+    let mut end = start + 1;
+    while end < lines.len() {
+        let l = lines[end];
+        if l.trim().is_empty() {
+            end += 1;
+            continue;
+        }
+        if !l.starts_with(' ') && !l.starts_with('\t') {
+            break;
+        }
+        end += 1;
+    }
+    let marker = format!("{child_key}:");
+    // 块内已有子键 → 原位替换
+    for i in start + 1..end {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        if (line.starts_with(' ') || line.starts_with('\t')) && trimmed.starts_with(&marker) {
+            let mut out_lines: Vec<String> =
+                lines.iter().map(|s| s.to_string()).collect();
+            if let Some(nl) = replace_yaml_scalar_line_fmt(line, child_key, &yaml_plain_scalar(value)) {
+                out_lines[i] = nl;
+            }
+            let mut out = out_lines.join("\n");
+            if yaml.ends_with('\n') && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            return out;
+        }
+    }
+    // 块内无子键 → 插到块末尾；缩进取块内首个子行
+    let child_indent = lines[start + 1..end]
+        .iter()
+        .find(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+        .map(|l| indent_width(l))
+        .filter(|&w| w > 0)
+        .unwrap_or(2);
+    let insert = format!("{}{child_key}: {}", " ".repeat(child_indent), yaml_plain_scalar(value));
+    let mut out_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    out_lines.insert(end, insert);
+    let mut out = out_lines.join("\n");
+    if yaml.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 fn indent_width(line: &str) -> usize {
@@ -1798,6 +2098,62 @@ const NACOS_OPENAPI_BASE: &str = "http://127.0.0.1:8848";
 const NACOS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const NACOS_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// live Nacos 发布端点（批次 F：地址 / 登录凭据 / 命名空间均从改造参数解析）。
+/// 字段取默认值时行为与旧硬编码完全一致（127.0.0.1:8848 + nacos/nacos + public/空 tenant）。
+#[derive(Debug, Clone)]
+pub struct LiveNacosEndpoint {
+    /// OpenAPI 基地址（含 scheme，如 `http://127.0.0.1:8848`）
+    pub base_url: String,
+    /// 登录用户名（空参数回退 `nacos`）
+    pub username: String,
+    /// 登录密码（空参数回退 `nacos`；不得写入日志 / 报告明文）
+    pub password: String,
+    /// 发布 tenant（namespace）候选：参数命名空间非空时只试该值，
+    /// 否则保持旧的先 `public` 再空 tenant 兼容序列
+    pub tenants: Vec<String>,
+}
+
+impl Default for LiveNacosEndpoint {
+    fn default() -> Self {
+        Self {
+            base_url: NACOS_OPENAPI_BASE.into(),
+            username: "nacos".into(),
+            password: "nacos".into(),
+            tenants: nacos_tenant_candidates()
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+        }
+    }
+}
+
+impl LiveNacosEndpoint {
+    /// 从改造参数解析：`nacos_server_addr` 非空改基地址（无 scheme 时补 `http://`），
+    /// `nacos_namespace` 非空时 tenant 只试该命名空间；凭据空串回退官方默认 nacos/nacos。
+    pub fn from_params(params: &CustomizeParams) -> Self {
+        let mut ep = LiveNacosEndpoint::default();
+        let addr = params.nacos_server_addr.trim();
+        if !addr.is_empty() {
+            ep.base_url = if addr.starts_with("http://") || addr.starts_with("https://") {
+                addr.to_string()
+            } else {
+                format!("http://{addr}")
+            };
+        }
+        if !params.nacos_username.trim().is_empty() {
+            ep.username = params.nacos_username.trim().to_string();
+        }
+        if !params.nacos_password.is_empty() {
+            ep.password = params.nacos_password.clone();
+        }
+        let ns = params.nacos_namespace.trim();
+        if !ns.is_empty() {
+            ep.tenants = vec![ns.to_string()];
+        }
+        ep
+    }
+}
+
 /// 发布结果（中文原因，不含密钥）。
 #[derive(Debug, Clone)]
 pub struct LiveNacosPublishOutcome {
@@ -1932,10 +2288,13 @@ fn build_nacos_client() -> Result<reqwest::blocking::Client, NacosNetErr> {
         .map_err(|_| NacosNetErr::Other)
 }
 
-fn nacos_login(client: &reqwest::blocking::Client) -> Result<String, NacosNetErr> {
-    let body = form_url_encode(&nacos_login_fields());
+fn nacos_login(client: &reqwest::blocking::Client, ep: &LiveNacosEndpoint) -> Result<String, NacosNetErr> {
+    let body = form_url_encode(&[
+        ("username", ep.username.as_str()),
+        ("password", ep.password.as_str()),
+    ]);
     let resp = client
-        .post(format!("{NACOS_OPENAPI_BASE}/nacos/v1/auth/login"))
+        .post(format!("{}/nacos/v1/auth/login", ep.base_url))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
         .send()
@@ -1949,6 +2308,7 @@ fn nacos_login(client: &reqwest::blocking::Client) -> Result<String, NacosNetErr
 
 fn post_nacos_config(
     client: &reqwest::blocking::Client,
+    ep: &LiveNacosEndpoint,
     data_id: &str,
     group: &str,
     content: &str,
@@ -1961,7 +2321,7 @@ fn post_nacos_config(
     }
     let body = form_url_encode(&fields);
     let resp = client
-        .post(format!("{NACOS_OPENAPI_BASE}/nacos/v1/cs/configs"))
+        .post(format!("{}/nacos/v1/cs/configs", ep.base_url))
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body(body)
         .send()
@@ -1988,6 +2348,7 @@ fn post_nacos_config(
 
 fn get_nacos_content_len(
     client: &reqwest::blocking::Client,
+    ep: &LiveNacosEndpoint,
     data_id: &str,
     group: &str,
     token: &str,
@@ -2001,7 +2362,7 @@ fn get_nacos_content_len(
         query.push(("accessToken", token));
     }
     let resp = client
-        .get(format!("{NACOS_OPENAPI_BASE}/nacos/v1/cs/configs"))
+        .get(format!("{}/nacos/v1/cs/configs", ep.base_url))
         .query(&query)
         .send()
         .map_err(|e| map_reqwest_err(&e))?;
@@ -2025,6 +2386,7 @@ fn get_nacos_content_len(
 
 fn publish_one_live(
     client: &reqwest::blocking::Client,
+    ep: &LiveNacosEndpoint,
     data_id: &str,
     group: &str,
     content: &str,
@@ -2032,11 +2394,11 @@ fn publish_one_live(
     verify_get: bool,
 ) -> Result<(), NacosNetErr> {
     let mut last = NacosNetErr::Other;
-    for tenant in nacos_tenant_candidates() {
-        match post_nacos_config(client, data_id, group, content, token, tenant) {
+    for tenant in &ep.tenants {
+        match post_nacos_config(client, ep, data_id, group, content, token, tenant) {
             Ok(()) => {
                 if verify_get {
-                    match get_nacos_content_len(client, data_id, group, token, tenant) {
+                    match get_nacos_content_len(client, ep, data_id, group, token, tenant) {
                         Ok(_) => return Ok(()),
                         Err(e) => return Err(e),
                     }
@@ -2056,7 +2418,10 @@ fn publish_one_live(
 }
 
 /// 尽力把若干配置发布到运行中的 Nacos。不抛错；结果与日志均不含 yaml/密码/token。
+/// 端点（地址 / 凭据 / 命名空间）由 `LiveNacosEndpoint::from_params` 从改造参数解析，
+/// 参数留空时与旧的 127.0.0.1:8848 + nacos/nacos + public/空 tenant 行为完全一致。
 pub fn publish_live_nacos_entries(
+    endpoint: &LiveNacosEndpoint,
     entries: &[(String, String, String)],
     verify_get: bool,
     log: &dyn Fn(&str),
@@ -2080,7 +2445,7 @@ pub fn publish_live_nacos_entries(
             return out;
         }
     };
-    let token = match nacos_login(&client) {
+    let token = match nacos_login(&client, endpoint) {
         Ok(t) => t,
         Err(e) => {
             for (id, _, _) in entries {
@@ -2096,7 +2461,7 @@ pub fn publish_live_nacos_entries(
         }
     };
     for (data_id, group, content) in entries {
-        match publish_one_live(&client, data_id, group, content, &token, verify_get) {
+        match publish_one_live(&client, endpoint, data_id, group, content, &token, verify_get) {
             Ok(()) => {
                 log(&format!("已发布到运行中的 Nacos：{data_id}"));
                 out.push(LiveNacosPublishOutcome {
@@ -2120,8 +2485,11 @@ pub fn publish_live_nacos_entries(
 }
 
 /// 从 ry_config SQL 取出指定 dataId（及可选 gateway）发布到运行中的 Nacos。
+/// 端点由改造参数解析（`nacos_server_addr` / `nacos_namespace` / `nacos_username` /
+/// `nacos_password`），默认参数下与旧行为一致。
 pub fn publish_sql_data_ids_to_live_nacos(
     sql_path: &Path,
+    params: &CustomizeParams,
     data_ids: &[&str],
     include_gateway: bool,
     log: &dyn Fn(&str),
@@ -2148,7 +2516,8 @@ pub fn publish_sql_data_ids_to_live_nacos(
         }
     }
     let mut out = missing;
-    out.extend(publish_live_nacos_entries(&entries, true, log));
+    let endpoint = LiveNacosEndpoint::from_params(params);
+    out.extend(publish_live_nacos_entries(&endpoint, &entries, true, log));
     Ok(out)
 }
 
@@ -2158,11 +2527,16 @@ fn build_new_service_yaml(params: &CustomizeParams, name: &str, port: i32) -> St
     let biz_db = resolve_cloud_biz_db_name(params);
     let user = resolve_db_username(params);
     let pass = &params.db_password;
+    let dialect = crate::core::db_dialect::from_params(params);
     let pkg_seg = name.replace('-', "");
+    // 批次 G：驱动按方言取（MySQL 即 com.mysql.cj.jdbc.Driver，与原字节一致）；
+    // url 先按官方形态写再走方言感知改写——MySQL 保留 useSSL=false 查询串（零改动），
+    // PG 替换为 currentSchema=public。
     let mut yaml = format!(
-        "server:\n  port: {port}\nspring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: {user}\n    password: {pass}\n"
+        "server:\n  port: {port}\nspring:\n  datasource:\n    driver-class-name: {driver}\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: {user}\n    password: {pass}\n",
+        driver = dialect.driver_class,
     );
-    yaml = replace_jdbc_mysql_connection(&yaml, &host, db_port, &biz_db);
+    yaml = replace_jdbc_connection(&yaml, dialect, &host, db_port, &biz_db);
     if params.enable_mybatis_plus {
         yaml.push_str(&format!(
             "mybatis-plus:\n  typeAliasesPackage: {}.{pkg_seg}\n  mapperLocations: classpath*:mapper/**/*.xml\n",
@@ -2881,6 +3255,152 @@ mod tests {
         assert!(out.contains("store.db.user=root"), "{out}");
     }
 
+    // ---------- 批次 G：Cloud PostgreSQL 方言 ----------
+
+    /// PG + SQL 定制：system（dynamic.master）业务库连接整体切换为 jdbc:postgresql，
+    /// 驱动换 org.postgresql.Driver，validationQuery 去掉 FROM DUAL
+    #[test]
+    fn pg_sql_customize_switches_system_dynamic_datasource() {
+        let mut p = CustomizeParams::default();
+        p.db_type = "postgresql".into();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_host = "192.168.1.10".into();
+        p.db_port = 5432;
+        p.db_username = "app".into();
+        p.db_password = "s3cret".into();
+        // 对齐官方 system 条目：dynamic.datasource.master 含 driver-class-name，
+        // druid 连接池参数含 validationQuery: SELECT 1 FROM DUAL
+        let yaml = "spring:\n  datasource:\n    dynamic:\n      druid:\n        validationQuery: SELECT 1 FROM DUAL\n      datasource:\n        master:\n          driver-class-name: com.mysql.cj.jdbc.Driver\n          url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n          username: root\n          password: password\n";
+        let mut out = yaml.to_string();
+        let logs = std::cell::RefCell::new(Vec::<String>::new());
+        rewrite_one_yaml(
+            &mut out,
+            "ruoyi-system-dev.yml",
+            &p,
+            "demo",
+            true,
+            &|m: &str| logs.borrow_mut().push(m.into()),
+        );
+        assert!(
+            out.contains("url: jdbc:postgresql://192.168.1.10:5432/demo?currentSchema=public"),
+            "业务库 url 应切 PG（含参数替换）：{out}"
+        );
+        assert!(!out.contains("jdbc:mysql"), "{out}");
+        assert!(!out.contains("useSSL"), "MySQL 专有参数必须丢弃：{out}");
+        assert!(
+            out.contains("driver-class-name: org.postgresql.Driver"),
+            "master 驱动应切换：{out}"
+        );
+        assert!(
+            out.contains("validationQuery: SELECT 1\n") && !out.contains("FROM DUAL"),
+            "validationQuery 应去 FROM DUAL：{out}"
+        );
+        assert!(out.contains("username: app"), "{out}");
+        assert!(out.contains("password: s3cret"), "{out}");
+        assert!(
+            logs.borrow().iter().any(|m: &String| m.contains("org.postgresql.Driver")),
+            "驱动切换应留日志：{:?}",
+            logs.borrow()
+        );
+    }
+
+    /// PG + SQL 定制：job（扁平 datasource）驱动与 url 同步切换；validationQuery 兼容化
+    /// （官方 Cloud 的 validationQuery 落在 spring.datasource.dynamic.druid 下，同属 datasource 作用域）
+    #[test]
+    fn pg_sql_customize_switches_job_flat_datasource_with_validation() {
+        let mut p = CustomizeParams::default();
+        p.db_type = "postgresql".into();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_host = "127.0.0.1".into();
+        p.db_port = 5432;
+        let yaml = "spring:\n  datasource:\n    driver-class-name: com.mysql.cj.jdbc.Driver\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\n    username: root\n    password: password\n    druid:\n      validationQuery: SELECT 1 FROM DUAL\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-job-dev.yml", &p, "demo", true, &|_| {});
+        assert!(
+            out.contains("driver-class-name: org.postgresql.Driver"),
+            "扁平驱动应切换：{out}"
+        );
+        assert!(out.contains("jdbc:postgresql://127.0.0.1:5432/demo?currentSchema=public"), "{out}");
+        assert!(
+            out.contains("validationQuery: SELECT 1\n") && !out.contains("FROM DUAL"),
+            "validationQuery 应去 FROM DUAL：{out}"
+        );
+    }
+
+    /// PG 未开 SQL 定制：只切方言——host/库名保持原文（库名按入参），端口切 PG 默认 5432
+    #[test]
+    fn pg_without_sql_customize_switches_dialect_only() {
+        let mut p = CustomizeParams::default();
+        p.db_type = "postgresql".into();
+        p.enable_sql_customize = false;
+        p.db_name = "".into();
+        let mut out = JOB_FLAT_DS.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-job-dev.yml", &p, "ry-cloud", false, &|_| {});
+        assert!(
+            out.contains("jdbc:postgresql://127.0.0.1:5432/ry-cloud?currentSchema=public"),
+            "host/库名应保持原文、端口切 5432：{out}"
+        );
+        assert!(
+            out.contains("driver-class-name: org.postgresql.Driver"),
+            "驱动应随方言切换：{out}"
+        );
+        assert!(!out.contains("jdbc:mysql"), "{out}");
+    }
+
+    /// PG 模式 seata 条目零改动（Seata Server 自身存储库不随业务库切换）
+    #[test]
+    fn pg_keeps_seata_data_id_untouched() {
+        let mut p = CustomizeParams::default();
+        p.db_type = "postgresql".into();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_host = "192.168.1.10".into();
+        p.db_port = 5432;
+        let seata_url = "jdbc:mysql://127.0.0.1:3306/ry-seata?useSSL=false";
+        let props = format!("store.db.url={seata_url}\nstore.db.user=root\n");
+        let mut out = props.clone();
+        rewrite_one_yaml(&mut out, "seata-server.properties", &p, "demo", false, &|_| {});
+        assert_eq!(out, props, "PG 模式 seata 条目必须一字不改");
+    }
+
+    /// PG 模式 ry-seata url（非 seata data_id 内）同样不被误伤：非业务库 url 不改写
+    #[test]
+    fn pg_sql_customize_keeps_ry_seata_url() {
+        let mut p = CustomizeParams::default();
+        p.db_type = "postgresql".into();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_host = "192.168.1.10".into();
+        p.db_port = 5432;
+        let seata_url = "jdbc:mysql://127.0.0.1:3306/ry-seata?useUnicode=true";
+        let yaml = format!(
+            "spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\nstore:\n  db:\n    url: {seata_url}\n"
+        );
+        let mut out = yaml;
+        rewrite_one_yaml(&mut out, "application-dev.yml", &p, "demo", false, &|_| {});
+        assert!(out.contains("jdbc:postgresql://192.168.1.10:5432/demo?currentSchema=public"), "{out}");
+        assert!(out.contains(seata_url), "ry-seata url 不得改写：{out}");
+    }
+
+    /// 自定义包若显式配置了 pagehelper.helperDialect: mysql，PG 模式应一并切换
+    /// （官方 Cloud 不配置 pagehelper，依赖 JDBC url 自动探测，正常零命中）
+    #[test]
+    fn pg_switches_explicit_helper_dialect_when_present() {
+        let mut p = CustomizeParams::default();
+        p.db_type = "postgresql".into();
+        p.enable_sql_customize = true;
+        p.db_name = "demo".into();
+        p.db_port = 5432;
+        let yaml = "spring:\n  datasource:\n    url: jdbc:mysql://localhost:3306/ry-cloud?useSSL=false\npagehelper:\n  helperDialect: mysql\n  supportMethodsArguments: true\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-system-dev.yml", &p, "demo", true, &|_| {});
+        assert!(out.contains("helperDialect: postgresql"), "{out}");
+        assert!(!out.contains("helperDialect: mysql"), "{out}");
+        assert!(out.contains("supportMethodsArguments: true"), "{out}");
+    }
+
     #[test]
     fn service_yml_upserts_server_port_application_does_not() {
         let mut p = CustomizeParams::default();
@@ -3229,5 +3749,249 @@ mod tests {
             "monitor 外链应跟解析端口：{out}"
         );
         assert!(!out.contains(":9100"), "不得残留官方 monitor 9100：{out}");
+    }
+
+    // ---------- 批次 F：Redis / 上传路径 / demoEnabled / live 端点 ----------
+
+    /// 默认零改动：未开 enable_redis_customize 时，即使 redis_* 字段填了值，
+    /// 输出也必须与默认参数完全一致（关则零改动）
+    #[test]
+    fn redis_customize_off_keeps_default_output() {
+        let yaml = "spring:\n  redis:\n    host: 10.0.0.1\n    port: 6380\n    password: old\n    database: 3\n";
+        let plain = CustomizeParams::default();
+        let mut filled = CustomizeParams::default();
+        filled.redis_host = "192.168.9.9".into();
+        filled.redis_port = 6381;
+        filled.redis_database = 7;
+        filled.redis_password = "should-not-write".into();
+        let mut a = yaml.to_string();
+        rewrite_one_yaml(&mut a, "application-dev.yml", &plain, "ry-cloud", true, &|_| {});
+        let mut b = yaml.to_string();
+        rewrite_one_yaml(&mut b, "application-dev.yml", &filled, "ry-cloud", true, &|_| {});
+        assert_eq!(a, b, "开关关闭时 redis_* 字段不得影响输出");
+        assert!(a.contains("host: localhost") && a.contains("port: 6379"));
+        assert!(!a.contains("192.168.9.9"), "{a}");
+    }
+
+    /// 生效路径：开启后 host/port/database/password 写入 Nacos yaml，且 SQL 写回再解析还原一致
+    /// （密码取不含反斜杠的样例——ry_config 的 SQL 转义格式对反斜杠不无损，
+    /// 该限制与既有 db_password 行为一致，见批次 F 遗留风险）
+    #[test]
+    fn redis_customize_writes_params_and_sql_roundtrip() {
+        let mut p = CustomizeParams::default();
+        p.enable_redis_customize = true;
+        p.redis_host = "192.168.1.30".into();
+        p.redis_port = 6380;
+        p.redis_database = 5;
+        p.redis_password = "r'dis#pass1".into();
+        let yaml = "spring:\n  redis:\n    host: 127.0.0.1\n    port: 6379\n    password: \n    database: 0\n";
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "application-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(out.contains("host: 192.168.1.30"), "{out}");
+        assert!(out.contains("port: 6380"), "{out}");
+        assert!(out.contains("database: 5"), "{out}");
+        // 含单引号 / # 的密码必须经 yaml_quote_scalar 双引号转义
+        assert!(
+            out.contains("password: \"r'dis#pass1\""),
+            "密码应按 yaml 转义写入：{out}"
+        );
+
+        // SQL 写回再解析：密码含 ' 时 escape_nacos_content / unescape 必须还原
+        let sql = sample_insert(&out);
+        let configs = parse_config_sql_text(&sql).unwrap();
+        assert_eq!(configs[0].content, out, "SQL 往返后 yaml 应逐字还原");
+    }
+
+    /// 上传路径：system 条目改 ruoyi.profile（已有块替换）；file 条目改 file.path；
+    /// 无关条目（auth）不受影响；空串零改动
+    #[test]
+    fn upload_path_writes_profile_and_file_path() {
+        let mut p = CustomizeParams::default();
+        p.upload_path = "D:/data/upload".into();
+
+        let system = "ruoyi:\n  name: RuoYi\n  profile: D:/ruoyi/uploadPath\n  captchaType: math\n";
+        let mut sys_out = system.to_string();
+        rewrite_one_yaml(&mut sys_out, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(
+            sys_out.contains("profile: D:/data/upload"),
+            "已有 profile 应替换：{sys_out}"
+        );
+        assert!(!sys_out.contains("D:/ruoyi/uploadPath"), "{sys_out}");
+        assert!(sys_out.contains("captchaType: math"), "兄弟键不得丢：{sys_out}");
+
+        // 无 ruoyi 块的 system 条目：共享兜底新增
+        let bare = "server:\n  port: 9201\n";
+        let mut bare_out = bare.to_string();
+        rewrite_one_yaml(&mut bare_out, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        // 页脚 ICP（默认开）会先建 ruoyi 块，profile 追加为其子键
+        assert!(
+            bare_out.contains("\n  profile: D:/data/upload"),
+            "共享条目应兜底新增 ruoyi.profile：{bare_out}"
+        );
+
+        let file_yml = FILE_YML;
+        let mut f_out = file_yml.to_string();
+        rewrite_one_yaml(&mut f_out, "ruoyi-file-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(
+            f_out.contains("path: D:/data/upload"),
+            "file.path 应替换：{f_out}"
+        );
+        assert!(!f_out.contains("D:/ruoyi/uploadPath"), "{f_out}");
+        assert!(f_out.contains("prefix: /statics"), "file 兄弟键不得丢：{f_out}");
+
+        // auth 条目（无 ruoyi 块、非共享、非 file）不应出现 profile
+        let auth = "server:\n  port: 9200\n";
+        let mut a_out = auth.to_string();
+        rewrite_one_yaml(&mut a_out, "ruoyi-auth-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(!a_out.contains("profile:"), "无关条目不得写入：{a_out}");
+
+        // 空串 = 零改动
+        let mut off = CustomizeParams::default();
+        off.upload_path = String::new();
+        let mut sys2 = system.to_string();
+        rewrite_one_yaml(&mut sys2, "ruoyi-system-dev.yml", &off, "ry-cloud", true, &|_| {});
+        assert!(sys2.contains("profile: D:/ruoyi/uploadPath"), "空串不得改：{sys2}");
+    }
+
+    /// Windows 反斜杠路径：写入时统一归一为正斜杠（Java 两种分隔符等价），
+    /// 归一后为官方风格裸标量，SQL 往返逐字还原
+    #[test]
+    fn upload_path_backslash_normalized_and_sql_roundtrip() {
+        let mut p = CustomizeParams::default();
+        p.upload_path = "D:\\data\\upload dir".into();
+        let system = "ruoyi:\n  profile: D:/ruoyi/uploadPath\n";
+        let mut out = system.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(
+            out.contains("profile: D:/data/upload dir"),
+            "反斜杠路径应归一为正斜杠裸标量：{out}"
+        );
+        assert!(!out.contains('\\'), "产物不得残留反斜杠：{out}");
+        let sql = sample_insert(&out);
+        let configs = parse_config_sql_text(&sql).unwrap();
+        assert_eq!(configs[0].content, out, "SQL 往返后应逐字还原");
+    }
+
+    /// demoEnabled 三态：Some(false) 翻转已有 true；Some(true) 写 true；None 不动；
+    /// 无 ruoyi 块时落共享条目
+    #[test]
+    fn demo_enabled_three_state_writes() {
+        let yaml = "ruoyi:\n  name: RuoYi\n  demoEnabled: true\n";
+        let mut p = CustomizeParams::default();
+        p.demo_enabled = Some(false);
+        let mut out = yaml.to_string();
+        rewrite_one_yaml(&mut out, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(out.contains("demoEnabled: false"), "{out}");
+        assert!(!out.contains("demoEnabled: true"), "{out}");
+        assert!(out.contains("name: RuoYi"), "兄弟键不得丢：{out}");
+
+        p.demo_enabled = Some(true);
+        let mut out2 = yaml.replace("demoEnabled: true", "demoEnabled: false");
+        rewrite_one_yaml(&mut out2, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(out2.contains("demoEnabled: true"), "{out2}");
+
+        p.demo_enabled = None;
+        // None 零改动：application 条目（非共享、无服务端口插入、无 ruoyi 兜底分支）
+        // 与原文逐字一致——demoEnabled 不出现任何 diff
+        let mut out3 = yaml.to_string();
+        rewrite_one_yaml(&mut out3, "application-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert_eq!(out3, yaml, "None 时不得有任何改动");
+
+        // 无 ruoyi 块的共享条目：新增块写 demoEnabled（页脚 ICP 默认开，会先建 ruoyi 块）
+        p.demo_enabled = Some(false);
+        let bare = "server:\n  port: 9201\n";
+        let mut bare_out = bare.to_string();
+        rewrite_one_yaml(&mut bare_out, "ruoyi-system-dev.yml", &p, "ry-cloud", true, &|_| {});
+        assert!(bare_out.contains("\n  demoEnabled: false"), "{bare_out}");
+    }
+
+    /// live 端点：默认参数与旧硬编码一致；参数非空时地址补 scheme、凭据与 tenant 跟随
+    #[test]
+    fn live_nacos_endpoint_from_params_defaults_and_custom() {
+        let def = LiveNacosEndpoint::from_params(&CustomizeParams::default());
+        assert_eq!(def.base_url, "http://127.0.0.1:8848");
+        assert_eq!(def.username, "nacos");
+        assert_eq!(def.password, "nacos", "空密码必须回退官方默认 nacos/nacos（行为不变）");
+        assert_eq!(def.tenants, vec!["public".to_string(), String::new()]);
+
+        let mut p = CustomizeParams::default();
+        p.nacos_server_addr = "10.0.0.5:8848".into();
+        p.nacos_username = "ops".into();
+        p.nacos_password = "nacos-Pass123".into();
+        p.nacos_namespace = "dev-ns".into();
+        let ep = LiveNacosEndpoint::from_params(&p);
+        assert_eq!(ep.base_url, "http://10.0.0.5:8848", "无 scheme 应补 http://");
+        assert_eq!(ep.username, "ops");
+        assert_eq!(ep.password, "nacos-Pass123");
+        assert_eq!(ep.tenants, vec!["dev-ns".to_string()], "命名空间非空时只试该 tenant");
+
+        let mut with_scheme = CustomizeParams::default();
+        with_scheme.nacos_server_addr = "https://nacos.example.com:8848".into();
+        assert_eq!(
+            LiveNacosEndpoint::from_params(&with_scheme).base_url,
+            "https://nacos.example.com:8848",
+            "带 scheme 的地址应原样使用"
+        );
+
+        // 仅用户名非空、密码留空：用户名生效、密码回退 nacos（逐字段独立回落）
+        let mut only_user = CustomizeParams::default();
+        only_user.nacos_username = "ops".into();
+        let ep2 = LiveNacosEndpoint::from_params(&only_user);
+        assert_eq!(ep2.username, "ops");
+        assert_eq!(ep2.password, "nacos");
+    }
+
+    /// live 登录表单：自定义凭据可编码，且编码结果不含密码明文泄漏以外的异常
+    #[test]
+    fn live_nacos_login_form_uses_endpoint_credentials() {
+        let mut p = CustomizeParams::default();
+        p.nacos_username = "ops".into();
+        p.nacos_password = "p@ss w0rd".into();
+        let ep = LiveNacosEndpoint::from_params(&p);
+        let body = form_url_encode(&[
+            ("username", ep.username.as_str()),
+            ("password", ep.password.as_str()),
+        ]);
+        assert_eq!(body, "username=ops&password=p%40ss+w0rd", "{body}");
+        // 空参数回落：与旧 nacos_login_fields() 编码一致
+        let def = LiveNacosEndpoint::default();
+        let def_body = form_url_encode(&[
+            ("username", def.username.as_str()),
+            ("password", def.password.as_str()),
+        ]);
+        assert_eq!(def_body, form_url_encode(&nacos_login_fields()));
+    }
+
+    /// upsert_top_level_scalar：替换 / 块内补写 / 无块追加 / 幂等 / 官方风格裸标量
+    #[test]
+    fn upsert_top_level_scalar_replace_insert_append() {
+        // 已有子键 → 原位替换（保留缩进与行内注释）
+        let y = "ruoyi:\n  name: RuoYi\n  profile: /old/path # 上传目录\n  captchaType: math\nother: 1\n";
+        let out = upsert_top_level_scalar(y, "ruoyi", "profile", "D:/data/upload");
+        assert!(out.contains("profile: D:/data/upload # 上传目录"), "{out}");
+        assert!(out.contains("/old/path") == false, "{out}");
+        assert!(out.contains("name: RuoYi") && out.contains("captchaType: math") && out.contains("other: 1"), "{out}");
+
+        // 块内无子键 → 插到块末尾（缩进随块内首子行）
+        let y2 = "ruoyi:\n    name: RuoYi\nother: 1\n";
+        let out2 = upsert_top_level_scalar(y2, "ruoyi", "demoEnabled", "false");
+        assert!(
+            out2.contains("ruoyi:\n    name: RuoYi\n    demoEnabled: false\nother: 1\n"),
+            "缺省缩进应取块内首子行（4 空格）：{out2}"
+        );
+
+        // 无顶层块 → 文件末尾追加
+        let y3 = "server:\n  port: 8080\n";
+        let out3 = upsert_top_level_scalar(y3, "ruoyi", "profile", "/data/upload");
+        assert!(out3.contains("server:\n  port: 8080\n\nruoyi:\n  profile: /data/upload\n"), "{out3}");
+
+        // 幂等：同值重复调用不变；裸标量不加引号（`false`、`D:/x`）
+        let once = upsert_top_level_scalar(y, "ruoyi", "profile", "D:/data/upload");
+        let twice = upsert_top_level_scalar(&once, "ruoyi", "profile", "D:/data/upload");
+        assert_eq!(once, twice);
+        assert!(!once.contains("\"D:/data/upload\""), "安全路径不应加引号：{once}");
+        // 含 `: ` 的值退回双引号转义
+        let tricky = upsert_top_level_scalar(y, "ruoyi", "profile", "D:/a b: c#d");
+        assert!(tricky.contains("profile: \"D:/a b: c#d\""), "{tricky}");
     }
 }

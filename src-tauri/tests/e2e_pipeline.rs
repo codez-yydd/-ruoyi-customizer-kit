@@ -241,9 +241,17 @@ fn full_pipeline_end_to_end() {
     );
 
     // 7. 报告（引用交付文档路径）
-    let report_path =
-        report::generate_report(root, &info, &params, &results, &checks, Some(&delivery_path))
-            .unwrap();
+    let report_dir = report::create_report_dir(root).unwrap();
+    let report_path = report::generate_report(
+        &report_dir,
+        &info,
+        &params,
+        &results,
+        &checks,
+        Some(&delivery_path),
+        None,
+    )
+    .unwrap();
     assert!(report_path.is_file(), "报告文件应存在");
     let report_content = fs::read_to_string(&report_path).unwrap();
     assert!(report_content.contains("# 若依锻造台 执行报告"));
@@ -418,9 +426,17 @@ fn vue_mail_and_email_login_pipeline() {
         !delivery_content.contains("mail-secret-should-not-leak"),
         "交付文档不得出现授权码明文"
     );
-    let report_path =
-        report::generate_report(root, &info, &params, &results, &checks, Some(&delivery_path))
-            .unwrap();
+    let report_dir = report::create_report_dir(root).unwrap();
+    let report_path = report::generate_report(
+        &report_dir,
+        &info,
+        &params,
+        &results,
+        &checks,
+        Some(&delivery_path),
+        None,
+    )
+    .unwrap();
     let report_content = fs::read_to_string(&report_path).unwrap();
     assert!(report_content.contains("邮件发送：已启用"), "{report_content}");
     assert!(
