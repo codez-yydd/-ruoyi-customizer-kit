@@ -58,9 +58,12 @@ async function run() {
     result.value = resp
     store.setExecuteResult(resp)
     store.log(resp.message, resp.success ? 'SUCCESS' : 'WARN')
-    // 执行成功后清理识别用的临时目录（zip 解压根或 git clone 根）
-    if (resp.success && extractRoot.value) {
-      await cleanupTempDir()
+    // 执行成功后清理识别用的临时目录（zip 解压根或 git clone 根）与官方拉取的临时 zip
+    if (resp.success) {
+      if (extractRoot.value) {
+        await cleanupTempDir()
+      }
+      await cleanupTempZip()
     }
     // 执行成功后保存配置到历史记录（完整参数，含密码与密钥）
     if (resp.success && params.value) {
@@ -73,7 +76,7 @@ async function run() {
   }
 }
 
-/** 清理识别用的临时目录（静默失败，不阻断流程） */
+/** 清理识别用的临时目录（zip 解压根或 git clone 根；静默失败，不阻断流程） */
 async function cleanupTempDir() {
   if (!extractRoot.value) return
   try {
@@ -84,10 +87,24 @@ async function cleanupTempDir() {
   }
 }
 
+/**
+ * 清理官方拉取遗留的临时 zip 文件（后端仅允许删除系统临时目录内的文件，
+ * 用户自选的本地 zip 会被安全跳过；静默失败，不阻断流程）
+ */
+async function cleanupTempZip() {
+  if (sourceType.value !== 'zip' || !zipPath.value) return
+  try {
+    await api.cleanupTempFile(zipPath.value)
+  } catch (e) {
+    store.log(`清理临时压缩包异常：${e}`, 'WARN')
+  }
+}
+
 async function backHome() {
-  // 兜底：若临时目录仍未清理（如执行失败未走成功分支），返回首页前清理
-  if (extractRoot.value) {
+  // 兜底：若临时目录或临时 zip 仍未清理（如执行失败未走成功分支），返回首页前清理
+  if (extractRoot.value || (sourceType.value === 'zip' && zipPath.value)) {
     await cleanupTempDir()
+    await cleanupTempZip()
   }
   store.resetFlow()
   router.push({ name: 'home' })

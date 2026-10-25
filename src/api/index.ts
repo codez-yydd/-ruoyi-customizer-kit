@@ -69,12 +69,21 @@ export function extractZipProject(zipPath: string): Promise<ExtractResponse> {
 }
 
 /**
- * 清理识别用的临时解压目录。
+ * 清理临时解压目录。
  * 仅允许删除系统临时目录下的路径（后端有安全校验）。
  * @param path 临时解压目录的绝对路径（即 extractZipProject 返回的 root_path 的解压根）
  */
 export function cleanupExtractDir(path: string): Promise<CleanupResponse> {
   return invoke<CleanupResponse>('cleanup_extract_dir', { path })
+}
+
+/**
+ * 清理临时文件（官方拉取下载的 zip 压缩包）。
+ * 仅允许删除系统临时目录下的文件（后端有安全校验），用户自选的本地 zip 会被跳过。
+ * @param path 文件绝对路径
+ */
+export function cleanupTempFile(path: string): Promise<CleanupResponse> {
+  return invoke<CleanupResponse>('cleanup_temp_file', { path })
 }
 
 /**
@@ -112,7 +121,8 @@ export function executeTransform(
 
 /**
  * 导出当前配置到 JSON 文件。
- * 注意：后端会自动清空敏感字段（密码/密钥）再落盘。
+ * 注意：后端按传入 params 原样序列化落盘，密码与密钥等敏感字段为明文，
+ * 导出文件须妥善保管，避免提交到公开仓库。
  * @param path 目标文件绝对路径
  * @param params 改造参数
  */

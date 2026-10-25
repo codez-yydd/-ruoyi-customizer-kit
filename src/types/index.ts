@@ -332,6 +332,7 @@ export type TaskType =
   | 'SetupCaptchaSlider'
   | 'SetupApiEncrypt'
   | 'ValidateProject'
+  | 'GenerateDeliveryDoc'
   | 'GenerateReport'
 
 export type RiskLevel = 'Low' | 'Medium' | 'High'

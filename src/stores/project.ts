@@ -147,9 +147,15 @@ export const useProjectStore = defineStore('project', () => {
     outputDir.value = ''
   }
 
-  /** 设置改造参数 */
+  /**
+   * 设置改造参数（参数配置页点击下一步时调用）。
+   * 参数重新提交后，旧的执行结果与当前参数不匹配，立即失效：
+   * 清除 executeResult 后 maxStep 随之回退到预览阶段（4），执行页不再展示旧结果，
+   * 会按新参数重新执行；持久化 watch 会同步清掉 localStorage 里的旧结果。
+   */
   function setParams(p: CustomizeParams) {
     params.value = p
+    executeResult.value = null
   }
 
   /** 设置预览结果 */

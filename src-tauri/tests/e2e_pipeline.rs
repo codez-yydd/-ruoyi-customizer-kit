@@ -456,6 +456,11 @@ fn vue_mail_switches_off_is_byte_identical() {
     filled.mail_from_name = "运营中心".into();
     let (_d2, after) = run(&filled);
 
+    // B8：druid 控制台口令改为每次执行随机生成，两次独立执行须先归一化该行再比较
+    //（与 .ry-forge-report 时间戳不可比的处理同理，比较目标仍是「邮件参数零影响」）
+    let before = normalize_druid_password(before);
+    let after = normalize_druid_password(after);
+
     assert_eq!(
         before.keys().collect::<Vec<_>>(),
         after.keys().collect::<Vec<_>>(),
@@ -468,4 +473,36 @@ fn vue_mail_switches_off_is_byte_identical() {
             "{path} 内容应逐字节一致"
         );
     }
+}
+
+/// 把快照中 yaml 的 `login-password: xxx` 行替换为固定占位（口令每次执行随机生成，不可比）
+fn normalize_druid_password(
+    snap: std::collections::BTreeMap<String, Vec<u8>>,
+) -> std::collections::BTreeMap<String, Vec<u8>> {
+    snap.into_iter()
+        .map(|(path, content)| {
+            if !(path.ends_with(".yaml") || path.ends_with(".yml")) {
+                return (path, content);
+            }
+            let text = String::from_utf8_lossy(&content).to_string();
+            if !text.contains("login-password:") {
+                return (path, content);
+            }
+            let mut normalized: String = text
+                .lines()
+                .map(|l| {
+                    if l.trim_start().starts_with("login-password:") {
+                        "login-password: <random-per-execution>"
+                    } else {
+                        l
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.ends_with('\n') {
+                normalized.push('\n');
+            }
+            (path, normalized.into_bytes())
+        })
+        .collect()
 }

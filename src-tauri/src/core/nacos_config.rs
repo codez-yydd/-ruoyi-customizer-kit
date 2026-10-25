@@ -650,7 +650,10 @@ fn rewrite_one_yaml(
         *yaml = unwrap_simple_dynamic_master_to_flat(yaml);
     }
     *yaml = rewrite_redis_in_place(yaml);
-    if yaml.contains("token:") {
+    // P1：token 块改写必须与 security 侧的 enable_jwt 门控对齐——
+    // 未开启 JWT 时 Java 常量保持官方默认，此处也不得改写 yaml，
+    // 否则前端残留的手填 jwt_secret 会只写入 Nacos 造成双写点密钥分叉。
+    if params.enable_jwt && yaml.contains("token:") {
         *yaml = rewrite_token_yaml(yaml, params);
     }
     if params.enable_mybatis_plus
@@ -1288,11 +1291,11 @@ fn rewrite_redis_in_place(yaml: &str) -> String {
 }
 
 fn rewrite_token_yaml(yaml: &str, params: &CustomizeParams) -> String {
-    let secret = if params.jwt_secret.is_empty() {
-        params.jwt_secret.clone()
-    } else {
-        params.jwt_secret.clone()
-    };
+    // B4：调用方均已门控 enable_jwt（未开启 JWT 时不进入本函数、token 块保持原值）。
+    // 开启且留空时解析为随机强密钥（executor 已在任务分派前统一解析一次，
+    // 此处兜底直接调用本引擎的场景），保证写入 Nacos 的 token.secret 与
+    // TokenConstants.SECRET 语义一致。
+    let secret = crate::core::security::effective_jwt_secret(params);
     let expire = params.jwt_expire_minutes.to_string();
     let mut out = String::with_capacity(yaml.len());
     let mut in_token = false;

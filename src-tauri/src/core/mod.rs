@@ -609,6 +609,21 @@ impl CustomizeParams {
                 self.db_type
             ));
         }
+        // 输出目录已存在且非空时拒绝：重复执行会把新旧两套前缀目录混在一起产生脏数据
+        // （目录存在但为空属于用户预建目录，允许）
+        if !self.output_dir.trim().is_empty() {
+            let out = std::path::Path::new(self.output_dir.trim());
+            if out.is_dir() {
+                if let Ok(mut entries) = std::fs::read_dir(out) {
+                    if entries.next().is_some() {
+                        return Some(format!(
+                            "输出目录 {} 已存在且非空：重复执行会与已有内容混合产生脏数据，请更换输出目录或清空后重试",
+                            out.display()
+                        ));
+                    }
+                }
+            }
+        }
         // UniApp 模块前缀校验
         if self.enable_uniapp {
             if self.new_module_prefix.is_empty() {
@@ -636,6 +651,29 @@ impl CustomizeParams {
             if self.admin_nickname.contains('\'') || self.admin_nickname.contains('\\') {
                 return Some("管理员昵称不能包含单引号或反斜杠".into());
             }
+        }
+        // JWT secret 字符集校验：secret 会被拼进 yaml 行与 Java 字符串常量
+        // （TokenConstants 的 SECRET = "..."），`$` 会被正则当捕获组、引号/反斜杠破坏字符串字面量、
+        // 空白破坏 yaml 行结构，必须提前拒绝
+        if !self.jwt_secret.is_empty() && !is_valid_jwt_secret(&self.jwt_secret) {
+            return Some(format!(
+                "JWT 密钥「{}」不合法：仅允许字母、数字与 _ @ . - + * / = ! # % ^ &，不能包含 $ 引号 反斜杠或空白",
+                self.jwt_secret
+            ));
+        }
+        // 数据库名字符集校验：库名会直接拼进 CREATE DATABASE / USE 与 jdbc url，
+        // 仅允许字母、数字、下划线（与 admin_username 的校验风格一致，防 SQL 注入）
+        if !self.db_name.is_empty() && !is_valid_db_name(&self.db_name) {
+            return Some(format!(
+                "数据库名「{}」不合法：仅允许字母、数字、下划线",
+                self.db_name
+            ));
+        }
+        if !self.config_db_name.is_empty() && !is_valid_db_name(&self.config_db_name) {
+            return Some(format!(
+                "Cloud 配置库名「{}」不合法：仅允许字母、数字、下划线",
+                self.config_db_name
+            ));
         }
         if let Some(err) = validate_remove_modules(&self.remove_modules) {
             return Some(err);
@@ -825,6 +863,21 @@ pub(crate) fn yaml_quote_scalar(val: &str) -> String {
 fn is_valid_admin_username(name: &str) -> bool {
     let re = regex::Regex::new(r"^[a-zA-Z0-9_.\-]{2,30}$").unwrap();
     re.is_match(name)
+}
+
+/// JWT secret 合法性：字母、数字与 `_ @ . - + * / = ! # % ^ &`。
+/// 明确排除 `$`（security.rs 的替换模板串会把它解析为捕获组）、引号、反斜杠与空白
+/// （会破坏 TokenConstants 的 Java 字符串字面量与 yaml 行）。
+fn is_valid_jwt_secret(secret: &str) -> bool {
+    !secret.is_empty()
+        && secret
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '@' | '.' | '-' | '+' | '*' | '/' | '=' | '!' | '#' | '%' | '^' | '&'))
+}
+
+/// 数据库名合法性：仅字母、数字、下划线（库名直接拼接 SQL 与 jdbc url，防注入）
+fn is_valid_db_name(name: &str) -> bool {
+    !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Java 包名合法性：每段以字母开头，仅含字母/数字/下划线/$，至少两段（如 com.xxx）

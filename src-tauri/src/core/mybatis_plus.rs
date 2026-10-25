@@ -414,44 +414,152 @@ pub fn adapt_generator_templates(
 }
 
 // ---------- 模板改写 ----------
+// 生成器模板必须「保留原内容、只调继承」（与下方 adapt_current_service 处理存量源码同思路）：
+// 官方 controller.java.vm 调用 selectXxxList / insertXxx / updateXxx / deleteXxx 等方法，
+// serviceImpl 的方法体也调用 mapper 的同名方法，整文件替换成空壳会导致生成代码不可编译。
 
-/// Mapper 模板 → 继承 BaseMapper，移除默认 CRUD
+/// Mapper 模板 → 保留原有方法声明，仅追加 `extends BaseMapper<${ClassName}>`
+/// （serviceImpl 模板保留的方法体仍调用这些 mapper 方法，声明不能删）
 fn adapt_mapper_vm(content: &str) -> Option<String> {
     if content.contains("extends BaseMapper") {
         return None; // 已适配
     }
-    Some(
-        "package ${packageName}.mapper;\n\nimport com.baomidou.mybatisplus.core.mapper.BaseMapper;\nimport ${packageName}.domain.${ClassName};\n\n/**\n * ${functionName}Mapper接口\n */\npublic interface ${ClassName}Mapper extends BaseMapper<${ClassName}>\n{\n}\n".to_string(),
-    )
+    let mut out = String::with_capacity(content.len() + 128);
+    let mut import_added = false;
+    let mut decl_done = false;
+    for line in content.lines() {
+        // 在首个 import 行前插入 BaseMapper import（仅一次）
+        if !import_added && line.trim_start().starts_with("import ") {
+            out.push_str("import com.baomidou.mybatisplus.core.mapper.BaseMapper;\n");
+            import_added = true;
+        }
+        if !decl_done && line.contains("interface ${ClassName}Mapper") {
+            // 无 import 行的模板：在声明行前补 import
+            if !import_added {
+                out.push_str("import com.baomidou.mybatisplus.core.mapper.BaseMapper;\n");
+                import_added = true;
+            }
+            out.push_str(&line.replacen(
+                "interface ${ClassName}Mapper",
+                "interface ${ClassName}Mapper extends BaseMapper<${ClassName}>",
+                1,
+            ));
+            decl_done = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !decl_done {
+        return None; // 未识别到接口声明，跳过（避免重复插入 import）
+    }
+    Some(out)
 }
 
-/// Service 模板 → 继承 IService
+/// Service 模板 → 保留原有方法声明，仅追加 `extends IService<${ClassName}>`
+/// （controller 模板调用的全部 service 方法必须仍在接口中声明）
 fn adapt_service_vm(content: &str) -> Option<String> {
     if content.contains("extends IService") {
         return None;
     }
-    Some(
-        "package ${packageName}.service;\n\nimport java.util.List;\nimport ${packageName}.domain.${ClassName};\nimport com.baomidou.mybatisplus.extension.service.IService;\n\n/**\n * ${functionName}Service接口\n */\npublic interface I${ClassName}Service extends IService<${ClassName}>\n{\n}\n".to_string(),
-    )
+    let mut out = String::with_capacity(content.len() + 128);
+    let mut import_added = false;
+    let mut decl_done = false;
+    for line in content.lines() {
+        if !import_added && line.trim_start().starts_with("import ") {
+            out.push_str("import com.baomidou.mybatisplus.extension.service.IService;\n");
+            import_added = true;
+        }
+        if !decl_done && line.contains("interface I${ClassName}Service") {
+            if !import_added {
+                out.push_str("import com.baomidou.mybatisplus.extension.service.IService;\n");
+                import_added = true;
+            }
+            out.push_str(&line.replacen(
+                "interface I${ClassName}Service",
+                "interface I${ClassName}Service extends IService<${ClassName}>",
+                1,
+            ));
+            decl_done = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !decl_done {
+        return None; // 未识别到接口声明，跳过
+    }
+    Some(out)
 }
 
-/// ServiceImpl 模板 → 继承 ServiceImpl
+/// ServiceImpl 模板 → 保留原有方法实现，仅改为
+/// `extends ServiceImpl<${ClassName}Mapper, ${ClassName}> implements I${ClassName}Service`
 fn adapt_service_impl_vm(content: &str) -> Option<String> {
     if content.contains("extends ServiceImpl") {
         return None;
     }
-    Some(
-        "package ${packageName}.service.impl;\n\nimport org.springframework.stereotype.Service;\nimport com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;\nimport ${packageName}.domain.${ClassName};\nimport ${packageName}.mapper.${ClassName}Mapper;\nimport ${packageName}.service.I${ClassName}Service;\n\n/**\n * ${functionName}Service业务层处理\n */\n@Service\npublic class ${ClassName}ServiceImpl extends ServiceImpl<${ClassName}Mapper, ${ClassName}> implements I${ClassName}Service\n{\n}\n".to_string(),
-    )
+    let mut out = String::with_capacity(content.len() + 192);
+    let mut import_added = false;
+    let mut decl_done = false;
+    for line in content.lines() {
+        if !import_added && line.trim_start().starts_with("import ") {
+            out.push_str("import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;\n");
+            import_added = true;
+        }
+        if !decl_done && line.contains("class ${ClassName}ServiceImpl") {
+            if !import_added {
+                out.push_str("import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;\n");
+                import_added = true;
+            }
+            let new_line = if line.contains("implements") {
+                // 官方模板：public class X implements I${ClassName}Service
+                line.replacen(
+                    "class ${ClassName}ServiceImpl implements",
+                    "class ${ClassName}ServiceImpl extends ServiceImpl<${ClassName}Mapper, ${ClassName}> implements",
+                    1,
+                )
+            } else {
+                // 无 implements 的变体：补 extends + implements
+                line.replacen(
+                    "class ${ClassName}ServiceImpl",
+                    "class ${ClassName}ServiceImpl extends ServiceImpl<${ClassName}Mapper, ${ClassName}> implements I${ClassName}Service",
+                    1,
+                )
+            };
+            out.push_str(&new_line);
+            decl_done = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if !decl_done {
+        return None; // 未识别到类声明，跳过
+    }
+    Some(out)
 }
 
-/// Domain 模板 → 加 @TableName，Long 主键加 @TableId + @JsonSerialize
+/// Domain 模板 → 加 @TableName；开 Long ID 序列化时给 Long 字段注入 @JsonSerialize
+///
+/// 官方模板字段声明是 `private $column.javaType $column.javaField;`（Velocity 变量），
+/// 字面量正则永不命中，必须注入 Velocity 条件注解：
+/// ```text
+/// #if($column.javaType == 'Long')
+///     @JsonSerialize(using = ToStringSerializer.class)
+/// #end
+/// ```
+/// 渲染时仅 Long 字段带注解，其余字段原样输出。
+/// 非官方写法的字面量 Long 字段（如 fork 模板直接写 `private Long id;`）保留原有正则路径。
+/// 雪花 ID 的 IdType.INPUT 转换由 snowflake::mark_domain_idtype_input 处理，但它只把
+/// 已有的 @TableId 改写为 IdType.INPUT、不新增 @TableId；官方 vm 模板渲染出的 Long
+/// 主键不带 @TableId（此处对 Velocity 行也仅注入 @JsonSerialize），因此该场景不会
+/// 得到 IdType.INPUT——已知缺口，留待后续补齐。
 fn adapt_domain_vm(content: &str, enable_long_id: bool) -> Option<String> {
     if content.contains("@TableName") {
         return None;
     }
-    // 简化：在类声明上方加 @TableName 注解行
-    // 定位 "public class ${ClassName}" 行，在其前插入注解与 import
+    // 官方模板的字段声明行（Velocity 变量形式）
+    const VM_FIELD_LINE: &str = "private $column.javaType $column.javaField;";
     let mut out = String::new();
     let mut inserted_imports = false;
     let mut inserted_annotation = false;
@@ -471,12 +579,17 @@ fn adapt_domain_vm(content: &str, enable_long_id: bool) -> Option<String> {
             out.push_str("@TableName(\"${tableName}\")\n");
             inserted_annotation = true;
         }
+        // Long 字段声明行前注入 Velocity 条件注解（B2：字面正则对官方模板永不命中）
+        if enable_long_id && line.trim() == VM_FIELD_LINE {
+            out.push_str("#if($column.javaType == 'Long')\n");
+            out.push_str("    @JsonSerialize(using = ToStringSerializer.class)\n");
+            out.push_str("#end\n");
+        }
         out.push_str(line);
         out.push('\n');
     }
-    // Long 主键注解：在 ${pkColumn} 相关主键字段上添加（保守处理：仅给 Long 主键字段行追加注解）
+    // 兼容非官方模板的字面量 Long 字段：保留原有正则路径
     if enable_long_id {
-        // 对包含 private ${pkColumn.javaType} ${pkColumn.javaField}; 且类型为 Long 的行加注解
         let re = regex::Regex::new(r"(private\s+Long\s+\w+;)").unwrap();
         out = re.replace_all(&out, "@TableId\n@JsonSerialize(using = ToStringSerializer.class)\n    $1").to_string();
     }

@@ -185,11 +185,15 @@ pub fn replace_admin_password(content: &mut String, new_hash: &str) -> bool {
 }
 
 /// 关闭注册：sys_config 表中 sys.account.registerUser 的 config_value 改为 false。
-/// 若依的 INSERT 语句格式：... config_key = 'sys.account.registerUser', ... config_value = 'true' ...
-/// （有些版本是 true，这里统一改为 false）
+/// 兼容两种官方形态：
+/// - 旧版 update 式：`... config_key = 'sys.account.registerUser', ... config_value = 'true' ...`
+/// - 官方种子 SQL values 式（如 ry_20260417.sql）：
+///   `insert into sys_config values(5, '账号自助-...', 'sys.account.registerUser', 'false', ...)`
+///   按 sys_config 官方列序（config_id, config_name, config_key, config_value, ...）替换第 4 个值。
 pub fn disable_register(content: &mut String) -> bool {
-    // 在 sys.account.registerUser 所在的 INSERT 语句内，把 config_value = 'true' 改为 'false'
-    // 两个捕获组：前缀（到 = '）+ 闭合单引号
+    let mut changed = false;
+
+    // 形态一：update / 列名赋值式（config_value = 'true'）
     let re = regex::Regex::new(
         r#"(?is)(sys\.account\.registerUser'[^;]*?config_value\s*=\s*')(?:true|false)(')"#,
     )
@@ -197,10 +201,110 @@ pub fn disable_register(content: &mut String) -> bool {
     let new = re.replace_all(content, r"${1}false${2}").to_string();
     if *content != new {
         *content = new;
-        true
-    } else {
-        false
+        changed = true;
     }
+
+    // 形态二：官方 values 式插入——按行定位 sys.account.registerUser，替换第 4 个值（config_value）。
+    // B5：逐行保留原有行尾（CRLF/LF），且仅在本形态实际改行时才回写，
+    // 避免只要任一形态命中就用 lines()+join("\n") 重建整文件、把 CRLF 整体归一为 LF。
+    let mut out = String::with_capacity(content.len());
+    let mut values_changed = false;
+    for chunk in content.split_inclusive('\n') {
+        // chunk 自带行尾；拆出逻辑行与原行尾（末行可能无行尾），与 lines() 的语义一致
+        let (body, eol) = if let Some(b) = chunk.strip_suffix('\n') {
+            match b.strip_suffix('\r') {
+                Some(nb) => (nb, "\r\n"),
+                None => (b, "\n"),
+            }
+        } else {
+            (chunk, "")
+        };
+        if body.contains("sys.account.registerUser") {
+            if let Some(new_line) = replace_register_user_value_in_insert_line(body) {
+                out.push_str(&new_line);
+                out.push_str(eol);
+                values_changed = true;
+                continue;
+            }
+        }
+        out.push_str(chunk);
+    }
+    if values_changed {
+        *content = out;
+        changed = true;
+    }
+    changed
+}
+
+/// 对单行 values 式 INSERT（`insert into sys_config values(...)`），
+/// 把第 4 个值（官方列序的 config_value）替换为 'false'。
+/// 逗号切分需感知单引号字符串（含 '' 转义）与括号嵌套（如 sysdate()）。
+/// 第 4 个值不是 'true'/'false'（既非开关值）或不足 4 个值时返回 None（不动该行）。
+fn replace_register_user_value_in_insert_line(line: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
+    let vpos = lower.find("values")?;
+    let paren = line[vpos..].find('(')? + vpos;
+    let bytes = line.as_bytes();
+    // 收集顶层（depth==1）逗号分隔的各值边界
+    let mut items: Vec<(usize, usize)> = Vec::new();
+    let mut depth = 1i32;
+    let mut in_quote = false;
+    let mut start = paren + 1;
+    let mut i = paren + 1;
+    let mut closed = false;
+    while i < bytes.len() {
+        let c = bytes[i] as char;
+        if in_quote {
+            if c == '\'' {
+                if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                    i += 2; // '' 转义
+                    continue;
+                }
+                in_quote = false;
+            }
+        } else {
+            match c {
+                '\'' => in_quote = true,
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        items.push((start, i));
+                        closed = true;
+                        break;
+                    }
+                }
+                ',' if depth == 1 => {
+                    items.push((start, i));
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if !closed || items.len() < 4 {
+        return None;
+    }
+    let (s, e) = items[3];
+    let item = &line[s..e];
+    let trimmed_item = item.trim();
+    // 仅当第 4 个值确为开关字面量时才替换，避免误伤其它列序的自定义 INSERT
+    if trimmed_item != "'true'" && trimmed_item != "'false'" && trimmed_item != "true" && trimmed_item != "false" {
+        return None;
+    }
+    if trimmed_item == "'false'" {
+        return None; // 已是 false，无需改动
+    }
+    // 保留值前后的原有空白（官方 SQL 值之间有对齐空格）
+    let lead = item.len() - item.trim_start().len();
+    let val_s = s + lead;
+    let val_e = val_s + trimmed_item.len();
+    let mut out = String::with_capacity(line.len());
+    out.push_str(&line[..val_s]);
+    out.push_str("'false'");
+    out.push_str(&line[val_e..]);
+    Some(out)
 }
 
 /// 清除演示账号：删除 login_name 为 ry / ryadmin 的 INSERT 语句行。
@@ -301,6 +405,18 @@ pub fn generate_jwt_secret() -> String {
     base64_encode(&bytes)
 }
 
+/// 解析「生效 JWT secret」：参数留空则生成随机强密钥，否则原样使用。
+/// Cloud 双写点（Nacos yaml 的 `token.secret` 与 `TokenConstants.SECRET`）必须拿到同一个值，
+/// 因此留空时的随机值只应在进入各任务前解析一次（见 executor::execute_all），
+/// 避免两处各自随机导致密钥分叉。
+pub fn effective_jwt_secret(params: &CustomizeParams) -> String {
+    if params.jwt_secret.is_empty() {
+        generate_jwt_secret()
+    } else {
+        params.jwt_secret.clone()
+    }
+}
+
 /// 简易 Base64 编码（标准字母表，含 padding），避免引入额外 crate
 fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] =
@@ -336,7 +452,9 @@ fn base64_encode(input: &[u8]) -> String {
 }
 
 /// 在 application.yaml/yml 的 token 命名空间下替换 secret 与 expireTime。
-/// 保守正则匹配：secret 行 / expireTime 行，匹配不到跳过。返回是否修改。
+/// 仅进入 `token:` 块后才替换（参照 nacos_config::rewrite_token_yaml 的作用域写法），
+/// 避免误伤文件中其它同名键（如微信 `appsecret:`、`api-encrypt.secret:`）。
+/// 匹配不到跳过。返回是否修改。
 fn customize_jwt_in_config(
     root: &Path,
     secret: &str,
@@ -354,36 +472,91 @@ fn customize_jwt_in_config(
             Some(c) => c,
             None => continue,
         };
-        let mut new_content = content;
-        // 替换 secret: xxx（token 命名空间下；保守匹配行内首个 secret: 后的值）
-        // 用 closures 替换，避免 secret 含 $ 被当捕获变量
-        let secret_re = regex::Regex::new(r"(?m)(secret\s*:\s*)(\S+)").unwrap();
-        let want_secret = secret.to_string();
-        let secret_changed = std::cell::Cell::new(false);
-        new_content = secret_re
-            .replace_all(&new_content, |caps: &regex::Captures| {
-                secret_changed.set(true);
-                format!("{}{}", &caps[1], want_secret)
-            })
-            .to_string();
-        if secret_changed.get() {
-            changed = true;
-        }
-        // 替换 expireTime: 30
-        let expire_re = regex::Regex::new(r"(?m)(expireTime\s*:\s*)\d+").unwrap();
-        let expire_new = expire_re
-            .replace_all(&new_content, format!("${{1}}{expire_minutes}"))
-            .to_string();
-        if expire_new != new_content {
-            new_content = expire_new;
-            changed = true;
-        }
-        if changed {
+        let (new_content, file_changed) = rewrite_token_block_in_yaml(&content, secret, expire_minutes);
+        if file_changed {
             let _ = std::fs::write(&path, &new_content);
             log(&format!("JWT 配置已更新：{}", path.display()));
+            changed = true;
         }
     }
     changed
+}
+
+/// 行级改写 yaml 的 `token:` 块：块内 `secret` / `expireTime` 替换为定制值，
+/// 块外内容（含其它 `secret:` / `appsecret:` 行）原样保留。
+/// 返回（新内容, 是否发生修改）。
+fn rewrite_token_block_in_yaml(yaml: &str, secret: &str, expire_minutes: i32) -> (String, bool) {
+    let expire = expire_minutes.to_string();
+    let mut out = String::with_capacity(yaml.len());
+    let mut changed = false;
+    let mut in_token = false;
+    let mut token_indent = 0usize;
+    for line in yaml.lines() {
+        let indent = indent_width(line);
+        let trimmed = line.trim_start();
+        let key = trimmed.split(':').next().unwrap_or("").trim();
+        if key == "token" && !trimmed.starts_with('#') {
+            in_token = true;
+            token_indent = indent;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_token && !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= token_indent {
+            in_token = false;
+        }
+        if in_token {
+            if key == "secret" && !secret.is_empty() {
+                if let Some(nl) = replace_yaml_scalar_line_value(line, "secret", secret) {
+                    out.push_str(&nl);
+                    out.push('\n');
+                    changed = true;
+                    continue;
+                }
+            }
+            if key == "expireTime" {
+                if let Some(nl) = replace_yaml_scalar_line_value(line, "expireTime", &expire) {
+                    out.push_str(&nl);
+                    out.push('\n');
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !yaml.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    (out, changed)
+}
+
+/// 替换 yaml 行 `key: 旧值`（保留缩进与行尾注释）为 `key: 新值`。
+/// 非 `key:` 开头的行返回 None。
+fn replace_yaml_scalar_line_value(line: &str, key: &str, new_val: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let prefix = format!("{key}:");
+    if !trimmed.starts_with(&prefix) {
+        return None;
+    }
+    let indent = &line[..line.len() - trimmed.len()];
+    let after = trimmed[prefix.len()..].trim_start();
+    let comment = after
+        .find('#')
+        .map(|i| after[i..].trim_end().to_string())
+        .unwrap_or_default();
+    let comment_part = if comment.is_empty() {
+        String::new()
+    } else {
+        format!(" {comment}")
+    };
+    Some(format!("{indent}{key}: {new_val}{comment_part}"))
+}
+
+/// 计算行首缩进宽度（空格数）
+fn indent_width(line: &str) -> usize {
+    line.len() - line.trim_start().len()
 }
 
 /// Cloud JWT 主路径：改 Java 常量（官方核实 2026-09-05）。

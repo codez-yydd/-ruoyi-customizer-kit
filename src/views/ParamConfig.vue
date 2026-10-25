@@ -602,6 +602,17 @@ watch(
   }
 )
 
+/**
+ * 关闭 JWT 开关时清空手填的 secret：输入框随 v-if 隐藏但值会残留在表单里，
+ * 残留旧值会在重新开启时误导使用者，也可能随参数误下发到执行引擎
+ */
+watch(
+  () => form.enable_jwt,
+  (v) => {
+    if (!v) form.jwt_secret = ''
+  }
+)
+
 // 首次进入（尚无已存参数）：拆仓 Vue/Cloud 且源仓无前端目录时，默认开启生成预置后台
 if (!storedParams.value && sourceHasNoFrontend.value && !isDisabled('enable_replace_ui')) {
   form.enable_replace_ui = true
@@ -653,6 +664,16 @@ async function chooseOutputDir() {
 
 /** 导出当前配置到 JSON 文件 */
 async function exportConfig() {
+  // 后端按表单原样序列化，密码/密钥等敏感字段为明文，导出前先确认
+  try {
+    await ElMessageBox.confirm(
+      '导出的配置文件包含明文密码与密钥，请妥善保管，避免提交到公开仓库。',
+      '导出配置',
+      { type: 'warning', confirmButtonText: '继续导出', cancelButtonText: '取消' }
+    )
+  } catch {
+    return
+  }
   const path = await pickSaveJsonFile(
     `${form.new_module_prefix || 'ruoyi-forge'}-config.json`
   )

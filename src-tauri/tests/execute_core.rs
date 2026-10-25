@@ -47,6 +47,11 @@ fn build_fake_project() -> tempfile::TempDir {
         "<template><div>若依后台管理系统</div></template>\n",
     );
     write(ui.join("package.json"), "{\"name\":\"ruoyi\",\"title\":\"若依管理系统\"}");
+    // 官方 ruoyi-ui/.env.development 原文片段（dot-env 文件扩展名不在白名单，须按文件名识别）
+    write(
+        ui.join(".env.development"),
+        "# 页面标题\nVUE_APP_TITLE = 若依管理系统\n\n# 开发环境配置\nENV = 'development'\n\n# 若依管理系统/开发环境\nVUE_APP_BASE_API = '/dev-api'\n",
+    );
 
     dir
 }
@@ -148,6 +153,16 @@ fn executes_core_transform_end_to_end() {
     let login = fs::read_to_string(root.join("demo-ui/src/views/login.vue")).unwrap();
     assert!(login.contains("测试系统"), "前端标题应已改");
     assert!(!login.contains("若依"), "前端不应残留若依");
+    // B6：dot-env 文件进入扫描，.env.development 的标题同样被替换（不得残留若依管理系统）
+    let env_dev = fs::read_to_string(root.join("demo-ui/.env.development")).unwrap();
+    assert!(
+        env_dev.contains("VUE_APP_TITLE = 测试系统"),
+        ".env.development 标题应被替换：{env_dev}"
+    );
+    assert!(
+        !env_dev.contains("若依管理系统"),
+        ".env.development 不应残留若依标题：{env_dev}"
+    );
 }
 
 #[test]
@@ -167,6 +182,42 @@ fn refuses_to_overwrite_existing_package_dir() {
     let move_result = results.iter().find(|r| r.task_id == move_task.id).unwrap();
     assert_eq!(move_result.status, TaskStatus::Failed, "目标目录已存在时应失败");
     assert!(move_result.message.contains("已存在"), "失败信息应说明冲突");
+}
+
+/// B7 回归：handler 正常返回（Ok）时保留其设置的 Skipped 状态，不得被统一覆盖为 Success
+#[test]
+fn keeps_handler_skipped_status() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let template = load_template();
+    let info = detector::detect(root, &template);
+    let params = make_params();
+
+    // 空 root 无 admin resources 目录：do_rewrite_config 合法跳过（Skipped + Ok）
+    let task = ruoyi_forge_lib::core::task::Task {
+        id: "t-rewrite-config".into(),
+        name: "重构配置文件为 application.yaml + dev + prod 三件套".into(),
+        task_type: TaskType::RewriteApplicationProfiles,
+        risk_level: ruoyi_forge_lib::core::task::RiskLevel::High,
+        affected_files: vec![],
+        affected_dirs: vec![],
+        created_files: vec![],
+        status: TaskStatus::Pending,
+        error_message: String::new(),
+    };
+    let results = execute_all(root, &info, &[task], &params, &template, |_| {});
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].status,
+        TaskStatus::Skipped,
+        "handler 设置的 Skipped 不得被覆盖为 Success：{}",
+        results[0].message
+    );
+    assert!(
+        results[0].message.contains("跳过"),
+        "应保留跳过原因：{}",
+        results[0].message
+    );
 }
 
 #[test]

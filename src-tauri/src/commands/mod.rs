@@ -5,7 +5,10 @@ pub mod project;
 pub mod template;
 pub mod download;
 
-pub use project::{cleanup_extract_dir, detect_project, extract_zip_project, load_config_json, ping, save_config_json};
+pub use project::{
+    cleanup_extract_dir, cleanup_temp_file, detect_project, extract_zip_project, load_config_json,
+    ping, save_config_json,
+};
 pub use template::list_templates;
 pub use download::download_official_archive;
 pub mod preview;

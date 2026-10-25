@@ -105,9 +105,12 @@ export function useProjectFlow() {
       }
     }
 
-    // 重新选择项目：先清理上一次 zip / git clone 遗留的临时目录，再重置状态
+    // 重新选择项目：先清理上一次 zip / git clone 遗留的临时目录与临时 zip 文件，再重置状态
     if (store.extractRoot) {
       await cleanupExtractRoot(store.extractRoot)
+    }
+    if (store.zipPath) {
+      await cleanupTempZipFile(store.zipPath)
     }
 
     // 用局部变量保存 zip 路径，resetFlow 会清空 store
@@ -179,6 +182,9 @@ export function useProjectFlow() {
       if (store.extractRoot) {
         await cleanupExtractRoot(store.extractRoot)
       }
+      if (store.zipPath) {
+        await cleanupTempZipFile(store.zipPath)
+      }
 
       if (isDirectory) {
         if (!dl.root_path) {
@@ -246,5 +252,19 @@ export function useProjectFlow() {
     }
   }
 
-  return { detecting, chooseAndDetect, pullOfficialAndDetect, cleanupExtractRoot }
+  /**
+   * 清理官方拉取遗留的临时 zip 文件（静默失败，不阻断流程）。
+   * 后端仅允许删除系统临时目录内的文件，用户自选的本地 zip 会被安全跳过。
+   */
+  async function cleanupTempZipFile(zipPath: string) {
+    if (!zipPath) return
+    try {
+      await api.cleanupTempFile(zipPath)
+    } catch (e) {
+      // 清理失败不阻断主流程，仅记录日志
+      store.log(`清理临时压缩包异常：${e}`, 'WARN')
+    }
+  }
+
+  return { detecting, chooseAndDetect, pullOfficialAndDetect, cleanupExtractRoot, cleanupTempZipFile }
 }

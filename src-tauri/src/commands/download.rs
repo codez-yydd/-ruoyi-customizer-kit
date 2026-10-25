@@ -178,7 +178,8 @@ pub fn validate_downloaded_zip(path: &Path, host: &str) -> Result<(), String> {
 /// Gitee：git 浅克隆，返回 directory；失败则回退 GitHub zip。
 /// GitHub：archive zip + 本地代理重试。
 /// 进度事件：`download:progress`，载荷 `{ received, total }`（total=0 表示未知，克隆无字节流）。
-#[tauri::command]
+// async 标记：内部阻塞 reqwest（总超时 600s）与 git clone，避免冻结主线程 UI
+#[tauri::command(async)]
 pub fn download_official_archive(
     app: AppHandle,
     host: String,

@@ -68,10 +68,18 @@ pub fn scan(root: &Path, engine: &ReplaceEngine) -> ScanResult {
             skipped_binary += 1;
             continue;
         }
-        if engine.is_text_extension(&ext) {
+        // dot-env 文件（.env / .env.development / .env.production 等）：
+        // 扩展名分别是「无」与 .development 等，均不在文本白名单，需按文件名识别，
+        // 否则前端标题替换（VUE_APP_TITLE = 若依管理系统）永远触达不了这些文件
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let is_dot_env = file_name == ".env" || file_name.starts_with(".env.");
+        if is_dot_env || engine.is_text_extension(&ext) {
             text_files.push(path.to_path_buf());
         }
-        // 既不在文本白名单也不在二进制名单的文件，本轮忽略
+        // 既不在文本白名单也不属于 dot-env 的文件，本轮忽略
     }
 
     ScanResult {
@@ -159,5 +167,40 @@ mod tests {
     #[test]
     fn vue_scan_includes_common_log_package() {
         assert_scans_common_log_java(&load_engine("ruoyi-vue"));
+    }
+
+    /// B6 回归：dot-env 文件（.env / .env.*）按文件名识别进入 text_files，
+    /// 否则 .env.development 的扩展名 .development 不在白名单，前端标题替换永远触达不了
+    #[test]
+    fn scan_includes_dot_env_files() {
+        let engine = load_engine("ruoyi-vue");
+        let dir = tempfile::tempdir().unwrap();
+        let ui = dir.path().join("demo-ui");
+        fs::create_dir_all(ui.join("src")).unwrap();
+        fs::write(ui.join(".env"), "VUE_APP_TITLE = RuoYi\n").unwrap();
+        fs::write(
+            ui.join(".env.development"),
+            "# 页面标题\nVUE_APP_TITLE = 若依管理系统\n",
+        )
+        .unwrap();
+        fs::write(
+            ui.join(".env.production"),
+            "VUE_APP_TITLE = 若依管理系统\n",
+        )
+        .unwrap();
+        // 对照：白名单内文件不受影响
+        fs::write(ui.join("package.json"), "{\"name\":\"ruoyi\"}\n").unwrap();
+        let result = scan(&ui, &engine);
+        let texts: Vec<String> = result
+            .text_files
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect();
+        for want in ["/.env", "/.env.development", "/.env.production", "/package.json"] {
+            assert!(
+                texts.iter().any(|p| p.ends_with(want)),
+                "{want} 应进入 text_files：{texts:?}"
+            );
+        }
     }
 }

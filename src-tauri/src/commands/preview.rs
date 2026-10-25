@@ -17,7 +17,8 @@ pub struct PreviewResponse {
 }
 
 /// 预览改造任务。前端传入识别结果（project_info）+ 改造参数。
-#[tauri::command]
+// async 标记：需加载多个模板 JSON 并全量规划任务，大项目上可能超过百毫秒
+#[tauri::command(async)]
 pub fn preview_tasks(
     project_info: ProjectInfo,
     params: CustomizeParams,

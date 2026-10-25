@@ -246,6 +246,115 @@ fn security_hardening_writes_bcrypt_to_sql() {
     assert!(outcome.modified_files >= 1);
 }
 
+// ---------- 关闭注册（官方 values 式 SQL 兼容）----------
+
+/// 官方种子 SQL ry_20260417.sql:552 原文（values 式插入，sys_config 官方列序第 4 个值为 config_value）
+const OFFICIAL_REGISTER_SQL_LINE: &str = "insert into sys_config values(5, '账号自助-是否开启用户注册功能', 'sys.account.registerUser',         'false',         'Y', 'admin', sysdate(), '', null, '是否开启注册用户功能（true开启，false关闭）');";
+
+/// 官方 values 式行：第 4 个值为 'true'（部分 fork 以 true 交付）时替换为 'false'，其余值原样
+#[test]
+fn disable_register_replaces_values_style_insert() {
+    let mut content = OFFICIAL_REGISTER_SQL_LINE.replace(
+        "'sys.account.registerUser',         'false'",
+        "'sys.account.registerUser',         'true'",
+    );
+    assert!(content.contains("'true',"), "夹具应为 true 开启注册");
+    let changed = security::disable_register(&mut content);
+    assert!(changed, "values 式插入应被改写");
+    assert!(
+        content.contains("'sys.account.registerUser',         'false'"),
+        "第 4 个值（config_value）应替换为 'false'：{content}"
+    );
+    // 其余列不受影响：config_name / sysdate() / 备注（含全角逗号与 true/false 字样）原样保留
+    assert!(content.contains("'账号自助-是否开启用户注册功能'"), "config_name 应保留：{content}");
+    assert!(content.contains("sysdate()"), "sysdate() 应保留：{content}");
+    assert!(
+        content.contains("'是否开启注册用户功能（true开启，false关闭）'"),
+        "备注列应原样保留：{content}"
+    );
+}
+
+/// 官方原文已是 'false'：不得误改，也不得破坏该行
+#[test]
+fn disable_register_keeps_official_false_line() {
+    let mut content = OFFICIAL_REGISTER_SQL_LINE.to_string();
+    let before = content.clone();
+    let changed = security::disable_register(&mut content);
+    assert!(!changed, "已是 false 应无改动");
+    assert_eq!(content, before, "整行应逐字保留：{content}");
+}
+
+/// 旧版 update / 列名赋值式匹配保留
+#[test]
+fn disable_register_still_matches_update_style() {
+    let mut content = String::from(
+        "insert into sys_config(config_id, config_name, config_key, config_value) values(5, '注册开关', 'sys.account.registerUser', 'true');\nupdate sys_config set config_key = 'sys.account.registerUser', config_value = 'true' where config_id = 5;",
+    );
+    // 注意：首行是带列名的 values 式，第 4 个值同样应替换
+    let changed = security::disable_register(&mut content);
+    assert!(changed);
+    assert!(
+        !content.contains("'true'"),
+        "update 式与 values 式的 true 都应改为 false：{content}"
+    );
+    assert!(content.contains("config_value = 'false'"), "update 式应保留匹配：{content}");
+}
+
+/// B5 回归：update 式命中（values 式未改行）时，CRLF 文件不得被整体归一为 LF
+#[test]
+fn disable_register_update_style_keeps_crlf_untouched() {
+    let mut content = String::from(
+        "-- 头注释\r\nupdate sys_config set config_key = 'sys.account.registerUser', config_value = 'true' where config_id = 5;\r\n-- 尾注释\r\n",
+    );
+    let changed = security::disable_register(&mut content);
+    assert!(changed, "update 式应命中改写");
+    assert!(
+        content.contains("config_value = 'false'"),
+        "update 式的 true 应改为 false：{content}"
+    );
+    assert!(
+        content.ends_with("-- 尾注释\r\n") && content.starts_with("-- 头注释\r\n"),
+        "未修改的行应逐字保留 CRLF 行尾：{content:?}"
+    );
+    assert!(
+        !content.contains("\n\n") && !content.contains("\r\r"),
+        "不应残留被拆散的行尾：{content:?}"
+    );
+}
+
+/// B5 回归：values 式改行的同时，其余行的 CRLF 行尾保持不变
+#[test]
+fn disable_register_values_style_preserves_other_crlf_lines() {
+    let mut line = OFFICIAL_REGISTER_SQL_LINE.replace(
+        "'sys.account.registerUser',         'false'",
+        "'sys.account.registerUser',         'true'",
+    );
+    line.push_str("\r\n");
+    let mut content = format!("-- 头注释\r\n{line}-- 尾注释\r\n");
+
+    let changed = security::disable_register(&mut content);
+    assert!(changed, "values 式应命中改写");
+    assert!(
+        content.contains("'sys.account.registerUser',         'false'"),
+        "第 4 个值（config_value）应替换为 'false'：{content}"
+    );
+    assert!(
+        content.starts_with("-- 头注释\r\n") && content.ends_with("-- 尾注释\r\n"),
+        "改行之外的行应逐字保留 CRLF 行尾：{content:?}"
+    );
+    // 被改写的行自身也应保留 CRLF 行尾（整体仍是 3 行 CRLF 文本）
+    let segments: Vec<&str> = content.split("\r\n").collect();
+    assert_eq!(
+        segments.len(),
+        4,
+        "应保持 3 行 CRLF 结构（末尾空段）：{content:?}"
+    );
+    assert!(
+        segments[1].contains("'sys.account.registerUser',         'false'"),
+        "改写行内容应正确且不带 LF 行尾混入：{content:?}"
+    );
+}
+
 // ---------- 配置导出（save_config_json 按传入 params 原样序列化）----------
 
 #[test]
@@ -414,6 +523,57 @@ fn admin_rename_params_validation() {
     let mut bad_len = build_params();
     bad_len.admin_nickname = "一".into();
     assert!(bad_len.validate().is_some(), "昵称过短应被拒绝");
+}
+
+/// B9：jwt_secret 字符集校验（防 `$` 破坏替换模板串、引号/反斜杠破坏 Java 字符串字面量）
+#[test]
+fn jwt_secret_charset_validation() {
+    // 合法：字母、数字与 _ @ . - + * / = ! # % ^ &
+    let mut p = build_params();
+    p.enable_jwt = true;
+    p.jwt_secret = "S3cret_2026@demo.test+pA^b&c!d#e%f".into();
+    assert!(p.validate().is_none(), "合法字符集应通过");
+
+    // 含 $（会被替换模板串当捕获组）
+    let mut bad = build_params();
+    bad.jwt_secret = "bad$1secret".into();
+    let err = bad.validate().expect("含 $ 应被拒绝");
+    assert!(err.contains("JWT"), "错误应说明是 JWT 密钥：{err}");
+
+    // 含双引号（破坏 TokenConstants 的 Java 字符串）
+    let mut bad_quote = build_params();
+    bad_quote.jwt_secret = "bad\"quote".into();
+    assert!(bad_quote.validate().is_some(), "含双引号应被拒绝");
+
+    // 含单引号 / 反斜杠 / 空白
+    for s in ["bad'secret", "bad\\secret", "bad secret"] {
+        let mut bad2 = build_params();
+        bad2.jwt_secret = s.into();
+        assert!(bad2.validate().is_some(), "「{s}」应被拒绝");
+    }
+}
+
+/// B11：db_name / config_db_name 字符集校验（库名直接拼接 SQL 与 jdbc url）
+#[test]
+fn db_name_charset_validation() {
+    let mut p = build_params();
+    p.db_name = "my_app2".into();
+    p.config_db_name = "cfg_db".into();
+    assert!(p.validate().is_none(), "合法库名应通过");
+
+    let mut bad = build_params();
+    bad.db_name = "demo;drop".into();
+    let err = bad.validate().expect("库名含非法字符应被拒绝");
+    assert!(err.contains("数据库名"), "错误应说明是数据库名：{err}");
+
+    let mut bad_hyphen = build_params();
+    bad_hyphen.db_name = "my-db".into();
+    assert!(bad_hyphen.validate().is_some(), "连字符不在允许字符集");
+
+    let mut bad_cfg = build_params();
+    bad_cfg.config_db_name = "cfg;drop".into();
+    let err = bad_cfg.validate().expect("配置库名含非法字符应被拒绝");
+    assert!(err.contains("配置库名"), "错误应说明是配置库名：{err}");
 }
 
 #[test]

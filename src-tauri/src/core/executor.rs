@@ -67,6 +67,22 @@ pub fn execute_all<F>(
 where
     F: Fn(&str),
 {
+    // B4：开启 JWT 且 secret 留空时，在进入各任务前解析一次生效 secret 并随参数下发，
+    // 保证 Cloud 双写点（Nacos yaml 的 token.secret 与 TokenConstants.SECRET）写入同一个值。
+    // 分离版「留空随机生成」行为不变，仅把生成时机提前到任务分派前。
+    let resolved_params;
+    let params = if params.enable_jwt && params.jwt_secret.is_empty() {
+        let mut p = params.clone();
+        p.jwt_secret = crate::core::security::effective_jwt_secret(params);
+        log(&format!(
+            "JWT secret 留空，已生成随机强密钥（{}）并下发各任务，请妥善保管",
+            p.jwt_secret
+        ));
+        resolved_params = p;
+        &resolved_params
+    } else {
+        params
+    };
     let mut results = Vec::with_capacity(tasks.len());
     for task in tasks {
         log(&format!("[{}] 开始：{}", task.id, task.name));
@@ -150,7 +166,11 @@ where
     };
     match result {
         Ok(()) => {
-            r.status = TaskStatus::Success;
+            // 仅当 handler 未显式设置状态（保持初始 Pending）时才置 Success；
+            // handler 内部设置的 Skipped（如未找到模板/配置、Cloud 无 admin 等合法跳过）不得被覆盖
+            if r.status == TaskStatus::Pending {
+                r.status = TaskStatus::Success;
+            }
         }
         Err(e) => {
             r.status = TaskStatus::Failed;

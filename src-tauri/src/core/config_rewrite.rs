@@ -687,10 +687,6 @@ fn db_name_from_url_line(line: &str) -> Option<String> {
 /// 用于 dev / prod：druid 全量连接池参数 + lettuce 连接池。dev 与 prod 内容完全一致，
 /// 不注入 ${ENV} 占位（由部署人员后续按需替换）。
 ///
-/// Redis 键位按 Boot 大版本分支（核实日期 2026-09-05）：
-/// - Boot 2：`spring.redis.*`（少一层 `data`，子项内容不变）
-/// - Boot 3 / 4 / 未识别：`spring.data.redis.*`
-///
 /// Spring Boot 4 延续 `spring.data.redis` 键位：
 /// `DataRedisProperties` 自 4.0.0 起 `@ConfigurationProperties("spring.data.redis")`；
 /// 官方文档：https://docs.spring.io/spring-boot/4.0/reference/data/nosql.html
@@ -698,6 +694,9 @@ fn db_name_from_url_line(line: &str) -> Option<String> {
 /// `db_name`：数据库名（写入 url 路径段）。
 /// 未开 SQL 定制：保持 `localhost` + 方言默认端口 + `root` / `123456`。
 /// 开了 SQL 定制：用 resolve 后的 host/port/username/password（密码可空）。
+///
+/// Druid 控制台口令为本次执行随机生成（所有生成项目不得共享同一已知口令），
+/// 口令会展示在 DELIVERY.md 安全清单中；dev 与 prod 共用同一个口令。
 pub(crate) fn build_standard_datasource_redis(
     dialect: &crate::core::db_dialect::DbDialect,
     db_name: &str,
@@ -725,6 +724,7 @@ pub(crate) fn build_standard_datasource_redis(
     );
     let username = yaml_quote_scalar(&username);
     let password = yaml_quote_scalar(&password);
+    let druid_password = generate_druid_console_password();
     let redis_block = if boot_major == Some(2) {
         r#"  # redis 配置
   redis:
@@ -824,9 +824,9 @@ spring:
         # 设置白名单，不填则允许所有访问
         allow:
         url-pattern: /druid/*
-        # 控制台管理用户名和密码
+        # 控制台管理用户名和密码（口令为本次执行随机生成，详见 DELIVERY.md 安全清单）
         login-username: admin
-        login-password: wauio@(*&d
+        login-password: {druid_password}
       filter:
         stat:
           enabled: true
@@ -843,8 +843,33 @@ spring:
         username = username,
         password = password,
         validation = dialect.validation_query,
-        redis_block = redis_block
+        redis_block = redis_block,
+        druid_password = druid_password
     )
+}
+
+/// 生成 16 位随机 Druid 控制台口令：必含大写、小写、数字与符号各至少一个，
+/// 仅使用 YAML 明文标量安全的字符（排除 `: # ' " , [ ] { } & * ! | > % @ \` 与空白，
+/// 这些字符在 yaml 中需转义或破坏行结构），同时避免破坏 DELIVERY.md 表格的 `|`。
+pub(crate) fn generate_druid_console_password() -> String {
+    use rand::Rng;
+    const UPPER: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+    const LOWER: &[u8] = b"abcdefghijkmnpqrstuvwxyz";
+    const DIGIT: &[u8] = b"23456789";
+    const SYMBOL: &[u8] = b"-_.~^+";
+    const ALL: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789-_.~^+";
+    let mut rng = rand::thread_rng();
+    let mut pick = |set: &[u8]| set[rng.gen_range(0..set.len())] as char;
+    let mut chars: Vec<char> = vec![pick(UPPER), pick(LOWER), pick(DIGIT), pick(SYMBOL)];
+    for _ in 4..16 {
+        chars.push(pick(ALL));
+    }
+    // Fisher-Yates 洗牌，避免各类字符位置固定
+    for i in (1..chars.len()).rev() {
+        let j = rng.gen_range(0..=i);
+        chars.swap(i, j);
+    }
+    chars.into_iter().collect()
 }
 
 /// 按候选名顺序读取第一个存在的文件，返回 (内容, 是否存在)

@@ -75,13 +75,25 @@ pub fn find_project_root(start: &Path) -> PathBuf {
 }
 
 /// 递归向下查找首个直接含 pom.xml 的目录（限定在 6 层内，避免误入深层）。
-fn find_maven_root(dir: &Path) -> Option<PathBuf> {
+/// 超过 6 层仍未命中则返回 None（回退到传入的根目录本身）。
+fn find_maven_root(start: &Path) -> Option<PathBuf> {
+    find_maven_root_within(start, 0)
+}
+
+/// 向下查找的最大目录层数（含起点层；zip 嵌套包装目录远少于此数）
+const FIND_MAVEN_ROOT_MAX_DEPTH: usize = 6;
+
+fn find_maven_root_within(dir: &Path, depth: usize) -> Option<PathBuf> {
     if !dir.is_dir() {
         return None;
     }
     // 当前目录直接含 pom.xml，即为根
     if dir.join("pom.xml").is_file() {
         return Some(dir.to_path_buf());
+    }
+    // 超过 6 层仍无 pom.xml：不再深入（与注释声明的深度上限一致）
+    if depth + 1 > FIND_MAVEN_ROOT_MAX_DEPTH {
+        return None;
     }
     // 否则看子目录：若只有一个子目录，进入继续找（典型的 zip 包装目录）
     let entries: Vec<PathBuf> = fs::read_dir(dir)
@@ -91,13 +103,13 @@ fn find_maven_root(dir: &Path) -> Option<PathBuf> {
         .map(|e| e.path())
         .collect();
     if entries.len() == 1 {
-        if let Some(found) = find_maven_root(&entries[0]) {
+        if let Some(found) = find_maven_root_within(&entries[0], depth + 1) {
             return Some(found);
         }
     }
     // 多个子目录时，逐个尝试，返回首个命中的
     for sub in entries {
-        if let Some(found) = find_maven_root(&sub) {
+        if let Some(found) = find_maven_root_within(&sub, depth + 1) {
             return Some(found);
         }
     }

@@ -93,3 +93,66 @@ fn rejects_non_empty_dest() {
     let result = extract_zip(&zip_path, &dest);
     assert!(result.is_err(), "目标目录非空时应拒绝解压");
 }
+
+// ---------- B10：find_maven_root 深度上限（注释称限定 6 层内）----------
+
+/// 6 层内的嵌套 pom.xml 仍能定位
+#[test]
+fn find_project_root_still_finds_within_six_levels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut deep = tmp.path().to_path_buf();
+    for i in 0..5 {
+        deep = deep.join(format!("d{i}"));
+    }
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("pom.xml"), "<project></project>").unwrap();
+
+    let root = find_project_root(tmp.path());
+    assert!(
+        root.join("pom.xml").is_file(),
+        "6 层内的 pom.xml 应能定位：{}",
+        root.display()
+    );
+    assert_eq!(root, deep, "应剥到含 pom.xml 的那一层");
+}
+
+/// 恰在第 6 层（FIND_MAVEN_ROOT_MAX_DEPTH=6 上限）的 pom.xml 仍应命中：
+/// find_maven_root_within 对当前目录的 pom 检查先于深度闸门，
+/// 第 6 层嵌套（起点下 6 级子目录）是仍能定位的最后一个深度。
+#[test]
+fn find_project_root_finds_at_exact_six_level_boundary() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut deep = tmp.path().to_path_buf();
+    for i in 0..6 {
+        deep = deep.join(format!("d{i}"));
+    }
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("pom.xml"), "<project></project>").unwrap();
+
+    let root = find_project_root(tmp.path());
+    assert_eq!(
+        root, deep,
+        "恰在第 6 层上限的 pom.xml 应命中（锁定边界语义）：{}",
+        root.display()
+    );
+}
+
+/// 超过 6 层的深层 pom.xml 不再深入，回退为传入目录本身
+#[test]
+fn find_project_root_stops_beyond_six_levels() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut deep = tmp.path().to_path_buf();
+    for i in 0..7 {
+        deep = deep.join(format!("d{i}"));
+    }
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("pom.xml"), "<project></project>").unwrap();
+
+    let root = find_project_root(tmp.path());
+    assert_eq!(
+        root,
+        tmp.path(),
+        "超过 6 层应回退为起点目录（不误入深层）：{}",
+        root.display()
+    );
+}

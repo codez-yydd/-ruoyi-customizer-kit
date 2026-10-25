@@ -16,7 +16,8 @@ pub struct DetectResponse {
 /// 参数：
 ///   root_path   —— 用户选择的项目根目录绝对路径
 ///   template    —— 模板名，如 "ruoyi-vue"。为空时默认 ruoyi-vue。
-#[tauri::command]
+// async 标记：识别需遍历项目树读取大量文件，大项目上可能超过百毫秒
+#[tauri::command(async)]
 pub fn detect_project(
     root_path: String,
     template: Option<String>,
@@ -224,7 +225,8 @@ fn make_extract_dest() -> PathBuf {
 /// - 临时目录仅供识别/预览使用，执行改造时由后端重新解压到输出目录；
 ///   识别临时目录应在重新选择项目或执行成功后调用 `cleanup_extract_dir` 清理
 /// - 支持的扩展名：.zip
-#[tauri::command]
+// async 标记：解压完整源码包属重 IO，避免阻塞主线程
+#[tauri::command(async)]
 pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
     let zip = PathBuf::from(&zip_path);
 
@@ -274,7 +276,8 @@ pub fn extract_zip_project(zip_path: String) -> ExtractResponse {
 ///
 /// 安全校验：仅允许删除系统临时目录（`std::env::temp_dir()`）下的路径，
 /// 防止前端误传任意路径导致误删用户数据。
-#[tauri::command]
+// async 标记：递归删除整个解压项目属重 IO，避免阻塞主线程
+#[tauri::command(async)]
 pub fn cleanup_extract_dir(path: String) -> CleanupResponse {
     let target = PathBuf::from(&path);
     if target.as_os_str().is_empty() || !target.is_dir() {
@@ -299,6 +302,40 @@ pub fn cleanup_extract_dir(path: String) -> CleanupResponse {
         Err(e) => CleanupResponse {
             success: false,
             message: format!("清理临时目录失败：{e}"),
+        },
+    }
+}
+
+/// 清理临时文件（官方拉取下载的 zip 等，执行成功/失败后由前端调用）。
+///
+/// 安全校验沿用 cleanup_extract_dir 的「系统临时目录白名单」模式（严禁任意路径删除）：
+/// 仅允许删除系统临时目录下的文件；用户自选的本地压缩包不在临时目录内，
+/// 直接跳过（返回成功并说明），绝不删除用户文件。
+#[tauri::command(async)]
+pub fn cleanup_temp_file(path: String) -> CleanupResponse {
+    let target = PathBuf::from(&path);
+    if target.as_os_str().is_empty() || !target.is_file() {
+        // 文件不存在视为已清理，不报错
+        return CleanupResponse {
+            success: true,
+            message: "文件不存在，无需清理".into(),
+        };
+    }
+    let temp_root = std::env::temp_dir();
+    if !target.starts_with(&temp_root) {
+        return CleanupResponse {
+            success: true,
+            message: format!("文件不在系统临时目录，跳过清理：{path}"),
+        };
+    }
+    match std::fs::remove_file(&target) {
+        Ok(()) => CleanupResponse {
+            success: true,
+            message: format!("已清理临时文件：{path}"),
+        },
+        Err(e) => CleanupResponse {
+            success: false,
+            message: format!("清理临时文件失败：{e}"),
         },
     }
 }

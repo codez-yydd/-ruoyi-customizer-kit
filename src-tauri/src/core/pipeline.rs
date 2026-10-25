@@ -104,52 +104,25 @@ pub fn run_transform(
         });
     }
 
-    // 2. 准备输出目录：解压或复制
-    let temp_dest = std::env::temp_dir().join(format!("ruoyi-forge-{}", std::process::id()));
+    // 2. 准备输出目录：解压或复制到唯一临时目录，再移入输出目录。
+    // 临时目录用「时间戳+线程号」唯一命名（与 commands::project::make_extract_dest
+    // 风格一致），避免进程内固定名在上次失败残留后被 zip 解压拒绝
+    // （目标目录已存在且非空），导致本会话内重试全部失败。
+    let temp_dest = make_temp_dest();
 
-    if opts.source_type == "zip" {
-        let zip_file = &opts.source_path;
-        log(&LogEvent::info(format!("解压 {} ...", zip_file.display())));
-        crate::utils::archive::extract_zip(zip_file, &temp_dest)
-            .map_err(|e| format!("解压失败：{e}"))?;
-    } else {
-        let src = &opts.source_path;
-        log(&LogEvent::info("复制项目到临时目录...".to_string()));
-        crate::utils::file::copy_dir_recursive(src, &temp_dest)?;
-    }
-
-    let project_root_in_temp = if opts.source_type == "zip" {
-        crate::utils::archive::find_project_root(&temp_dest)
-    } else {
-        temp_dest.clone()
-    };
-
-    log(&LogEvent::info(format!(
-        "移动到输出目录：{}",
-        output_dir.display()
-    )));
-    if output_dir.exists() {
-        if let Ok(entries) = std::fs::read_dir(&project_root_in_temp) {
-            for entry in entries.flatten() {
-                let from = entry.path();
-                let name = entry.file_name();
-                let to = output_dir.join(&name);
-                if to.exists() {
-                    log(&LogEvent::info(format!(
-                        "跳过已存在：{}",
-                        name.to_string_lossy()
-                    )));
-                    continue;
-                }
-                crate::utils::file::move_path(&from, &to)
-                    .map_err(|e| format!("移动 {} 失败：{e}", from.display()))?;
+    if let Err(err) = stage_to_output(opts, &temp_dest, &output_dir, log) {
+        // 所有错误路径统一清理临时目录（含部分 move 失败场景）；
+        // 清理自身的失败不能掩盖原始错误，仅记录警告日志
+        if temp_dest.is_dir() {
+            if let Err(clean_err) = std::fs::remove_dir_all(&temp_dest) {
+                log(&LogEvent::warn(format!(
+                    "清理临时目录 {} 失败：{clean_err}",
+                    temp_dest.display()
+                )));
             }
         }
-    } else {
-        crate::utils::file::move_path(&project_root_in_temp, &output_dir)
-            .map_err(|e| format!("移动到输出目录失败：{e}"))?;
+        return Err(err);
     }
-    let _ = std::fs::remove_dir_all(&temp_dest);
 
     let root = output_dir.clone();
 
@@ -299,6 +272,101 @@ pub fn run_transform(
         failed_count,
         output_dir: root.to_string_lossy().to_string(),
     })
+}
+
+/// 在系统临时目录下生成本次改造唯一的临时目录。
+/// 形如 `$TMPDIR/ruoyi-forge-<纳秒时间戳>-<线程id哈希>/`（与
+/// commands::project::make_extract_dest 风格一致），进程内多次执行互不冲突。
+fn make_temp_dest() -> PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tid_hash = format!("{:?}", std::thread::current().id())
+        .bytes()
+        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+    std::env::temp_dir().join(format!("ruoyi-forge-{now}-{tid_hash}"))
+}
+
+/// 解压/复制源项目到临时目录，再移入输出目录。失败时由调用方统一清理临时目录。
+fn stage_to_output(
+    opts: &TransformOptions,
+    temp_dest: &Path,
+    output_dir: &Path,
+    log: &dyn Fn(&LogEvent),
+) -> Result<(), String> {
+    if opts.source_type == "zip" {
+        let zip_file = &opts.source_path;
+        log(&LogEvent::info(format!("解压 {} ...", zip_file.display())));
+        crate::utils::archive::extract_zip(zip_file, temp_dest)
+            .map_err(|e| format!("解压失败：{e}"))?;
+    } else {
+        let src = &opts.source_path;
+        log(&LogEvent::info("复制项目到临时目录...".to_string()));
+        crate::utils::file::copy_dir_recursive(src, temp_dest)?;
+    }
+
+    let project_root_in_temp = if opts.source_type == "zip" {
+        crate::utils::archive::find_project_root(temp_dest)
+    } else {
+        temp_dest.to_path_buf()
+    };
+
+    log(&LogEvent::info(format!(
+        "移动到输出目录：{}",
+        output_dir.display()
+    )));
+    if output_dir.exists() {
+        // 输出目录已存在（经 validate 校验后仅可能是空目录）：逐项移入；
+        // 部分失败时在错误信息中列明已移入的条目，便于用户手动处理
+        let mut moved: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&project_root_in_temp) {
+            for entry in entries.flatten() {
+                let from = entry.path();
+                let name = entry.file_name();
+                let to = output_dir.join(&name);
+                if to.exists() {
+                    log(&LogEvent::info(format!(
+                        "跳过已存在：{}",
+                        name.to_string_lossy()
+                    )));
+                    continue;
+                }
+                crate::utils::file::move_path(&from, &to).map_err(|e| {
+                    format!("移动 {} 失败：{e}。{}", from.display(), moved_note(&moved))
+                })?;
+                moved.push(name.to_string_lossy().to_string());
+            }
+        }
+    } else {
+        crate::utils::file::move_path(&project_root_in_temp, output_dir).map_err(|e| {
+            format!(
+                "移动到输出目录失败：{e}。输出目录 {} 可能残留部分已移入的内容，请检查后手动处理",
+                output_dir.display()
+            )
+        })?;
+    }
+    // 成功路径同样清理临时目录；与失败路径一致，清理失败仅记警告不中断结果
+    if let Err(clean_err) = std::fs::remove_dir_all(temp_dest) {
+        log(&LogEvent::warn(format!(
+            "清理临时目录 {} 失败：{clean_err}",
+            temp_dest.display()
+        )));
+    }
+    Ok(())
+}
+
+/// 逐项移入输出目录过程中失败时的补充提示
+fn moved_note(moved: &[String]) -> String {
+    if moved.is_empty() {
+        "尚无条目移入输出目录".to_string()
+    } else {
+        format!(
+            "已移入输出目录的条目：{}（需手动处理）",
+            moved.join("、")
+        )
+    }
 }
 
 fn resolve_template(

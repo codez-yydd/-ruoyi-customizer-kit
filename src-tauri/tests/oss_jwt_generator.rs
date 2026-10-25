@@ -189,6 +189,48 @@ fn jwt_customize_in_application_yaml() {
     assert!(outcome.summary.iter().any(|s| s.contains("随机生成")));
 }
 
+/// B3 组合回归：JWT 改写只作用于 token 块——
+/// 同一份 application.yaml 中的微信 appsecret 与 api-encrypt secret 不得被覆盖
+#[test]
+fn jwt_rewrite_is_scoped_to_token_block() {
+    let tmp = tempfile::tempdir().unwrap();
+    build_admin(tmp.path());
+    let res = tmp.path().join("demo-admin/src/main/resources");
+    // 组合 yaml：token 块 + 微信配置（appsecret，uniapp 写入）+ api-encrypt 块（secret）
+    fs::write(
+        res.join("application.yaml"),
+        "server:\n  port: 8080\ntoken:\n  header: Authorization\n  secret: abcdefghijklmnopqrstuvwxyz\n  expireTime: 30\ndemo:\n  wx:\n    appid: wx1234567890\n    appsecret: wx-secret-must-keep\n  api-encrypt:\n    enabled: true\n    secret: aes-secret-must-keep\n",
+    )
+    .unwrap();
+
+    let mut params = build_params();
+    params.enable_jwt = true;
+    params.jwt_secret = "NewJwtSecret2026".into();
+    params.jwt_expire_minutes = 60;
+
+    security::apply_security_hardening(tmp.path(), &params, &|_| {}).unwrap();
+    let yml = fs::read_to_string(res.join("application.yaml")).unwrap();
+    // token 块内：secret 与 expireTime 被替换
+    assert!(
+        yml.contains("secret: NewJwtSecret2026"),
+        "token.secret 应替换：{yml}"
+    );
+    assert!(yml.contains("expireTime: 60"), "token.expireTime 应替换：{yml}");
+    assert!(
+        !yml.contains("abcdefghijklmnopqrstuvwxyz"),
+        "旧 token secret 不应残留：{yml}"
+    );
+    // token 块外：微信 appsecret 与 api-encrypt secret 不受影响
+    assert!(
+        yml.contains("appsecret: wx-secret-must-keep"),
+        "微信 appsecret 不得被 JWT 覆盖：{yml}"
+    );
+    assert!(
+        yml.contains("secret: aes-secret-must-keep"),
+        "api-encrypt secret 不得被 JWT 覆盖：{yml}"
+    );
+}
+
 // ---------- 代码生成器配置 ----------
 
 #[test]

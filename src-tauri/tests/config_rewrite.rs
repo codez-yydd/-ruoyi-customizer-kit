@@ -131,6 +131,36 @@ fn rewrites_config_into_three_profiles() {
         assert!(yaml.contains("max-wait: -1ms"), "应含 lettuce max-wait");
     }
 
+    // ---- B8：druid 控制台口令随机生成（不再是固定 wauio@(*&d）----
+    let druid_pwd_line = |yaml: &str| -> String {
+        yaml.lines()
+            .find(|l| l.trim_start().starts_with("login-password:"))
+            .expect("应含 login-password 行")
+            .trim()
+            .to_string()
+    };
+    let dev_pwd = druid_pwd_line(&dev);
+    assert_ne!(dev_pwd, "login-password: wauio@(*&d", "不得再写固定口令：{dev_pwd}");
+    let pwd_value = dev_pwd.trim_start_matches("login-password:").trim();
+    assert_eq!(pwd_value.len(), 16, "口令应为 16 位：{pwd_value}");
+    assert!(
+        !pwd_value
+            .chars()
+            .any(|c| matches!(c, ':' | '#' | '\'' | '"' | ',' | '[' | ']' | '{' | '}' | '&' | '*' | '!' | '|' | '>' | '%' | '@' | '`' | '\\' | ' ')),
+        "口令应避免 yaml 需转义的字符：{pwd_value}"
+    );
+    // dev 与 prod 共用同一随机口令
+    assert_eq!(druid_pwd_line(&prod), dev_pwd, "dev 与 prod 口令应一致");
+    // 两次执行生成不同口令（每次随机）
+    let dir2 = build_resources();
+    config_rewrite::rewrite(dir2.path(), &params, None, &|_| {}).expect("第二次配置重构应成功");
+    let dev2 = fs::read_to_string(dir2.path().join("application-dev.yaml")).unwrap();
+    assert_ne!(
+        druid_pwd_line(&dev2),
+        dev_pwd,
+        "两次执行的 druid 口令应不同（随机生成）"
+    );
+
     // dev 与 prod 内容完全一致（都明文标准模板，无 ${ENV} 占位）
     assert_eq!(dev, prod, "dev 与 prod 应为完全相同的标准模板明文");
     assert!(!prod.contains("${"), "prod 不应含环境变量占位");

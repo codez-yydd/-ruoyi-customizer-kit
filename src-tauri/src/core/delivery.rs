@@ -794,6 +794,9 @@ fn render_security(md: &mut String, ctx: &DeliveryContext) {
     }
 
     // 2. Druid 监控控制台
+    // 非 Cloud 且开启配置重构时，statViewServlet 口令由 config_rewrite 随机生成写入
+    // application-dev/prod.yaml；口令是使用者登录控制台需要知道的凭据，应当展示而非脱敏
+    //（与数据库密码 root/123456 的展示方式对齐），这里从产物文件读回实际值。
     if ctx.cloud {
         rows.push([
             "Druid 监控控制台".into(),
@@ -802,12 +805,26 @@ fn render_security(md: &mut String, ctx: &DeliveryContext) {
             "工具不改写 Cloud 的 `login-username` / `login-password`，保持若依官方值，上线前必须修改或关闭控制台".into(),
         ]);
     } else if p.enable_config_rewrite {
-        rows.push([
-            "Druid 监控控制台".into(),
-            STATE_TOOL_DEFAULT.into(),
-            cfg.clone(),
-            "当前为 `admin` / `wauio@(*&d`（`statViewServlet.login-username/login-password`），上线前必须修改或关闭".into(),
-        ]);
+        match read_druid_console_credentials(ctx.root, &ctx.admin_module) {
+            Some((user, pwd)) => {
+                rows.push([
+                    "Druid 监控控制台".into(),
+                    STATE_GENERATED.into(),
+                    cfg.clone(),
+                    format!(
+                        "当前为 `{user}` / `{pwd}`（`statViewServlet.login-username/login-password`，本次随机生成），请妥善保管，上线前可修改或关闭"
+                    ),
+                ]);
+            }
+            None => {
+                rows.push([
+                    "Druid 监控控制台".into(),
+                    STATE_GENERATED.into(),
+                    cfg.clone(),
+                    "未能读取控制台口令，请检查配置重构任务是否执行，口令见 `application-dev.yaml` 的 `statViewServlet.login-username/login-password` 配置，上线前可修改或关闭".into(),
+                ]);
+            }
+        }
     } else {
         rows.push([
             "Druid 监控控制台".into(),
@@ -1024,7 +1041,7 @@ fn render_security(md: &mut String, ctx: &DeliveryContext) {
 
     md.push_str("### 交付前必做\n\n");
     md.push_str("- 标注 ⚠️ 的默认凭据，上线前必须全部修改。\n");
-    md.push_str("- 随机生成的密钥不在本文档回显，请到上表所列文件中查看并按公司规范保管。\n");
+    md.push_str("- 随机生成的 JWT / AES 密钥不在本文档回显，请到上表所列文件中查看并按公司规范保管（Druid 控制台口令为方便使用已直接列在上表）。\n");
     if ctx.cloud {
         md.push_str("- 证书目录 `cert/`、含密钥的配置文件（Nacos 配置条目导出文件）一律不要提交 git。\n");
     } else {
@@ -1058,6 +1075,61 @@ fn render_more(md: &mut String, ctx: &DeliveryContext) {
 }
 
 // ---------- 工具函数 ----------
+
+/// 读取配置重构产物（application-dev.yaml，回退 application-prod.yaml）中
+/// `spring.datasource.druid.statViewServlet` 块的 login-username / login-password。
+/// Druid 控制台口令由 config_rewrite 每次执行随机生成，交付文档需读回实际值展示给使用者。
+fn read_druid_console_credentials(root: &Path, admin_module: &str) -> Option<(String, String)> {
+    for name in ["application-dev.yaml", "application-prod.yaml"] {
+        let path = root.join(admin_module).join("src/main/resources").join(name);
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let mut in_block = false;
+        let mut block_indent = 0usize;
+        let mut user = String::new();
+        let mut pwd = String::new();
+        for line in content.lines() {
+            let indent = line.len() - line.trim_start().len();
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("statViewServlet:") {
+                in_block = true;
+                block_indent = indent;
+                continue;
+            }
+            if in_block && !trimmed.is_empty() && !trimmed.starts_with('#') && indent <= block_indent {
+                break;
+            }
+            if in_block {
+                if let Some(v) = yaml_scalar_value(trimmed, "login-username") {
+                    user = v;
+                }
+                if let Some(v) = yaml_scalar_value(trimmed, "login-password") {
+                    pwd = v;
+                }
+            }
+        }
+        if !pwd.is_empty() {
+            let user = if user.is_empty() { "admin".to_string() } else { user };
+            return Some((user, pwd));
+        }
+    }
+    None
+}
+
+/// 取 yaml 行 `key: value` 的标量值（去掉行尾注释与成对引号；空值返回 None）
+fn yaml_scalar_value(trimmed: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    let rest = trimmed.strip_prefix(&prefix)?.trim_start();
+    // 行尾注释截断（随机口令字符集不含 #，安全）
+    let val = rest.split('#').next().unwrap_or(rest).trim();
+    let val = val.trim_matches('"').trim_matches('\'');
+    if val.is_empty() {
+        None
+    } else {
+        Some(val.to_string())
+    }
+}
 
 /// 在项目根查找指定后缀的模块目录（如 `-admin`）
 fn find_dir_with_suffix(root: &Path, suffix: &str) -> Option<String> {
@@ -1297,9 +1369,37 @@ mod tests {
         let md = gen(dir.path(), "ruoyi-vue", &params);
 
         assert!(md.contains("`root` / `123456`"), "{md}");
-        assert!(md.contains("wauio@(*&d"), "{md}");
+        // Druid 口令已改为每次执行随机生成，文档不再出现旧的固定口令
+        assert!(!md.contains("wauio@(*&d"), "不得再出现固定口令：{md}");
+        assert!(md.contains("Druid 监控控制台"), "{md}");
+        assert!(md.contains(STATE_GENERATED), "Druid 行应标随机生成：{md}");
+        assert!(md.contains("application-dev.yaml"), "{md}");
         assert!(md.contains("`admin` / `admin123`"), "{md}");
         assert!(md.contains("生产环境务必配置 HTTPS"), "{md}");
+    }
+
+    /// 配置重构产物中的随机 Druid 口令应读回并展示（使用者需要知道凭据）
+    #[test]
+    fn security_echoes_generated_druid_console_password() {
+        let dir = vue_root();
+        // 模拟 config_rewrite 产物：application-dev.yaml 含随机 druid 口令
+        let res = dir.path().join("demo-admin/src/main/resources");
+        std::fs::create_dir_all(&res).unwrap();
+        std::fs::write(
+            res.join("application-dev.yaml"),
+            "spring:\n  datasource:\n    druid:\n      statViewServlet:\n        enabled: true\n        url-pattern: /druid/*\n        login-username: admin\n        login-password: Xk3mZp9.qA2w\n",
+        )
+        .unwrap();
+        let mut params = base_params();
+        params.enable_config_rewrite = true;
+        let md = gen(dir.path(), "ruoyi-vue", &params);
+
+        assert!(
+            md.contains("`admin` / `Xk3mZp9.qA2w`"),
+            "随机生成的 Druid 口令应展示在安全清单：{md}"
+        );
+        assert!(md.contains("本次随机生成"), "{md}");
+        assert!(md.contains("statViewServlet.login-username/login-password"), "{md}");
     }
 
     #[test]
@@ -1473,7 +1573,9 @@ mod tests {
 
         assert!(md.contains("application-dev.yaml"), "{md}");
         assert!(md.contains("`root` / `123456`"), "{md}");
-        assert!(md.contains("wauio@(*&d"), "{md}");
+        // 无产物文件时给出中性降级说明，指引检查配置重构任务与 application-dev.yaml
+        assert!(md.contains("未能读取控制台口令"), "{md}");
+        assert!(!md.contains("wauio@(*&d"), "固定口令已废除：{md}");
     }
 
     /// Cloud AES 密钥同时写入 auth 与 system 条目，登录链路在 auth 消费
