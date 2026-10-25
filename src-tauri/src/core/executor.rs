@@ -158,6 +158,7 @@ where
         TaskType::SetupMail => do_setup_mail(root, params, info, &mut r, log),
         TaskType::SetupCaptchaSlider => do_setup_captcha_slider(root, params, info, &mut r, log),
         TaskType::SetupApiEncrypt => do_setup_api_encrypt(root, params, info, &mut r, log),
+        TaskType::CompileSmokeCheck => do_compile_smoke_check(root, &mut r, log),
         TaskType::ValidateProject | TaskType::GenerateReport | TaskType::GenerateDeliveryDoc => {
             r.status = TaskStatus::Skipped;
             r.message = "校验/报告/交付文档在执行后单独触发".into();
@@ -1809,4 +1810,38 @@ where
         r.message = outcome.summary.join("；");
     }
     Ok(())
+}
+
+/// 13b. 编译冒烟检查（可选）：在改造产物根目录跑 `mvn -q -DskipTests compile`。
+/// 未检测到 Maven/JDK → 显式置 Skipped（沿用批B 语义：handler 显式 Skipped 不被外层覆盖）；
+/// 失败/超时 → Err（外层置 Failed）；成功 → 保持 Pending 由外层置 Success，message 含耗时。
+/// 日志输出一行摘要；失败输出尾部只进任务 message，避免刷爆日志流。
+fn do_compile_smoke_check<F>(root: &Path, r: &mut TaskResult, log: &F) -> Result<(), String>
+where
+    F: Fn(&str),
+{
+    log("编译冒烟：探测本机 Maven / JDK 并执行 mvn -q -DskipTests compile ...");
+    let probe = crate::core::compile_smoke::BuildEnvProbe::from_env();
+    let outcome = crate::core::compile_smoke::run_compile_smoke(root, &probe);
+    match outcome.status {
+        crate::core::compile_smoke::SmokeStatus::Skipped => {
+            r.status = TaskStatus::Skipped;
+            r.message = outcome.message.clone();
+            log(&outcome.message);
+            Ok(())
+        }
+        crate::core::compile_smoke::SmokeStatus::Success => {
+            r.message = outcome.message.clone();
+            log(&format!("编译冒烟通过：{}", outcome.message));
+            Ok(())
+        }
+        crate::core::compile_smoke::SmokeStatus::Failed => {
+            log(&format!("编译冒烟失败：{}", outcome.message));
+            if outcome.detail.is_empty() {
+                Err(outcome.message)
+            } else {
+                Err(format!("{}\n{}", outcome.message, outcome.detail))
+            }
+        }
+    }
 }

@@ -1,6 +1,7 @@
 // 集成测试：验证 MyBatis-Plus 集成（依赖、配置类、generator 模板适配）
 
 use ruoyi_forge_lib::core::mybatis_plus;
+use ruoyi_forge_lib::core::snowflake;
 use ruoyi_forge_lib::core::CustomizeParams;
 use std::fs;
 use std::path::PathBuf;
@@ -1004,10 +1005,14 @@ fn adapts_official_generator_templates_keeps_output_compilable() {
         );
     }
 
-    // 4. Domain：@TableName + Long 字段 Velocity 条件 @JsonSerialize（官方字段是 $column 变量）
+    // 4. Domain：@TableName + 主键 @TableId（$column.pk 条件） + Long 字段 Velocity 条件 @JsonSerialize（官方字段是 $column 变量）
     assert!(
         domain.contains("@TableName(\"${tableName}\")"),
         "Domain 应含 @TableName：{domain}"
+    );
+    assert!(
+        domain.contains("#if($column.pk)\n    @TableId\n#end\n"),
+        "主键字段前应注入 pk 条件 @TableId：{domain}"
     );
     assert!(
         domain.contains(
@@ -1045,4 +1050,292 @@ fn domain_template_without_long_id_skips_json_serialize() {
         !domain.contains("@JsonSerialize"),
         "未开 Long ID 不应注入序列化注解：{domain}"
     );
+}
+
+// ---------- Domain 模板主键 @TableId 注入（官方夹具） ----------
+
+/// 主键字段注入 @TableId 且被 #if($column.pk) 条件包裹（渲染时仅主键列输出，非主键不带）；
+/// 与批B 的 @JsonSerialize 注入共存且顺序合理（@TableId 在前、序列化在后）。
+#[test]
+fn domain_template_pk_gets_tableid_others_dont() {
+    let dir = build_project();
+    let root = dir.path();
+    let gen_files = vec![
+        "ruoyi-generator/src/main/resources/vm/java/domain.java.vm".to_string(),
+    ];
+    let n = mybatis_plus::adapt_generator_templates(root, &gen_files, true, &|_| {}).unwrap();
+    assert_eq!(n, 1);
+    let domain = fs::read_to_string(root.join(&gen_files[0])).unwrap();
+    // 两个独立条件块紧贴字段声明行，#if/#end 各自配对，不破坏官方模板既有结构
+    assert!(
+        domain.contains(concat!(
+            "#if($column.pk)\n",
+            "    @TableId\n",
+            "#end\n",
+            "#if($column.javaType == 'Long')\n",
+            "    @JsonSerialize(using = ToStringSerializer.class)\n",
+            "#end\n",
+            "    private $column.javaType $column.javaField;",
+        )),
+        "主键 Long 字段应同时带 @TableId 与 @JsonSerialize（@TableId 在前）：\n{domain}"
+    );
+    // 全模板仅一处 @TableId 注解：主键与非主键由 $column.pk 条件区分，不会落到非主键字段
+    assert_eq!(
+        domain.matches("@TableId").count(),
+        1,
+        "@TableId 注解只应有一处：\n{domain}"
+    );
+    // TableId import 与注解配套（批B 已注入，回归确认）
+    assert!(
+        domain.contains("import com.baomidou.mybatisplus.annotation.TableId;"),
+        "{domain}"
+    );
+}
+
+/// 关闭 Long ID 开关：主键 @TableId 仍注入（MP 适配不依赖序列化开关），序列化注解不注入
+#[test]
+fn domain_template_tableid_present_without_long_id() {
+    let dir = build_project();
+    let root = dir.path();
+    let gen_files = vec![
+        "ruoyi-generator/src/main/resources/vm/java/domain.java.vm".to_string(),
+    ];
+    let n = mybatis_plus::adapt_generator_templates(root, &gen_files, false, &|_| {}).unwrap();
+    assert_eq!(n, 1);
+    let domain = fs::read_to_string(root.join(&gen_files[0])).unwrap();
+    assert!(
+        domain.contains("#if($column.pk)\n    @TableId\n#end\n"),
+        "MP 适配下主键 @TableId 不依赖 Long ID 开关：\n{domain}"
+    );
+    assert!(!domain.contains("@JsonSerialize"), "{domain}");
+}
+
+/// 渲染正确性：注入的 import 必须位于 `#foreach ($import in $importList)` 循环体之外。
+/// 官方 VelocityUtils.getImportList 在表无 Date/BigDecimal 字段且非子表时返回空集合，
+/// 循环体渲染 0 次——import 落在循环内会随空循环整体消失，生成代码缺 import 编译失败
+/// （旧版锚定「首个 import 行」即循环体内的 `import ${import};`，已修正为首个字面量 import 行）。
+#[test]
+fn domain_template_imports_render_outside_import_foreach() {
+    let dir = build_project();
+    let root = dir.path();
+    let gen_files = vec![
+        "ruoyi-generator/src/main/resources/vm/java/domain.java.vm".to_string(),
+    ];
+    let n = mybatis_plus::adapt_generator_templates(root, &gen_files, true, &|_| {}).unwrap();
+    assert_eq!(n, 1);
+    let domain = fs::read_to_string(root.join(&gen_files[0])).unwrap();
+    assert!(
+        domain.contains(
+            "#foreach ($import in $importList)\nimport ${import};\n#end\nimport com.baomidou.mybatisplus.annotation.TableName;"
+        ),
+        "import 应注入在 import foreach 循环之后（首个字面量 import 前）：\n{domain}"
+    );
+    assert!(
+        !domain.contains("#foreach ($import in $importList)\nimport com.baomidou"),
+        "import 不得注入 import foreach 循环体内：\n{domain}"
+    );
+}
+
+/// 雪花语义协同：适配注入 plain @TableId 后，snowflake::mark_domain_idtype_input
+/// （executor 雪花任务 do_inject_snowflake_id 步骤 4a 对生成器 domain 模板调用的同一函数）
+/// 把已有 @TableId 升级为 IdType.INPUT 并补 import——与存量 domain 源码
+/// 「先有 @TableId、再被改写」同函数同语义（插入前由雪花工具 setId）。
+#[test]
+fn domain_template_tableid_upgraded_to_idtype_input_by_snowflake_mark() {
+    let dir = build_project();
+    let root = dir.path();
+    let gen_files = vec![
+        "ruoyi-generator/src/main/resources/vm/java/domain.java.vm".to_string(),
+    ];
+    mybatis_plus::adapt_generator_templates(root, &gen_files, true, &|_| {}).unwrap();
+    let adapted = fs::read_to_string(root.join(&gen_files[0])).unwrap();
+
+    // 雪花开形态：plain @TableId 被改写为 IdType.INPUT
+    let upgraded = match snowflake::mark_domain_idtype_input(&adapted) {
+        Some(u) => u,
+        None => panic!("适配后的模板应可被雪花 mark 升级：\n{adapted}"),
+    };
+    assert!(
+        upgraded.contains("#if($column.pk)\n    @TableId(type = IdType.INPUT)\n#end\n"),
+        "主键 @TableId 应升级为 IdType.INPUT：\n{upgraded}"
+    );
+    assert!(
+        upgraded.contains("import com.baomidou.mybatisplus.annotation.IdType;"),
+        "应补 IdType import：\n{upgraded}"
+    );
+    // IdType import 同样落在 import foreach 之外（空 $importList 时不随循环消失）
+    assert!(
+        upgraded.contains(
+            "#end\nimport com.baomidou.mybatisplus.annotation.IdType;\nimport com.baomidou.mybatisplus.annotation.TableName;"
+        ),
+        "IdType import 应位于循环外、其余注入 import 之前：\n{upgraded}"
+    );
+    // @JsonSerialize 块原样保留：两个注解共存，互不吞掉
+    assert!(upgraded.contains(
+        "#if($column.javaType == 'Long')\n    @JsonSerialize(using = ToStringSerializer.class)\n#end"
+    ));
+    assert_eq!(upgraded.matches("@TableId").count(), 1, "{upgraded}");
+    // 幂等：再次 mark 不再改动；MP 层二次适配也 0 改动
+    assert!(snowflake::mark_domain_idtype_input(&upgraded).is_none());
+    let n2 = mybatis_plus::adapt_generator_templates(root, &gen_files, true, &|_| {}).unwrap();
+    assert_eq!(n2, 0, "已适配的模板再次执行应 0 改动");
+}
+
+// ---------- 管线级：识别 → 规划 → 执行（官方模板夹具贯穿全链路） ----------
+
+/// 可识别的合成 RuoYi-Vue 骨架（镜像 tests/execute_core.rs 的 build_fake_project）
+/// + 官方生成器模板夹具：供 planner / executor 管线级用例验证 domain 模板注入组合。
+fn build_pipeline_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    write(
+        root.join("pom.xml"),
+        "<?xml version=\"1.0\"?>\n<project>\n<groupId>com.ruoyi</groupId>\n<artifactId>ruoyi</artifactId>\n<modules>\n<module>ruoyi-admin</module>\n<module>ruoyi-common</module>\n<module>ruoyi-framework</module>\n<module>ruoyi-system</module>\n<module>ruoyi-generator</module>\n</modules>\n</project>\n",
+    );
+    for m in ["admin", "common", "framework", "system", "generator"] {
+        let mod_dir = root.join(format!("ruoyi-{m}"));
+        write(
+            mod_dir.join("pom.xml"),
+            "<project>\n<parent>\n<groupId>com.ruoyi</groupId>\n<artifactId>ruoyi</artifactId>\n</parent>\n<artifactId>ruoyi-m</artifactId>\n</project>\n",
+        );
+        let pkg_dir = mod_dir.join("src/main/java/com/ruoyi").join(m);
+        fs::create_dir_all(&pkg_dir).unwrap();
+        write(
+            pkg_dir.join("UserService.java"),
+            "package com.ruoyi.user;\nimport com.ruoyi.common.Util;\npublic class UserService {}\n",
+        );
+    }
+    let ui = root.join("ruoyi-ui");
+    fs::create_dir_all(ui.join("src/views")).unwrap();
+    write(ui.join("src/views/login.vue"), "<template><div>若依后台管理系统</div></template>\n");
+    write(ui.join("package.json"), "{\"name\":\"ruoyi\",\"title\":\"若依管理系统\"}");
+    write(
+        ui.join(".env.development"),
+        "# 页面标题\nVUE_APP_TITLE = 若依管理系统\n\n# 开发环境配置\nENV = 'development'\n\n# 若依管理系统/开发环境\nVUE_APP_BASE_API = '/dev-api'\n",
+    );
+    // 官方生成器模板（与 build_project 相同夹具）
+    let vm = root.join("ruoyi-generator/src/main/resources/vm/java");
+    write(vm.join("mapper.java.vm"), OFFICIAL_MAPPER_VM);
+    write(vm.join("service.java.vm"), OFFICIAL_SERVICE_VM);
+    write(vm.join("serviceImpl.java.vm"), OFFICIAL_SERVICE_IMPL_VM);
+    write(vm.join("domain.java.vm"), OFFICIAL_DOMAIN_VM);
+    write(vm.join("controller.java.vm"), OFFICIAL_CONTROLLER_VM);
+    dir
+}
+
+/// 管线用参数：只开指定开关，其余增强项全关，保证断言聚焦 MP / 雪花链路
+fn pipeline_params(mp: bool, gen_mp: bool, long_id: bool, snowflake: bool) -> CustomizeParams {
+    CustomizeParams {
+        original_package: "com.ruoyi".into(),
+        new_package: "com.company.project".into(),
+        original_module_prefix: "ruoyi".into(),
+        new_module_prefix: "demo".into(),
+        original_project_name: "ruoyi".into(),
+        new_project_name: "demo".into(),
+        frontend_title: "测试系统".into(),
+        enable_mybatis_plus: mp,
+        enable_generator_mybatis_plus: gen_mp,
+        enable_long_id_json_string: long_id,
+        enable_snowflake_id: snowflake,
+        enable_config_rewrite: false,
+        enable_logback_rewrite: false,
+        enable_report: false,
+        enable_delivery_doc: false,
+        enable_clear_home: false,
+        enable_remove_github: false,
+        enable_remove_docs: false,
+        enable_ai_rules: false,
+        enable_footer_icp: false,
+        enable_site_settings: false,
+        ..Default::default()
+    }
+}
+
+/// 跑完整管线（识别 → 规划 → 执行），断言无任务失败，返回项目目录与改造后的 domain 模板路径
+fn run_pipeline(params: &CustomizeParams) -> (tempfile::TempDir, PathBuf) {
+    let template_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("templates/ruoyi-vue");
+    let template =
+        ruoyi_forge_lib::rules::template::TemplateSet::load_from_dir(&template_dir)
+            .unwrap()
+            .into_full_template()
+            .unwrap();
+    let dir = build_pipeline_project();
+    let root = dir.path();
+    let info = ruoyi_forge_lib::core::detector::detect(root, &template);
+    assert!(info.confidence.recognized, "合成骨架应识别为 RuoYi-Vue");
+    assert!(
+        !info.generator_template_files.is_empty(),
+        "官方生成器模板应被识别"
+    );
+    let tasks = ruoyi_forge_lib::core::planner::plan(&info, params, &template);
+    let results =
+        ruoyi_forge_lib::core::executor::execute_all(root, &info, &tasks, params, &template, |_| {});
+    for r in &results {
+        assert!(
+            !matches!(r.status, ruoyi_forge_lib::core::task::TaskStatus::Failed),
+            "任务 {} 失败：{}",
+            r.task_name,
+            r.message
+        );
+    }
+    // generator 模块已随核心任务重命名为 demo-generator
+    let domain_vm = root.join("demo-generator/src/main/resources/vm/java/domain.java.vm");
+    assert!(domain_vm.is_file(), "domain.java.vm 应存在于重命名后的模块");
+    (dir, domain_vm)
+}
+
+/// 管线级闭环：MP + 生成器适配 + Long ID + 雪花全开——
+/// 任务 10/11 注入 pk 条件 plain @TableId 与 Long 条件 @JsonSerialize，
+/// 任务 11b（雪花 + MP 同开）把已有 @TableId 统一升级为 IdType.INPUT 并补 IdType import。
+#[test]
+fn pipeline_domain_template_tableid_composition_with_snowflake() {
+    let params = pipeline_params(true, true, true, true);
+    let (_dir, domain_vm) = run_pipeline(&params);
+    let domain = fs::read_to_string(&domain_vm).unwrap();
+    assert!(
+        domain.contains("#if($column.pk)\n    @TableId(type = IdType.INPUT)\n#end\n"),
+        "雪花 + MP 同开：主键应升级为 IdType.INPUT：\n{domain}"
+    );
+    assert!(
+        domain.contains("import com.baomidou.mybatisplus.annotation.IdType;"),
+        "应补 IdType import：\n{domain}"
+    );
+    // @JsonSerialize 与 @TableId 共存，互不吞掉
+    assert!(domain.contains(
+        "#if($column.javaType == 'Long')\n    @JsonSerialize(using = ToStringSerializer.class)\n#end\n    private $column.javaType $column.javaField;"
+    ));
+    // import 位于 import foreach 之外（空 $importList 时仍渲染）
+    assert!(
+        domain.contains(
+            "#foreach ($import in $importList)\nimport ${import};\n#end\nimport com.baomidou.mybatisplus.annotation.IdType;"
+        ),
+        "注入 import 应位于 import foreach 循环体之外：\n{domain}"
+    );
+}
+
+/// 管线级开关矩阵：
+/// 1. MP 相关开关全关 → domain 模板零注入（关闭 enable_mybatis_plus 不注入 @TableId）
+/// 2. 仅关 enable_mybatis_plus（生成器适配仍开）→ 保留 plain @TableId，
+///    雪花开启也不升级 IdType.INPUT（executor 11b 的标记步骤以 enable_mybatis_plus 为门，
+///    IdType.INPUT 属 MP 注解语义；生成器模板适配由 enable_generator_mybatis_plus 独立门控为既有行为）
+#[test]
+fn pipeline_domain_template_off_matrix_without_mp() {
+    // 1. 全关：模板零注入
+    let params = pipeline_params(false, false, false, false);
+    let (_dir, domain_vm) = run_pipeline(&params);
+    let domain = fs::read_to_string(&domain_vm).unwrap();
+    assert!(!domain.contains("@TableId"), "{domain}");
+    assert!(!domain.contains("@TableName"), "{domain}");
+    assert!(!domain.contains("@JsonSerialize"), "{domain}");
+    assert!(!domain.contains("IdType"), "{domain}");
+
+    // 2. 仅关 enable_mybatis_plus：plain @TableId 保留、无 IdType.INPUT
+    let params = pipeline_params(false, true, true, true);
+    let (_dir, domain_vm) = run_pipeline(&params);
+    let domain = fs::read_to_string(&domain_vm).unwrap();
+    assert!(
+        domain.contains("#if($column.pk)\n    @TableId\n#end\n"),
+        "MP 关闭 + 生成器适配开启：主键应为 plain @TableId：\n{domain}"
+    );
+    assert!(!domain.contains("IdType.INPUT"), "{domain}");
 }

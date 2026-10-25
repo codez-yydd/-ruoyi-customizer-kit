@@ -117,6 +117,7 @@ const defaults = (): CustomizeParams => ({
   enable_snowflake_id: false,
   enable_report: true,
   enable_delivery_doc: true,
+  enable_compile_check: false,
   enable_clear_home: true,
   enable_remove_github: true,
   enable_remove_docs: true,
@@ -216,7 +217,9 @@ const defaults = (): CustomizeParams => ({
   email_daily_limit: 10,
   enable_captcha_slider: false,
   enable_api_encrypt: false,
-  aes_secret: ''
+  aes_secret: '',
+  // 官方拉取记录的源码版本信息（随参数透传到执行报告与交付文档；本地项目为 null）
+  source_version_info: store.sourceVersionInfo ?? null
 })
 
 const form = reactive<CustomizeParams>(storedParams.value ? { ...storedParams.value } : defaults())
@@ -261,6 +264,7 @@ if (typeof form.email_daily_limit !== 'number') form.email_daily_limit = 10
 if (form.enable_captcha_slider == null) form.enable_captcha_slider = false
 if (form.enable_api_encrypt == null) form.enable_api_encrypt = false
 if (form.aes_secret == null) form.aes_secret = ''
+if (form.enable_compile_check == null) form.enable_compile_check = false
 
 // 识别结果变化时重置原值
 watch(
@@ -453,6 +457,7 @@ const sectionCounts = computed(() => ({
     form.enable_remove_docs,
     form.enable_report,
     form.enable_delivery_doc,
+    form.enable_compile_check,
     form.enable_uniapp
   ]),
   security: countTrue([form.enable_security, form.enable_sql_customize]),
@@ -705,6 +710,8 @@ async function importConfig() {
         form.original_package = projectInfo.value.original_package || form.original_package
         form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
       }
+      // 源码版本信息描述当前项目来源，不随导入配置迁移（保持本次拉取流程记录的值）
+      form.source_version_info = store.sourceVersionInfo ?? null
       // 关闭当前项目类型不支持的开关（导入的配置可能含单体版不支持的项）
       sanitizeDisabledFeatures()
       markCustomized()
@@ -729,6 +736,8 @@ function applyHistory(entry: ProfileEntry) {
         form.original_package = projectInfo.value.original_package || form.original_package
         form.original_module_prefix = projectInfo.value.original_module_prefix || form.original_module_prefix
       }
+      // 源码版本信息描述当前项目来源，不随历史配置迁移（保持本次拉取流程记录的值）
+      form.source_version_info = store.sourceVersionInfo ?? null
       // 关闭当前项目类型不支持的开关（历史配置可能来自其它项目类型）
       sanitizeDisabledFeatures()
       markCustomized()
@@ -965,6 +974,13 @@ function generateAesSecret(): string {
                   <el-switch v-model="form.enable_delivery_doc" @change="onSwitchChange" />
                 </div>
                 <div class="switch-item__hint muted">改造后输出 DELIVERY.md（项目概览/端口/启动指南/安全清单）</div>
+              </div>
+              <div class="switch-item">
+                <div class="switch-item__head">
+                  <span class="switch-item__label">编译冒烟检查</span>
+                  <el-switch v-model="form.enable_compile_check" @change="onSwitchChange" />
+                </div>
+                <div class="switch-item__hint muted">执行阶段对产物跑 mvn compile 验证可编译性；需本机安装 Maven 与 JDK，未安装将自动跳过；首次运行需联网下载依赖，耗时较长</div>
               </div>
               <div v-if="!isDisabled('enable_uniapp')" class="switch-item">
                 <div class="switch-item__head">

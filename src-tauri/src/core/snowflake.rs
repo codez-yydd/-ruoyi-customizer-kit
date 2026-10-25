@@ -267,7 +267,7 @@ pub fn mark_domain_idtype_input(content: &str) -> Option<String> {
         return None;
     }
     if !out.contains("import com.baomidou.mybatisplus.annotation.IdType;") {
-        if let Some(idx) = out.find("import ") {
+        if let Some(idx) = literal_import_offset(&out) {
             let mut s = String::with_capacity(out.len() + 64);
             s.push_str(&out[..idx]);
             s.push_str("import com.baomidou.mybatisplus.annotation.IdType;\n");
@@ -276,6 +276,23 @@ pub fn mark_domain_idtype_input(content: &str) -> Option<String> {
         }
     }
     Some(out)
+}
+
+/// 首个「字面量」import 行的字节偏移（行首 import 且不含 Velocity `${}` 引用）；
+/// 无字面量 import 时回退首个任意 `import ` 出现位置（与既有行为一致）。
+///
+/// 生成器 domain.java.vm 的首个 import 行是 `#foreach ($import in $importList)`
+/// 循环体内的 `import ${import};`：表无 Date/BigDecimal 字段且非子表时
+/// $importList 为空（VelocityUtils.getImportList），循环体整体不渲染，
+/// 插在循环内的 import 会随循环消失，导致渲染产物缺 import 编译失败。
+/// 真实 Java 源码的 import 全为字面量，锚点与原行为一致。
+fn literal_import_offset(text: &str) -> Option<usize> {
+    for line in text.lines() {
+        if line.trim_start().starts_with("import ") && !line.contains("${") {
+            return Some(line.as_ptr() as usize - text.as_ptr() as usize);
+        }
+    }
+    text.find("import ")
 }
 
 // ---------- 辅助 ----------

@@ -60,6 +60,22 @@ export type OfficialEdition = 'vue' | 'cloud'
 /** 官方拉取 Spring Boot 大版本 */
 export type OfficialBootMajor = 2 | 3 | 4
 
+/** 官方源码版本信息：拉取时记录，随改造参数流转到执行报告与交付文档 */
+export interface SourceVersionInfo {
+  /** 实际使用的源站：gitee | github */
+  source: string
+  /** 锁定的官方 tag（如 v3.9.2）；空串表示跟随官方分支 */
+  tag: string
+  /** 使用的官方分支名（tag 模式为空串） */
+  branch: string
+  /** 源码 commit SHA（Gitee 克隆精确；GitHub zip 为 API 查询近似值） */
+  sha: string
+  /** Spring Boot 完整版本（如 4.1.0） */
+  boot_version: string
+  /** Java 版本（如 17 / 1.8） */
+  java_version: string
+}
+
 /** download_official_archive 命令响应 */
 export interface DownloadOfficialResponse {
   success: boolean
@@ -71,6 +87,27 @@ export interface DownloadOfficialResponse {
   root_path?: string
   /** directory 模式：clone 根目录（供 cleanupExtractDir） */
   extract_root?: string
+  /** 官方源码版本信息（旧后端无该字段） */
+  version_info?: SourceVersionInfo | null
+}
+
+/** list_official_versions 返回的单个官方版本（按 tag 锁定） */
+export interface OfficialVersionItem {
+  /** tag 名（如 v3.9.2） */
+  tag: string
+  /** 该 tag 根 pom 的 spring-boot.version（如 4.0.3） */
+  boot_version: string
+  /** 该 tag 根 pom 的 java.version（如 17 / 1.8） */
+  java_version: string
+  /** 该 tag 的 commit sha（Gitee 与 GitHub 一致） */
+  sha: string
+}
+
+/** list_official_versions 命令响应（「最新」首项由前端固定追加） */
+export interface OfficialVersionsResponse {
+  success: boolean
+  message: string
+  versions: OfficialVersionItem[]
 }
 
 /** download:progress 事件载荷 */
@@ -106,6 +143,8 @@ export interface CustomizeParams {
   enable_report: boolean
   /** 生成交付文档 DELIVERY.md（项目概览/端口/启动指南/安全清单） */
   enable_delivery_doc: boolean
+  /** 编译冒烟检查：执行阶段对产物跑 mvn compile 验证可编译性（需本机 Maven+JDK，未安装自动跳过） */
+  enable_compile_check: boolean
   /** 清空若依前端首页为空白页 */
   enable_clear_home: boolean
   /** 移除顶部栏 github/gitee 外链 */
@@ -282,6 +321,9 @@ export interface CustomizeParams {
   // ---- 增强件：接口 AES ----
   enable_api_encrypt: boolean
   aes_secret: string
+  // ---- 官方源码版本（拉取流程记录，仅展示用） ----
+  /** 官方拉取时记录的源码版本信息；本地项目 / 旧配置为 null，报告不出现该节 */
+  source_version_info?: SourceVersionInfo | null
 }
 
 /** 任务类型（与 Rust TaskType 对应，PascalCase） */
@@ -332,6 +374,7 @@ export type TaskType =
   | 'SetupCaptchaSlider'
   | 'SetupApiEncrypt'
   | 'ValidateProject'
+  | 'CompileSmokeCheck'
   | 'GenerateDeliveryDoc'
   | 'GenerateReport'
 

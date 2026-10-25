@@ -35,6 +35,7 @@ pub fn default_params() -> CustomizeParams {
         enable_snowflake_id: false,
         enable_report: true,
         enable_delivery_doc: true,
+        enable_compile_check: false,
         enable_clear_home: true,
         enable_remove_github: true,
         enable_remove_docs: true,
@@ -124,6 +125,8 @@ pub fn default_params() -> CustomizeParams {
         cloud_port_job: 0,
         cloud_port_file: 0,
         cloud_port_monitor: 0,
+        // 官方源码版本信息：CLI 不做官方拉取，恒为 None（GUI 拉取流程才记录）
+        source_version_info: None,
     }
 }
 
@@ -203,6 +206,33 @@ pub enum Commands {
         #[arg(long)]
         quiet: bool,
     },
+    /// 拉取官方源码（RuoYi-Vue / RuoYi-Cloud）到指定目录
+    Pull {
+        /// 项目类型：vue（RuoYi-Vue）| cloud（RuoYi-Cloud）
+        #[arg(long)]
+        edition: String,
+        /// Spring Boot 大版本：2 | 3 | 4（映射官方分支 master / springboot3 / springboot2）
+        #[arg(long)]
+        boot: u32,
+        /// 官方 tag（如 v3.9.2）；缺省拉官方分支最新
+        #[arg(long)]
+        tag: Option<String>,
+        /// 源站：gitee | github（默认 gitee，Gitee 走 git 浅克隆，失败自动回退 GitHub）
+        #[arg(long, default_value = "gitee")]
+        source: String,
+        /// 输出目录（须不存在或为空，非空时报错）
+        #[arg(long)]
+        dest: PathBuf,
+        /// 进度以 NDJSON 输出（{"type":"progress",...} 与 {"type":"log",...}）
+        #[arg(long)]
+        json: bool,
+    },
+    /// 增强件锚点自检：识别项目并检查各增强件关键锚点是否齐备
+    Doctor {
+        /// 若依项目目录（官方拉取的原始源码或已改造项目均可）
+        #[arg(long)]
+        dir: PathBuf,
+    },
 }
 
 /// CLI 入口。返回进程退出码。
@@ -238,6 +268,15 @@ fn dispatch(cli: Cli) -> Result<ExitCode, String> {
             json,
             quiet,
         } => cmd_run(&config, source.as_deref(), &set, json, quiet),
+        Commands::Pull {
+            edition,
+            boot,
+            tag,
+            source,
+            dest,
+            json,
+        } => cmd_pull(&edition, boot, tag.as_deref(), &source, &dest, json),
+        Commands::Doctor { dir } => cmd_doctor(&dir),
     }
 }
 
@@ -435,6 +474,299 @@ fn cmd_run(
     } else {
         Ok(ExitCode::SUCCESS)
     }
+}
+
+// ---------- pull：拉取官方源码 ----------
+
+/// pull 子命令校验通过的参数集（供离线单测）
+#[derive(Debug)]
+pub struct PullSpec {
+    pub host: String,
+    pub edition: String,
+    pub boot_major: u32,
+    pub tag: Option<String>,
+}
+
+/// 校验 pull 参数：edition / boot 映射 / tag 字符集 / 源站。
+/// 复用批1 download.rs 的 official_repo / official_branch / is_valid_official_tag。
+pub fn validate_pull_args(
+    edition: &str,
+    boot_major: u32,
+    tag: Option<&str>,
+    source: &str,
+) -> Result<PullSpec, String> {
+    crate::commands::download::official_repo(edition)?;
+    crate::commands::download::official_branch(boot_major)?;
+    if let Some(t) = tag {
+        if !crate::commands::download::is_valid_official_tag(t) {
+            return Err(format!(
+                "tag 名「{t}」不合法：仅允许字母、数字、点号、下划线与横线（1-64 位）"
+            ));
+        }
+    }
+    let host = match source {
+        "gitee" | "github" => source.to_string(),
+        other => {
+            return Err(format!("不支持的源站：{other}，仅支持 gitee / github"));
+        }
+    };
+    Ok(PullSpec {
+        host,
+        edition: edition.to_string(),
+        boot_major,
+        tag: tag.map(|s| s.to_string()),
+    })
+}
+
+/// 输出目录校验：与 GUI「输出目录已存在且非空拒绝」同一语义
+///（目录存在但为空属于用户预建目录，允许）。
+pub fn ensure_pull_dest_writable(dest: &Path) -> Result<(), String> {
+    if dest.exists() && !dest.is_dir() {
+        return Err(format!("目标路径 {} 已存在且不是目录", dest.display()));
+    }
+    if dest.is_dir() {
+        if let Ok(mut entries) = std::fs::read_dir(dest) {
+            if entries.next().is_some() {
+                return Err(format!(
+                    "输出目录 {} 已存在且非空：重复拉取会与已有内容混合产生脏数据，请更换输出目录或清空后重试",
+                    dest.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// pull / doctor 的状态行输出（普通文本或 NDJSON log 事件，与 run 的 emit_log 同构）
+fn pull_log(as_json: bool, message: &str) {
+    if as_json {
+        println!("{}", json!({"type":"log","level":"INFO","message":message}));
+    } else {
+        let ts = chrono::Local::now().format("%H:%M:%S");
+        println!("[{ts}] {message}");
+    }
+}
+
+/// 应用 tag 与 Boot 档位一致性校验结果：
+/// - 不一致（Mismatch）→ Err：进程 exit 2 报错退出，阻止拉到档位错配的代码
+///   （如 tag v3.9.2 的 pom 是 Spring Boot 4.0.3，配 --boot 3 会拉到 Boot 4 代码）
+/// - 探测失败（Warn）→ 打警告日志后放行，网络问题不阻断主流程
+/// - 一致（Ok）→ 无感通过
+fn apply_tag_boot_consistency(
+    check: crate::commands::download::TagBootCheck,
+    as_json: bool,
+) -> Result<(), String> {
+    match check {
+        crate::commands::download::TagBootCheck::Mismatch(message) => Err(message),
+        crate::commands::download::TagBootCheck::Warn(message) => {
+            pull_log(as_json, &message);
+            Ok(())
+        }
+        crate::commands::download::TagBootCheck::Ok => Ok(()),
+    }
+}
+
+fn cmd_pull(
+    edition: &str,
+    boot: u32,
+    tag: Option<&str>,
+    source: &str,
+    dest: &Path,
+    as_json: bool,
+) -> Result<ExitCode, String> {
+    let spec = validate_pull_args(edition, boot, tag, source)?;
+    ensure_pull_dest_writable(dest)?;
+    // tag 档位一致性防线：CLI 手传 --tag 时校验该 tag pom 的 Boot 大版本与 --boot 是否一致
+    //（tag 归类只看其自身 pom，如 v3.9.2 的 pom 是 Boot 4.0.3，不属于 Boot 3 档）。
+    // GUI 版本下拉框已按 tag pom 过滤档位（批1），校验只放 CLI 拉取路径，GUI 不受影响；
+    // 未指定 tag（拉分支最新）不校验——分支由 official_branch 映射保证档位。
+    if let Some(t) = tag {
+        apply_tag_boot_consistency(
+            // 探测源站跟随实际下载源站（--source）：选 Gitee 时 Gitee raw 优先
+            crate::commands::download::check_tag_boot_major(&spec.edition, &spec.host, t, spec.boot_major),
+            as_json,
+        )?;
+    }
+    let ref_desc = match tag {
+        Some(t) => format!("tag {t}"),
+        None => format!("分支 {}", crate::commands::download::official_branch(boot)?),
+    };
+    pull_log(
+        as_json,
+        &format!(
+            "开始拉取官方源码：{}（Boot {boot}，{ref_desc}，源站 {}）...",
+            spec.edition, spec.host
+        ),
+    );
+
+    // 进度输出：NDJSON 每条一行；普通模式节流（约 800ms 一条 + 首尾必报），
+    // 避免 64KB 分块回调刷屏（git 克隆模式只有 (0,0) 一条，无影响）
+    let last_emit = std::cell::RefCell::new((std::time::Instant::now() - std::time::Duration::from_secs(10), 0u64));
+    let emit = |received: u64, total: u64| {
+        let mut st = last_emit.borrow_mut();
+        let now = std::time::Instant::now();
+        let finished = total > 0 && received >= total;
+        if !finished && now.duration_since(st.0) < std::time::Duration::from_millis(800) {
+            return;
+        }
+        *st = (now, received);
+        drop(st);
+        if as_json {
+            println!("{}", json!({"type":"progress","received":received,"total":total}));
+        } else if total > 0 {
+            println!("[进度] {} / {} 字节（{}%）", received, total, received * 100 / total);
+        } else if received > 0 {
+            println!("[进度] 已接收 {received} 字节");
+        }
+    };
+
+    let resp = crate::commands::download::pull_official_source(
+        &spec.host,
+        &spec.edition,
+        spec.boot_major,
+        spec.tag.as_deref(),
+        &emit,
+    );
+    if !resp.success {
+        println!("拉取失败：{}", resp.message);
+        return Ok(ExitCode::from(1));
+    }
+
+    // 落位：directory（git 克隆）root_path 即项目根；zip 先解压到临时目录再定位项目根
+    let (staged_root, cleanup_roots) = if resp.source_type == "directory" {
+        let root = PathBuf::from(&resp.root_path);
+        let mut cleanups = Vec::new();
+        if !resp.extract_root.is_empty() {
+            cleanups.push(PathBuf::from(&resp.extract_root));
+        }
+        (root, cleanups)
+    } else if resp.source_type == "zip" {
+        let temp = std::env::temp_dir().join(format!("ruoyi-forge-cli-pull-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        crate::utils::archive::extract_zip(Path::new(&resp.zip_path), &temp)
+            .map_err(|e| format!("解压官方源码 zip 失败：{e}"))?;
+        let root = crate::utils::archive::find_project_root(&temp);
+        (root, vec![temp])
+    } else {
+        return Err(format!("未知拉取产物类型：{}", resp.source_type));
+    };
+
+    // 移入输出目录：dest 不存在直接 move；已存在的空目录逐项移入（与 GUI 管线同策略）
+    let move_err = if dest.exists() {
+        let mut err = None;
+        if let Ok(entries) = std::fs::read_dir(&staged_root) {
+            for entry in entries.flatten() {
+                let to = dest.join(entry.file_name());
+                if let Err(e) = crate::utils::file::move_path(&entry.path(), &to) {
+                    err = Some(format!(
+                        "移入输出目录失败：{e}（输出目录 {} 可能残留部分已移入的内容，请检查）",
+                        dest.display()
+                    ));
+                    break;
+                }
+            }
+        }
+        err
+    } else {
+        if let Some(parent) = dest.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建输出目录父级失败：{e}"))?;
+            }
+        }
+        crate::utils::file::move_path(&staged_root, dest).err().map(|e| {
+            format!(
+                "移动到输出目录失败：{e}。输出目录 {} 可能残留部分内容，请检查后手动处理",
+                dest.display()
+            )
+        })
+    };
+    if let Some(e) = move_err {
+        return Err(e);
+    }
+    // 清理临时产物（move 已把 staged_root 移走，剩余的是空克隆目录 / zip 解压根 / zip 文件）
+    for dir in cleanup_roots {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+    if !resp.zip_path.is_empty() {
+        let _ = std::fs::remove_file(&resp.zip_path);
+    }
+
+    if let Some(v) = &resp.version_info {
+        println!("版本：{}", crate::core::format_source_version_summary(v));
+    }
+    println!("已拉取到：{}", dest.display());
+    if as_json {
+        println!(
+            "{}",
+            json!({
+                "type": "result",
+                "success": true,
+                "dest": dest.to_string_lossy(),
+                "version_info": resp.version_info,
+            })
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+// ---------- doctor：增强件锚点自检 ----------
+
+fn cmd_doctor(dir: &Path) -> Result<ExitCode, String> {
+    if !dir.is_dir() {
+        return Err(format!("项目目录不存在或不是目录：{}", dir.display()));
+    }
+    let resp = detect_auto(dir, None);
+    if !resp.success {
+        println!("识别失败：{}", resp.message);
+        return Ok(ExitCode::from(1));
+    }
+    let project = resp.project.expect("识别成功时 project 必有值");
+    println!("识别成功：{}（模板 {}）", project.project_type, project.template_dir);
+    let boot_major = project
+        .spring_boot_major
+        .or_else(|| crate::core::mybatis_plus::detect_boot_major_version(dir));
+    if let Some(major) = boot_major {
+        println!("Spring Boot 大版本：{major}");
+    }
+    if !project.backend_modules.is_empty() {
+        println!("后端模块：{}", project.backend_modules.join("、"));
+    }
+    if !project.frontend_dirs.is_empty() {
+        println!("前端目录：{}", project.frontend_dirs.join("、"));
+    }
+
+    let report = crate::core::health::check_anchor_health(dir, &project);
+    println!();
+    println!("增强件锚点健康检查：");
+    for c in &report.checks {
+        let status = if !c.applicable {
+            "－ 不适用（当前项目类型不支持）"
+        } else if c.ok {
+            "✅ 可用"
+        } else {
+            "❌ 锚点缺失"
+        };
+        println!("  [{status}] {}", c.feature);
+        for m in &c.missing_required {
+            println!("      缺失：{m}");
+        }
+        for m in &c.missing_optional {
+            println!("      可选缺失：{m}");
+        }
+        for n in &c.notes {
+            println!("      {n}");
+        }
+    }
+    let missing = report.applicable_count() - report.available_count();
+    println!();
+    println!(
+        "总结：{} 项适用，{} 项锚点齐备，{} 项锚点缺失（锚点缺失是信息提示，不阻断改造；识别成功退出码即为 0）",
+        report.applicable_count(),
+        report.available_count(),
+        missing
+    );
+    Ok(ExitCode::SUCCESS)
 }
 
 fn emit_log(ev: &LogEvent, as_json: bool, quiet: bool) {
@@ -719,6 +1051,200 @@ mod tests {
         let mut p = default_params();
         apply_set_list(&mut p, &["new_modules=[\"order\",\"member\"]".into()]).unwrap();
         assert_eq!(p.new_modules, vec!["order".to_string(), "member".to_string()]);
+    }
+
+    /// 编译冒烟开关可经 --set 覆盖（serde bool 字段天然支持）
+    #[test]
+    fn apply_set_enable_compile_check_bool() {
+        let mut p = default_params();
+        assert!(!p.enable_compile_check, "CLI 默认应关闭编译冒烟");
+        apply_set_list(&mut p, &["enable_compile_check=true".into()]).unwrap();
+        assert!(p.enable_compile_check);
+        // 类型不符被拒（沿用既有类型校验）
+        let err = apply_set_list(&mut p, &["enable_compile_check=1".into()]).unwrap_err();
+        assert!(err.contains("类型不符"), "{err}");
+    }
+
+    // ---------- pull 子命令（离线：参数校验，不打外网） ----------
+
+    #[test]
+    fn pull_args_validate_legal_and_illegal() {
+        // 合法组合
+        assert!(validate_pull_args("vue", 3, Some("v3.9.2"), "gitee").is_ok());
+        assert!(validate_pull_args("cloud", 2, None, "github").is_ok());
+        assert!(validate_pull_args("vue", 4, None, "gitee").is_ok());
+
+        // 非法 edition（单体 ruoyi 不支持官方拉取）
+        let err = validate_pull_args("ruoyi", 3, None, "gitee").unwrap_err();
+        assert!(err.contains("vue / cloud"), "{err}");
+        // 非法 boot（仅 2/3/4 映射官方分支）
+        let err = validate_pull_args("vue", 5, None, "gitee").unwrap_err();
+        assert!(err.contains("2 / 3 / 4"), "{err}");
+        // 非法 tag（注入字符）
+        let err = validate_pull_args("vue", 3, Some("v1 v2"), "gitee").unwrap_err();
+        assert!(err.contains("不合法"), "{err}");
+        // 非法源站
+        let err = validate_pull_args("vue", 3, None, "gitlab").unwrap_err();
+        assert!(err.contains("gitee / github"), "{err}");
+    }
+
+    #[test]
+    fn pull_dest_rejects_non_empty_or_file() {
+        let base = tempfile::tempdir().unwrap();
+        // 存在且为空（用户预建目录）：允许
+        let empty = base.path().join("empty-out");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(ensure_pull_dest_writable(&empty).is_ok());
+        // 不存在：允许
+        assert!(ensure_pull_dest_writable(&base.path().join("new-out")).is_ok());
+        // 存在且非空：拒绝（与 GUI 输出目录同一语义）
+        let non_empty = base.path().join("non-empty");
+        std::fs::create_dir_all(&non_empty).unwrap();
+        std::fs::write(non_empty.join("a.txt"), "x").unwrap();
+        let err = ensure_pull_dest_writable(&non_empty).unwrap_err();
+        assert!(err.contains("非空"), "{err}");
+        // 存在但不是目录：拒绝
+        let file = base.path().join("file.txt");
+        std::fs::write(&file, "x").unwrap();
+        assert!(ensure_pull_dest_writable(&file).is_err());
+    }
+
+    // ---------- pull 的 tag 与 Boot 档位一致性校验（mock 探测，不打外网） ----------
+
+    /// 校验门行为：一致通过；探测失败降级警告不阻断；错配报错拦截且文案含两边实际值与建议
+    #[test]
+    fn tag_boot_consistency_gate_passes_warns_and_blocks() {
+        use crate::commands::download::{check_tag_boot_major_with, PomVersions, TagBootCheck};
+
+        let pom = |boot: &str, java: &str| PomVersions {
+            spring_boot_version: boot.into(),
+            java_version: java.into(),
+            ..Default::default()
+        };
+
+        // 一致：v3.9.2 的 pom 是 Boot 4.0.3，配 --boot 4 → 通过
+        let ok = check_tag_boot_major_with("v3.9.2", 4, || Some(pom("4.0.3", "17")));
+        assert!(matches!(ok, TagBootCheck::Ok));
+        assert!(apply_tag_boot_consistency(ok, false).is_ok());
+
+        // 错配：v3.9.2（Boot 4.0.3 / Java 17）配 --boot 3 → 报错拦截（exit 2 语义）
+        let mismatch = check_tag_boot_major_with("v3.9.2", 3, || Some(pom("4.0.3", "17")));
+        let err = apply_tag_boot_consistency(mismatch, false).unwrap_err();
+        assert!(err.contains("tag v3.9.2 为 Spring Boot 4.0.3（Java 17）"), "{err}");
+        assert!(err.contains("与 --boot 3 不符"), "{err}");
+        assert!(err.contains("请改用 --boot 4"), "{err}");
+        assert!(err.contains("Boot 3 档位的 tag"), "{err}");
+
+        // 探测失败：降级警告，不阻断主流程
+        let warn = check_tag_boot_major_with("v3.9.2", 3, || None);
+        assert!(apply_tag_boot_consistency(warn, false).is_ok());
+    }
+
+    /// 校验仅在指定 --tag 时执行：拉分支最新（tag 为 None）不校验
+    ///（分支由 official_branch 映射保证档位；此用例锁定 cmd_pull 的接线语义：
+    /// tag 为 None 时不会调用校验，也就不会因网络探测拖慢或阻断分支拉取）
+    #[test]
+    fn tag_boot_consistency_only_gates_tag_pull() {
+        // None → 不进入校验分支：与 validate_pull_args(None) 组合可正常构造 PullSpec
+        let spec = validate_pull_args("vue", 3, None, "gitee").unwrap();
+        assert!(spec.tag.is_none());
+        // 指定 tag 时 PullSpec 携带 tag，校验按 spec.edition + spec.boot_major 执行
+        let spec = validate_pull_args("vue", 3, Some("v3.9.2"), "gitee").unwrap();
+        assert_eq!(spec.tag.as_deref(), Some("v3.9.2"));
+        assert_eq!(spec.edition, "vue");
+        assert_eq!(spec.boot_major, 3);
+    }
+
+    #[test]
+    fn pull_and_doctor_subcommand_arg_parsing() {
+        // pull 必填项缺失 → 解析失败
+        assert!(Cli::try_parse_from(["forge-cli", "pull", "--boot", "3", "--dest", "out"]).is_err());
+        assert!(
+            Cli::try_parse_from(["forge-cli", "pull", "--edition", "vue", "--dest", "out"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["forge-cli", "pull", "--edition", "vue", "--boot", "3"]).is_err()
+        );
+        // 齐全（含可选项 tag / source / json）→ 解析成功
+        let ok = Cli::try_parse_from([
+            "forge-cli",
+            "pull",
+            "--edition",
+            "cloud",
+            "--boot",
+            "2",
+            "--tag",
+            "v3.6.8",
+            "--source",
+            "github",
+            "--dest",
+            "out",
+            "--json",
+        ])
+        .expect("pull 参数齐全应解析成功");
+        match ok.command {
+            Commands::Pull {
+                edition,
+                boot,
+                tag,
+                source,
+                dest,
+                json,
+            } => {
+                assert_eq!(edition, "cloud");
+                assert_eq!(boot, 2);
+                assert_eq!(tag.as_deref(), Some("v3.6.8"));
+                assert_eq!(source, "github");
+                assert_eq!(dest, PathBuf::from("out"));
+                assert!(json);
+            }
+            _ => panic!("应解析为 Pull 子命令"),
+        }
+        // doctor：--dir 必填
+        assert!(Cli::try_parse_from(["forge-cli", "doctor"]).is_err());
+        assert!(Cli::try_parse_from(["forge-cli", "doctor", "--dir", "."]).is_ok());
+    }
+
+    // ---------- doctor 子命令（离线：合成骨架，不打外网） ----------
+
+    /// 最小可识别的分离版骨架（与 tests/cli_pipeline.rs 的 build_mini_project 同构）
+    fn build_doctor_skeleton() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let write = |rel: &str, content: &str| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, content).unwrap();
+        };
+        write(
+            "pom.xml",
+            "<project><groupId>com.ruoyi</groupId><artifactId>ruoyi</artifactId></project>",
+        );
+        for m in ["admin", "common", "framework", "system"] {
+            write(&format!("ruoyi-{m}/pom.xml"), "<project/>");
+        }
+        write(
+            "ruoyi-framework/src/main/java/com/ruoyi/web/service/SysLoginService.java",
+            "public class SysLoginService {}",
+        );
+        write("ruoyi-ui/package.json", "{\"name\":\"ruoyi\"}");
+        dir
+    }
+
+    #[test]
+    fn doctor_exit_code_skeleton_zero_and_plain_dir_nonzero() {
+        // 非项目目录 → 识别失败，退出码 1
+        let plain = tempfile::tempdir().unwrap();
+        std::fs::write(plain.path().join("readme.txt"), "not a project").unwrap();
+        let code = cmd_doctor(plain.path()).expect("目录存在不应返回 Err");
+        assert_eq!(code, ExitCode::from(1), "识别失败应为退出码 1");
+        // 目录不存在 → Err（exit 2）
+        assert!(cmd_doctor(Path::new("Z:/definitely/not/exist")).is_err());
+
+        // 可识别骨架 → 识别成功，退出码 0（锚点缺失不影响退出码）
+        let skeleton = build_doctor_skeleton();
+        let code = cmd_doctor(skeleton.path()).expect("骨架目录不应返回 Err");
+        assert_eq!(code, ExitCode::SUCCESS, "识别成功应为退出码 0");
     }
 
     #[test]

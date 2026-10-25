@@ -154,7 +154,7 @@ npm run build:cli
 
 ### 子命令
 
-当前仅有 `templates`、`detect`、`init-config`、`preview`、`run`。无交互向导、无 `doctor`、无 daemon。
+当前有 `templates`、`detect`、`init-config`、`preview`、`run`、`pull`、`doctor`。无交互向导、无 daemon。
 
 #### templates
 
@@ -202,6 +202,7 @@ forge-cli run --config forge.json [--source <zip或目录>] [--set k=v ...] [--j
 --set jwt_expire_minutes=60
 --set ui_template=arco
 --set enable_cloud_custom_ports=true
+--set enable_compile_check=true
 --set 'new_modules=["order","member"]'
 ```
 
@@ -226,10 +227,45 @@ bash（一行）：
 forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo --title Demo --output ./out && forge-cli preview --config forge.json && forge-cli run --config forge.json --set db_type=postgresql --set db_name=demo_db
 ```
 
+#### pull
+
+拉取官方源码到指定目录（复用 GUI 官方拉取链路：Gitee 匿名 git 浅克隆，失败自动回退 GitHub zip）。
+
+```text
+forge-cli pull --edition vue|cloud --boot 2|3|4 [--tag v3.9.2] [--source gitee|github] --dest <目录> [--json]
+```
+
+- `--edition` 必填：`vue`（RuoYi-Vue）/ `cloud`（RuoYi-Cloud），单体 RuoYi 不支持官方拉取
+- `--boot` 必填：Spring Boot 大版本 `2` / `3` / `4`，映射官方分支 `springboot2` / `springboot3` / `master`
+- `--tag` 可选：锁定官方 tag（如 `v3.9.2`）；缺省拉分支最新
+- `--source` 可选：源站，默认 `gitee`（走 git 浅克隆；失败自动回退 GitHub zip）
+- `--dest` 必填：输出目录，须不存在或为空（非空时报错，与 GUI 输出目录同一语义）
+- `--json` 可选：进度以 NDJSON 输出（`{"type":"progress",...}` / `{"type":"log",...}`，最后一行 `{"type":"result",...}`）
+- 拉取完成后打印版本信息（来源仓库、tag/分支、Spring Boot/Java 版本、commit SHA）与目标路径
+- 本命令不适用 `--set`（不产生改造配置；要改造请继续用 `init-config` / `run --source <目录>`）
+
+示例：
+
+```bash
+forge-cli pull --edition vue --boot 3 --tag v3.9.2 --dest D:\src\RuoYi-Vue-v3.9.2
+```
+
+#### doctor
+
+增强件锚点自检：自动识别项目类型，并对各增强件（短信登录 / 邮件 / 滑块验证码 / 接口 AES / 微信登录 / OSS / MyBatis-Plus / 替换后台 UI 等）依赖的关键锚点（文件 / 类名 / 源码片段）做存在性检查。锚点清单来自各增强件模块的实际查找逻辑（`core/health.rs` 集中定义），GUI 后续可复用同一检查。
+
+```text
+forge-cli doctor --dir <项目目录>
+```
+
+- 目录须为一个若依项目（官方拉取的原始源码或已改造项目均可）
+- 识别失败：输出原因，退出码 `1`；识别成功：退出码恒为 `0`（锚点缺失是信息提示，不是错误）
+- 输出逐项 `✅ 可用 / ❌ 锚点缺失 / － 不适用（当前项目类型不支持）`，缺失项列明关键锚点与可选锚点
+
 ### 退出码
 
-- `0` 全部成功
-- `1` 执行完成但有失败任务或校验 Fail
+- `0` 全部成功（`doctor` 识别成功亦为 `0`，锚点缺失不影响）
+- `1` 执行完成但有失败任务或校验 Fail；`pull` 拉取失败；`doctor` 识别失败
 - `2` 用法 / 参数 / 配置错误
 
 ### 配置参数一览
@@ -257,6 +293,7 @@ forge-cli init-config --source ./ruoyi-vue.zip --package com.demo --prefix demo 
 | enable_snowflake_id | boolean | `false` | 全局雪花 ID：insert 手动 setId，禁用自增 |
 | enable_report | boolean | `true` | 生成 Markdown 改造报告 |
 | enable_delivery_doc | boolean | `true` | 生成交付文档 `DELIVERY.md`（项目概览 / 服务与端口 / 数据库与中间件 / 启动指南 / 安全清单） |
+| enable_compile_check | boolean | `false` | 编译冒烟检查：执行阶段对产物跑 `mvn -q -DskipTests compile` 验证可编译性。需本机安装 Maven 与 JDK，未安装自动跳过（任务置 Skipped）；首次运行需联网下载依赖，耗时较长（超时上限 10 分钟） |
 | enable_clear_home | boolean | `true` | 清空若依前端首页为空白页 |
 | enable_remove_github | boolean | `true` | 移除顶部栏 GitHub / Gitee 外链 |
 | enable_remove_docs | boolean | `true` | 移除顶部栏文档外链 |

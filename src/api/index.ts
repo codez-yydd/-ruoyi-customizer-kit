@@ -16,7 +16,8 @@ import type {
   DownloadOfficialResponse,
   OfficialHost,
   OfficialEdition,
-  OfficialBootMajor
+  OfficialBootMajor,
+  OfficialVersionsResponse
 } from '@/types'
 
 /** 健康检查 */
@@ -45,16 +46,42 @@ export function detectProject(rootPath: string, template?: string): Promise<Dete
  * 从官方仓库拉取 RuoYi-Vue / RuoYi-Cloud。
  * Gitee：git 浅克隆，响应 source_type=directory；GitHub：archive zip。
  * 进度通过 download:progress 事件推送 { received, total }（克隆时 total=0）。
+ * @param host 源站
+ * @param edition 项目类型（vue | cloud）
+ * @param bootMajor Spring Boot 大版本（用于分支映射）
+ * @param tag 可选：按官方 tag 锁定拉取（如 v3.9.2）；缺省跟随官方分支
  */
 export function downloadOfficialArchive(
   host: OfficialHost,
   edition: OfficialEdition,
-  bootMajor: OfficialBootMajor
+  bootMajor: OfficialBootMajor,
+  tag?: string
 ): Promise<DownloadOfficialResponse> {
   return invoke<DownloadOfficialResponse>('download_official_archive', {
     host,
     edition,
-    bootMajor
+    bootMajor,
+    tag: tag ?? null
+  })
+}
+
+/**
+ * 列出官方仓库指定 Boot 档位下可用的源码版本（动态获取官方 tag 并按档位过滤）。
+ * 后端按「tag 自身 pom 的 spring-boot.version」归类，与分支归属无关。
+ * 「最新（跟随官方分支）」选项由前端固定追加，不在返回列表中。
+ * @param edition 项目类型（vue | cloud）
+ * @param bootMajor Spring Boot 大版本（2 | 3 | 4）
+ * @param source 源站（gitee | github），tags 请求失败后端自动回退另一源站
+ */
+export function listOfficialVersions(
+  edition: OfficialEdition,
+  bootMajor: OfficialBootMajor,
+  source: OfficialHost
+): Promise<OfficialVersionsResponse> {
+  return invoke<OfficialVersionsResponse>('list_official_versions', {
+    edition,
+    bootMajor,
+    source
   })
 }
 

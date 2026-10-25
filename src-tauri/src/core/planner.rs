@@ -1052,6 +1052,23 @@ pub fn plan(
         error_message: String::new(),
     });
 
+    // 13b. 编译冒烟检查（可选）：残留校验后、报告/交付文档前，对产物跑 mvn compile 验证可编译性。
+    // 单体/分离/Cloud 都是 Maven 工程，均支持；未安装 Maven/JDK 时执行阶段自动 Skipped。
+    // backend_modules 为空属异常形态（识别必然命中过 pom），此时不规划。
+    if params.enable_compile_check && !info.backend_modules.is_empty() {
+        tasks.push(Task {
+            id: next_id(&tasks),
+            name: "编译冒烟检查（mvn -q -DskipTests compile，未安装 Maven/JDK 自动跳过）".into(),
+            task_type: TaskType::CompileSmokeCheck,
+            risk_level: RiskLevel::Low,
+            affected_files: vec![],
+            affected_dirs: vec![],
+            created_files: vec![],
+            status: TaskStatus::Pending,
+            error_message: String::new(),
+        });
+    }
+
     // 13. 生成交付文档（可选，默认开；实际在校验之前执行，见 pipeline::run_transform）
     if params.enable_delivery_doc {
         tasks.push(Task {
@@ -1312,6 +1329,54 @@ mod tests {
         assert!(
             name.contains("删除原") && name.contains("demo-ui"),
             "有前端目录时应写删除语义，实际：{name}"
+        );
+    }
+
+    /// 编译冒烟：开关开 → 规划且位于 ValidateProject 之后、报告/交付文档之前；
+    /// 开关关（默认）→ 不规划
+    #[test]
+    fn compile_smoke_planned_only_when_enabled_and_after_validate() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = load_vue_template();
+        let mut info = dummy_info(dir.path(), "ruoyi-vue");
+        info.backend_modules = vec!["ruoyi-admin".into(), "ruoyi-framework".into()];
+
+        // 默认关：不规划
+        let params = CustomizeParams::default();
+        let tasks = plan(&info, &params, &template);
+        assert!(
+            !tasks.iter().any(|t| t.task_type == TaskType::CompileSmokeCheck),
+            "默认应不规划编译冒烟任务"
+        );
+
+        // 开关开：规划，且夹在 ValidateProject 与 GenerateDeliveryDoc/GenerateReport 之间
+        let mut params = CustomizeParams::default();
+        params.enable_compile_check = true;
+        let tasks = plan(&info, &params, &template);
+        let pos = |tt: TaskType| {
+            tasks
+                .iter()
+                .position(|t| t.task_type == tt)
+                .expect("任务应存在")
+        };
+        let smoke = pos(TaskType::CompileSmokeCheck);
+        let validate = pos(TaskType::ValidateProject);
+        assert!(
+            smoke > validate,
+            "编译冒烟应排在残留校验之后（smoke={smoke}, validate={validate}）"
+        );
+        assert!(
+            smoke < pos(TaskType::GenerateDeliveryDoc) && smoke < pos(TaskType::GenerateReport),
+            "编译冒烟应排在报告与交付文档之前"
+        );
+
+        // backend_modules 为空的异常形态：不规划
+        let mut info2 = dummy_info(dir.path(), "ruoyi-vue");
+        info2.backend_modules = vec![];
+        let tasks = plan(&info2, &params, &template);
+        assert!(
+            !tasks.iter().any(|t| t.task_type == TaskType::CompileSmokeCheck),
+            "无后端模块（非 Maven 工程形态）不应规划编译冒烟"
         );
     }
 }

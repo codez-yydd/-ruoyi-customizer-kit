@@ -10,7 +10,7 @@ pub use project::{
     ping, save_config_json,
 };
 pub use template::list_templates;
-pub use download::download_official_archive;
+pub use download::{download_official_archive, list_official_versions};
 pub mod preview;
 pub mod execute;
 pub mod sub_agents;

@@ -2,7 +2,7 @@
 
 use crate::core::executor::TaskResult;
 use crate::core::validator::CheckItem;
-use crate::core::{CustomizeParams, ProjectInfo};
+use crate::core::{format_source_version_summary, CustomizeParams, ProjectInfo};
 use std::path::{Path, PathBuf};
 
 /// 生成报告，返回报告文件路径。
@@ -37,6 +37,13 @@ pub fn generate_report(
         None => "未识别".to_string(),
     };
     md.push_str(&format!("- Spring Boot 大版本：{}\n", boot_label));
+    // 官方拉取时记录的源码版本溯源信息（本地项目 / 旧配置无该字段时不出现此行）
+    if let Some(version) = &params.source_version_info {
+        md.push_str(&format!(
+            "- 源码版本：{}\n",
+            format_source_version_summary(version)
+        ));
+    }
     if let Some(p) = delivery_doc_path {
         md.push_str(&format!("- 交付文档：{}\n", p.display()));
     }
@@ -179,4 +186,94 @@ pub fn generate_report(
 
 fn bool_cn(b: bool) -> &'static str {
     if b { "开启" } else { "关闭" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::task::TaskStatus;
+    use crate::core::{Confidence, SourceVersionInfo};
+
+    fn base_info(root: &Path) -> ProjectInfo {
+        ProjectInfo {
+            root_path: root.to_string_lossy().to_string(),
+            project_type: "RuoYi-Vue".into(),
+            template_dir: "ruoyi-vue".into(),
+            backend_modules: vec!["ruoyi-admin".into()],
+            frontend_dirs: vec![],
+            config_files: vec![],
+            logback_files: vec![],
+            generator_template_files: vec![],
+            original_package: "com.ruoyi".into(),
+            original_module_prefix: "ruoyi".into(),
+            original_artifact_prefix: "ruoyi".into(),
+            spring_boot_major: Some(4),
+            confidence: Confidence {
+                required_hit: 1,
+                required_total: 1,
+                optional_hit: vec![],
+                recognized: true,
+                missing_required: vec![],
+            },
+            detected_at: String::new(),
+        }
+    }
+
+    fn base_params() -> CustomizeParams {
+        CustomizeParams::default()
+    }
+
+    fn empty_results() -> (Vec<TaskResult>, Vec<CheckItem>) {
+        (
+            vec![TaskResult {
+                task_id: "1".into(),
+                task_name: "演示任务".into(),
+                status: TaskStatus::Success,
+                modified_files: 0,
+                created_files: 0,
+                renamed_dirs: 0,
+                message: String::new(),
+            }],
+            vec![],
+        )
+    }
+
+    fn gen(root: &Path, params: &CustomizeParams) -> String {
+        let info = base_info(root);
+        let (task_results, checks) = empty_results();
+        let path = generate_report(root, &info, params, &task_results, &checks, None).unwrap();
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    /// source_version_info=Some：项目信息小节出现「源码版本」行（tag 与 Boot/Java 版本）
+    #[test]
+    fn report_includes_source_version_when_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut params = base_params();
+        params.source_version_info = Some(SourceVersionInfo {
+            source: "gitee".into(),
+            tag: "v3.9.2".into(),
+            branch: String::new(),
+            sha: "0123456789abcdef".into(),
+            boot_version: "4.0.3".into(),
+            java_version: "17".into(),
+        });
+        let md = gen(dir.path(), &params);
+        assert!(
+            md.contains("- 源码版本：Gitee · tag v3.9.2 · Spring Boot 4.0.3 · Java 17 · commit 0123456789abcdef\n"),
+            "报告应含源码版本行：{md}"
+        );
+        // 位于项目信息小节（改造参数小节之前）
+        let pos = md.find("- 源码版本：").unwrap();
+        let section = md.find("## 改造参数").unwrap();
+        assert!(pos < section, "源码版本应出现在项目信息小节：{md}");
+    }
+
+    /// source_version_info=None：报告不出现「源码版本」行（旧配置行为不变）
+    #[test]
+    fn report_omits_source_version_when_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let md = gen(dir.path(), &base_params());
+        assert!(!md.contains("源码版本"), "None 时不应出现源码版本行：{md}");
+    }
 }

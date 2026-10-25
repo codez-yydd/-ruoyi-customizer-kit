@@ -42,6 +42,8 @@ pub mod executor;
 pub mod validator;
 pub mod report;
 pub mod delivery;
+pub mod compile_smoke;
+pub mod health;
 
 use serde::{Deserialize, Serialize};
 
@@ -120,6 +122,61 @@ fn default_email_daily_limit() -> i32 {
     10
 }
 
+/// 官方源码版本信息：拉取官方仓库时记录，随改造参数流转到执行报告与交付文档。
+/// 仅用于展示溯源，planner / executor 不消费；旧配置无该字段时为 None，行为完全不变。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SourceVersionInfo {
+    /// 实际使用的源站：`gitee` | `github`
+    #[serde(default)]
+    pub source: String,
+    /// 锁定的官方 tag（如 `v3.9.2`）；空串表示跟随官方分支
+    #[serde(default)]
+    pub tag: String,
+    /// 使用的官方分支名（如 `master` / `springboot3`）；tag 模式为空串
+    #[serde(default)]
+    pub branch: String,
+    /// 源码 commit SHA。Gitee git 克隆为精确值（rev-parse HEAD）；
+    /// GitHub zip 为 API 查询值（tag sha / 分支 HEAD，下载与查询间官方可能推进，属近似值）
+    #[serde(default)]
+    pub sha: String,
+    /// Spring Boot 完整版本（如 `4.1.0`，取自源码根 pom 的 spring-boot.version）
+    #[serde(default)]
+    pub boot_version: String,
+    /// Java 版本（如 `17` / `1.8`，取自源码根 pom 的 java.version）
+    #[serde(default)]
+    pub java_version: String,
+}
+
+/// 源码版本信息的单行展示文案（执行报告与交付文档共用）。
+/// 例：`Gitee · tag v3.9.2 · Spring Boot 4.0.3 · Java 17 · commit <sha>`
+pub fn format_source_version_summary(v: &SourceVersionInfo) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let host = match v.source.as_str() {
+        "gitee" => "Gitee".to_string(),
+        "github" => "GitHub".to_string(),
+        other if !other.is_empty() => other.to_string(),
+        _ => String::new(),
+    };
+    if !host.is_empty() {
+        parts.push(host);
+    }
+    if !v.tag.is_empty() {
+        parts.push(format!("tag {}", v.tag));
+    } else if !v.branch.is_empty() {
+        parts.push(format!("分支 {}", v.branch));
+    }
+    if !v.boot_version.is_empty() {
+        parts.push(format!("Spring Boot {}", v.boot_version));
+    }
+    if !v.java_version.is_empty() {
+        parts.push(format!("Java {}", v.java_version));
+    }
+    if !v.sha.is_empty() {
+        parts.push(format!("commit {}", v.sha));
+    }
+    parts.join(" · ")
+}
+
 /// serde 默认值辅助：数据库类型默认 mysql（旧配置 JSON 无该字段时兜底）
 fn default_db_type() -> String {
     "mysql".into()
@@ -176,6 +233,10 @@ pub struct CustomizeParams {
     /// 生成交付文档 DELIVERY.md（项目概览/端口/启动指南/安全清单），默认开
     #[serde(default = "default_true")]
     pub enable_delivery_doc: bool,
+    /// 编译冒烟检查：执行阶段对产物跑 `mvn -q -DskipTests compile` 验证可编译性。
+    /// 需本机安装 Maven 与 JDK，未安装时该任务自动 Skipped；默认关。
+    #[serde(default)]
+    pub enable_compile_check: bool,
     /// 清空若依前端首页（views/index.vue）为空白页
     #[serde(default = "default_true")]
     pub enable_clear_home: bool,
@@ -461,6 +522,11 @@ pub struct CustomizeParams {
     /// 同一邮箱每日发码上限
     #[serde(default = "default_email_daily_limit")]
     pub email_daily_limit: i32,
+    // ---- 官方源码版本（拉取流程记录，仅展示用） ----
+    /// 官方拉取时记录的源码版本信息（来源仓库、tag/分支、SHA、Boot/Java 版本）。
+    /// 仅由 report / delivery 消费；None 时报告与交付文档不出现该节，行为完全不变。
+    #[serde(default)]
+    pub source_version_info: Option<SourceVersionInfo>,
 }
 
 impl Default for CustomizeParams {
@@ -485,6 +551,7 @@ impl Default for CustomizeParams {
             enable_snowflake_id: false,
             enable_report: true,
             enable_delivery_doc: true,
+            enable_compile_check: false,
             enable_clear_home: true,
             enable_remove_github: true,
             enable_remove_docs: true,
@@ -574,6 +641,7 @@ impl Default for CustomizeParams {
             mail_from_name: String::new(),
             email_code_expire_minutes: 5,
             email_daily_limit: 10,
+            source_version_info: None,
         }
     }
 }
@@ -1181,6 +1249,92 @@ mod tests {
         assert_eq!(loaded.mail_port, 465);
         assert_eq!(loaded.email_code_expire_minutes, 5);
         assert_eq!(loaded.email_daily_limit, 10);
+    }
+
+    /// 旧配置 JSON 无 source_version_info 时回落 None（旧配置加载不炸、行为不变）
+    #[test]
+    fn old_json_without_source_version_info_defaults_none() {
+        let p = CustomizeParams::default();
+        assert!(p.source_version_info.is_none());
+        let mut v = serde_json::to_value(&p).unwrap();
+        v.as_object_mut().unwrap().remove("source_version_info");
+        let loaded: CustomizeParams = serde_json::from_value(v).unwrap();
+        assert!(loaded.source_version_info.is_none());
+    }
+
+    /// 旧配置 JSON 无 enable_compile_check 时按 serde default 回落 false（默认关）
+    #[test]
+    fn old_json_without_enable_compile_check_defaults_false() {
+        let p = CustomizeParams::default();
+        assert!(!p.enable_compile_check, "编译冒烟默认关");
+        let mut v = serde_json::to_value(&p).unwrap();
+        v.as_object_mut().unwrap().remove("enable_compile_check");
+        let loaded: CustomizeParams = serde_json::from_value(v).unwrap();
+        assert!(!loaded.enable_compile_check);
+        // 序列化往返：显式 true 保持
+        let mut p2 = CustomizeParams::default();
+        p2.enable_compile_check = true;
+        let loaded2: CustomizeParams =
+            serde_json::from_str(&serde_json::to_string(&p2).unwrap()).unwrap();
+        assert!(loaded2.enable_compile_check);
+    }
+
+    /// source_version_info 序列化往返保持一致（随执行参数透传到报告）
+    #[test]
+    fn source_version_info_roundtrip() {
+        let mut p = CustomizeParams::default();
+        p.source_version_info = Some(SourceVersionInfo {
+            source: "gitee".into(),
+            tag: "v3.9.2".into(),
+            branch: String::new(),
+            sha: "0123456789abcdef".into(),
+            boot_version: "4.0.3".into(),
+            java_version: "17".into(),
+        });
+        let json = serde_json::to_string(&p).unwrap();
+        let loaded: CustomizeParams = serde_json::from_str(&json).unwrap();
+        let v = loaded.source_version_info.expect("应保留 Some");
+        assert_eq!(v.tag, "v3.9.2");
+        assert_eq!(v.boot_version, "4.0.3");
+        assert_eq!(v.java_version, "17");
+        assert_eq!(v.sha, "0123456789abcdef");
+    }
+
+    /// 展示行：tag 模式 / 分支模式 / 字段缺失时的降级拼接
+    #[test]
+    fn format_source_version_summary_tag_branch_and_partial() {
+        let tag_mode = SourceVersionInfo {
+            source: "gitee".into(),
+            tag: "v3.9.2".into(),
+            branch: String::new(),
+            sha: "abc123".into(),
+            boot_version: "4.0.3".into(),
+            java_version: "17".into(),
+        };
+        assert_eq!(
+            format_source_version_summary(&tag_mode),
+            "Gitee · tag v3.9.2 · Spring Boot 4.0.3 · Java 17 · commit abc123"
+        );
+
+        let branch_mode = SourceVersionInfo {
+            source: "github".into(),
+            tag: String::new(),
+            branch: "springboot3".into(),
+            sha: String::new(),
+            boot_version: "3.5.16".into(),
+            java_version: "17".into(),
+        };
+        assert_eq!(
+            format_source_version_summary(&branch_mode),
+            "GitHub · 分支 springboot3 · Spring Boot 3.5.16 · Java 17"
+        );
+
+        // 极端情形：仅有来源站（其余字段全空），不应出现多余的空段
+        let partial = SourceVersionInfo {
+            source: "gitee".into(),
+            ..SourceVersionInfo::default()
+        };
+        assert_eq!(format_source_version_summary(&partial), "Gitee");
     }
 
     #[test]

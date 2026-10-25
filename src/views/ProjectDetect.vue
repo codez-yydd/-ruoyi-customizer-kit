@@ -5,6 +5,7 @@ import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
+import { formatVersionLine } from '@/composables/useProjectFlow'
 import * as api from '@/api'
 import { getTemplateMeta } from '@/constants/template-capabilities'
 import { Search } from '@element-plus/icons-vue'
@@ -12,7 +13,7 @@ import LogPanel from '@/components/LogPanel.vue'
 
 const router = useRouter()
 const store = useProjectStore()
-const { rootPath, projectInfo, extractRoot } = storeToRefs(store)
+const { rootPath, projectInfo, extractRoot, sourceVersionInfo } = storeToRefs(store)
 
 const hasResult = computed(() => projectInfo.value !== null)
 const recognized = computed(() => projectInfo.value?.confidence.recognized ?? false)
@@ -29,6 +30,11 @@ const springBootLabel = computed(() => {
   if (major === 4) return '4.x'
   return '未识别'
 })
+
+/** 官方拉取记录的源码版本单行文案（本地项目无该信息，不展示） */
+const sourceVersionLabel = computed(() =>
+  sourceVersionInfo.value ? formatVersionLine(sourceVersionInfo.value) : ''
+)
 
 /** 回首页重新选择项目：清理临时目录并重置流程 */
 async function backToHome() {
@@ -142,6 +148,10 @@ const generatedUiDirName = computed(
           <div class="kv">
             <span class="kv__k">Spring Boot 版本</span>
             <code>{{ springBootLabel }}</code>
+          </div>
+          <div v-if="sourceVersionLabel" class="kv">
+            <span class="kv__k">源码版本</span>
+            <code>{{ sourceVersionLabel }}</code>
           </div>
         </div>
 

@@ -10,7 +10,13 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectStore } from '@/stores/project'
 import { pickDirectory, pickZipFile } from '@/api/dialog'
 import * as api from '@/api'
-import type { DownloadProgress, OfficialBootMajor, OfficialEdition, OfficialHost } from '@/types'
+import type {
+  DownloadProgress,
+  OfficialBootMajor,
+  OfficialEdition,
+  OfficialHost,
+  SourceVersionInfo
+} from '@/types'
 
 /** 官方拉取阶段，供首页进度文案切换 */
 export type OfficialPullStage = 'download' | 'extract' | 'detect'
@@ -19,6 +25,21 @@ export type OfficialPullStage = 'download' | 'extract' | 'detect'
 export interface OfficialPullResult {
   proceeded: boolean
   message?: string
+  /** 拉取成功时带回的源码版本信息（含来源仓库、tag/分支、SHA、Boot/Java 版本） */
+  versionInfo?: SourceVersionInfo | null
+}
+
+/** 源码版本信息的单行展示文案（与 Rust 侧 format_source_version_summary 保持一致） */
+export function formatVersionLine(v: SourceVersionInfo): string {
+  const parts: string[] = []
+  const host = v.source === 'gitee' ? 'Gitee' : v.source === 'github' ? 'GitHub' : v.source
+  if (host) parts.push(host)
+  if (v.tag) parts.push(`tag ${v.tag}`)
+  else if (v.branch) parts.push(`分支 ${v.branch}`)
+  if (v.boot_version) parts.push(`Spring Boot ${v.boot_version}`)
+  if (v.java_version) parts.push(`Java ${v.java_version}`)
+  if (v.sha) parts.push(`commit ${v.sha}`)
+  return parts.join(' · ')
 }
 
 export function useProjectFlow() {
@@ -135,12 +156,14 @@ export function useProjectFlow() {
    * 从官方仓库拉取源码再识别。
    * Gitee 浅克隆返回 directory（跳过 extractZip）；GitHub zip 仍走解压。
    * 识别时显式传入 ruoyi-vue / ruoyi-cloud，避免官方 Vue 无 ui 被误判为单体 ruoyi。
+   * @param opts.tag 可选：按官方 tag 锁定拉取；缺省跟随官方分支
    */
   async function pullOfficialAndDetect(
     opts: {
       host: OfficialHost
       edition: OfficialEdition
       bootMajor: OfficialBootMajor
+      tag?: string
       onProgress?: (p: DownloadProgress) => void
       onStage?: (stage: OfficialPullStage) => void
       navigate?: boolean
@@ -150,6 +173,8 @@ export function useProjectFlow() {
     const editionLabel = opts.edition === 'vue' ? 'RuoYi-Vue' : 'RuoYi-Cloud'
     const hostLabel = opts.host === 'gitee' ? 'Gitee' : 'GitHub'
     const template = opts.edition === 'vue' ? 'ruoyi-vue' : 'ruoyi-cloud'
+    const tagSuffix = opts.tag ? `（tag ${opts.tag}）` : ''
+    let versionInfo: SourceVersionInfo | null = null
 
     let unlisten: UnlistenFn | null = null
     try {
@@ -160,21 +185,25 @@ export function useProjectFlow() {
       opts.onStage?.('download')
       if (opts.host === 'gitee') {
         store.log(
-          `正在从 Gitee git 浅克隆官方 ${editionLabel}（Spring Boot ${opts.bootMajor}.x）…`,
+          `正在从 Gitee git 浅克隆官方 ${editionLabel}（Spring Boot ${opts.bootMajor}.x）${tagSuffix}…`,
           'INFO'
         )
       } else {
         store.log(
-          `正在从 ${hostLabel} 拉取官方 ${editionLabel}（Spring Boot ${opts.bootMajor}.x）...`,
+          `正在从 ${hostLabel} 拉取官方 ${editionLabel}（Spring Boot ${opts.bootMajor}.x）${tagSuffix}...`,
           'INFO'
         )
       }
-      const dl = await api.downloadOfficialArchive(opts.host, opts.edition, opts.bootMajor)
+      const dl = await api.downloadOfficialArchive(opts.host, opts.edition, opts.bootMajor, opts.tag)
       if (!dl.success) {
         store.log(`拉取失败：${dl.message}`, 'ERROR')
         return { proceeded: false, message: dl.message }
       }
       store.log(dl.message, 'SUCCESS')
+      versionInfo = dl.version_info ?? null
+      if (versionInfo) {
+        store.log(`源码版本：${formatVersionLine(versionInfo)}`, 'INFO')
+      }
 
       const isDirectory =
         dl.source_type === 'directory' || (!!dl.root_path && !dl.zip_path)
@@ -195,13 +224,14 @@ export function useProjectFlow() {
         store.setRootPath(dl.root_path)
         store.setSourceType('directory')
         store.setExtractRoot(dl.extract_root || '')
+        store.setSourceVersionInfo(versionInfo)
 
         opts.onStage?.('detect')
         await runDetect(dl.root_path, template)
         if (navigate) {
           router.push({ name: 'detect' })
         }
-        return { proceeded: true }
+        return { proceeded: true, versionInfo }
       }
 
       if (!dl.zip_path) {
@@ -223,6 +253,7 @@ export function useProjectFlow() {
       store.setSourceType('zip')
       store.setZipPath(dl.zip_path)
       store.setExtractRoot(resp.extract_root)
+      store.setSourceVersionInfo(versionInfo)
 
       opts.onStage?.('detect')
       await runDetect(resp.root_path, template)
@@ -230,7 +261,7 @@ export function useProjectFlow() {
         router.push({ name: 'detect' })
       }
       // 已进入识别流程（无论识别是否 soft pass / 失败），调用方应关闭拉取对话框
-      return { proceeded: true }
+      return { proceeded: true, versionInfo }
     } catch (e) {
       store.log(`拉取异常：${e}`, 'ERROR')
       return { proceeded: false, message: String(e) }

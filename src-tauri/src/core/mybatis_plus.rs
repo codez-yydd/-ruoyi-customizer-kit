@@ -539,51 +539,83 @@ fn adapt_service_impl_vm(content: &str) -> Option<String> {
     Some(out)
 }
 
-/// Domain 模板 → 加 @TableName；开 Long ID 序列化时给 Long 字段注入 @JsonSerialize
+/// Domain 模板 → 加 @TableName；主键注入 @TableId；开 Long ID 序列化时给 Long 字段注入 @JsonSerialize
 ///
 /// 官方模板字段声明是 `private $column.javaType $column.javaField;`（Velocity 变量），
-/// 字面量正则永不命中，必须注入 Velocity 条件注解：
+/// 字面量正则永不命中，必须注入 Velocity 条件注解。字段声明行前依次注入两个独立条件块：
 /// ```text
+/// #if($column.pk)
+///     @TableId
+/// #end
 /// #if($column.javaType == 'Long')
 ///     @JsonSerialize(using = ToStringSerializer.class)
 /// #end
 /// ```
-/// 渲染时仅 Long 字段带注解，其余字段原样输出。
+/// 渲染时仅主键字段带 @TableId、仅 Long 字段带序列化注解，其余字段原样输出，
+/// 两个 #if/#end 各自配对，不破坏官方模板既有的 #if/#foreach 结构。
+///
+/// `$column.pk` 的解析依据（官方 GenTableColumn 源码核实）：该类同时提供
+/// `getIsPk()`（"1"/"0" 字符串）与 `isPk()`（boolean），Velocity 对属性 `pk`
+/// 会命中 `isPk()` 布尔 getter，条件可靠。
+///
+/// 主键注入的是不带 type 的 `@TableId`（MP 全局默认接管主键生成）；雪花 ID 与
+/// MyBatis-Plus 同开时，executor 的雪花任务（do_inject_snowflake_id 步骤 4a）会对
+/// 生成器 domain 模板调用 snowflake::mark_domain_idtype_input，把已有 @TableId 统一
+/// 改写为 `@TableId(type = IdType.INPUT)` 并补 IdType import——与存量 domain 源码
+/// 走同一函数同一语义（插入前由雪花工具 setId，避免 MP 自动分配与手动赋值冲突）。
+/// 旧版「官方 vm 模板渲染出的 Long 主键不带 @TableId、IdType.INPUT 不生效」的缺口已补齐。
+///
+/// import 注入锚点是首个「字面量」import 行（不含 Velocity `${}` 引用）：官方
+/// domain.java.vm 的首个 import 行 `import ${import};` 位于
+/// `#foreach ($import in $importList)` 循环体内，而 VelocityUtils.getImportList
+/// 在表无 Date/BigDecimal 字段且非子表时返回空集合，循环体整体不渲染——若插在
+/// 循环内，注入的 import 会随空循环消失，生成代码缺 import 编译失败。
+///
 /// 非官方写法的字面量 Long 字段（如 fork 模板直接写 `private Long id;`）保留原有正则路径。
-/// 雪花 ID 的 IdType.INPUT 转换由 snowflake::mark_domain_idtype_input 处理，但它只把
-/// 已有的 @TableId 改写为 IdType.INPUT、不新增 @TableId；官方 vm 模板渲染出的 Long
-/// 主键不带 @TableId（此处对 Velocity 行也仅注入 @JsonSerialize），因此该场景不会
-/// 得到 IdType.INPUT——已知缺口，留待后续补齐。
 fn adapt_domain_vm(content: &str, enable_long_id: bool) -> Option<String> {
     if content.contains("@TableName") {
         return None;
     }
     // 官方模板的字段声明行（Velocity 变量形式）
     const VM_FIELD_LINE: &str = "private $column.javaType $column.javaField;";
+    let lines: Vec<&str> = content.lines().collect();
+    // import 插入锚点：首个字面量 import 行；全为 Velocity import 时回退首个任意 import 行
+    let literal_import_idx = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("import ") && !l.contains("${"));
+    let any_import_idx = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("import "));
+    let import_anchor = literal_import_idx.or(any_import_idx);
     let mut out = String::new();
-    let mut inserted_imports = false;
     let mut inserted_annotation = false;
-    for line in content.lines() {
-        // 在首个 import 前补充 import（仅一次）
-        if !inserted_imports && line.trim_start().starts_with("import ") {
+    for (i, line) in lines.iter().enumerate() {
+        // 在首个字面量 import 行前补充 import（仅一次；TableId import 与 @TableId 注入配套）
+        if Some(i) == import_anchor {
             out.push_str("import com.baomidou.mybatisplus.annotation.TableName;\n");
             out.push_str("import com.baomidou.mybatisplus.annotation.TableId;\n");
             if enable_long_id {
                 out.push_str("import com.fasterxml.jackson.databind.annotation.JsonSerialize;\n");
                 out.push_str("import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;\n");
             }
-            inserted_imports = true;
         }
         // 在 public class 前插入 @TableName
         if !inserted_annotation && line.contains("public class ${ClassName}") {
             out.push_str("@TableName(\"${tableName}\")\n");
             inserted_annotation = true;
         }
-        // Long 字段声明行前注入 Velocity 条件注解（B2：字面正则对官方模板永不命中）
-        if enable_long_id && line.trim() == VM_FIELD_LINE {
-            out.push_str("#if($column.javaType == 'Long')\n");
-            out.push_str("    @JsonSerialize(using = ToStringSerializer.class)\n");
+        // 字段声明行前注入 Velocity 条件注解（B2：字面正则对官方模板永不命中）
+        if line.trim() == VM_FIELD_LINE {
+            // 主键 @TableId：$column.pk 走 GenTableColumn.isPk()，仅主键列渲染；
+            // 雪花开启时的 IdType.INPUT 升级见函数注释（snowflake 层统一改写）
+            out.push_str("#if($column.pk)\n");
+            out.push_str("    @TableId\n");
             out.push_str("#end\n");
+            if enable_long_id {
+                out.push_str("#if($column.javaType == 'Long')\n");
+                out.push_str("    @JsonSerialize(using = ToStringSerializer.class)\n");
+                out.push_str("#end\n");
+            }
         }
         out.push_str(line);
         out.push('\n');

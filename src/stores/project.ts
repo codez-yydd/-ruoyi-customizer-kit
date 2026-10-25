@@ -6,7 +6,8 @@ import type {
   CustomizeParams,
   ExecuteResponse,
   PreviewResponse,
-  ProjectInfo
+  ProjectInfo,
+  SourceVersionInfo
 } from '@/types'
 
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS' | 'SKIP'
@@ -34,6 +35,8 @@ interface ProjectPersistedState {
   zipPath: string
   extractRoot: string
   outputDir: string
+  /** 官方拉取记录的源码版本信息（本地项目为 null） */
+  sourceVersionInfo: SourceVersionInfo | null
 }
 
 function loadPersistedState(): ProjectPersistedState | null {
@@ -71,6 +74,10 @@ export const useProjectStore = defineStore('project', () => {
   const extractRoot = ref<string>(persisted?.extractRoot ?? '')
   /** 用户选择的最终输出目录 */
   const outputDir = ref<string>(persisted?.outputDir ?? '')
+  /** 官方拉取记录的源码版本信息（来源仓库、tag/分支、SHA、Boot/Java 版本）；本地项目为 null */
+  const sourceVersionInfo = ref<SourceVersionInfo | null>(
+    persisted?.sourceVersionInfo ?? null
+  )
 
   // 状态变化时写回 localStorage；resetFlow 清空状态也会同步清空持久化。
   // 静默失败：localStorage 不可用（满/禁用）不阻断主流程。
@@ -84,7 +91,8 @@ export const useProjectStore = defineStore('project', () => {
       sourceType: sourceType.value,
       zipPath: zipPath.value,
       extractRoot: extractRoot.value,
-      outputDir: outputDir.value
+      outputDir: outputDir.value,
+      sourceVersionInfo: sourceVersionInfo.value
     }),
     (state) => {
       try {
@@ -145,6 +153,7 @@ export const useProjectStore = defineStore('project', () => {
     zipPath.value = ''
     extractRoot.value = ''
     outputDir.value = ''
+    sourceVersionInfo.value = null
   }
 
   /**
@@ -188,6 +197,11 @@ export const useProjectStore = defineStore('project', () => {
     outputDir.value = d
   }
 
+  /** 设置官方拉取记录的源码版本信息（下载响应带回；本地项目保持 null） */
+  function setSourceVersionInfo(v: SourceVersionInfo | null) {
+    sourceVersionInfo.value = v
+  }
+
   return {
     rootPath,
     projectInfo,
@@ -200,6 +214,7 @@ export const useProjectStore = defineStore('project', () => {
     zipPath,
     extractRoot,
     outputDir,
+    sourceVersionInfo,
     log,
     clearLogs,
     setRootPath,
@@ -211,6 +226,7 @@ export const useProjectStore = defineStore('project', () => {
     setSourceType,
     setZipPath,
     setExtractRoot,
-    setOutputDir
+    setOutputDir,
+    setSourceVersionInfo
   }
 })

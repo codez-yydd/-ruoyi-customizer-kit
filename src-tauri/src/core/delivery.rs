@@ -194,6 +194,13 @@ fn render_overview(md: &mut String, ctx: &DeliveryContext) {
         None => "未识别".to_string(),
     };
     md.push_str(&format!("| Spring Boot 大版本 | {boot} |\n"));
+    // 官方拉取时记录的源码版本溯源信息（本地项目 / 旧配置无该字段时不出现此行）
+    if let Some(version) = &p.source_version_info {
+        md.push_str(&format!(
+            "| 源码版本 | {} |\n",
+            crate::core::format_source_version_summary(version)
+        ));
+    }
     md.push_str(&format!("| Java 包名 | `{}` |\n", p.new_package));
     md.push_str(&format!("| 模块前缀 | `{}` |\n", ctx.prefix()));
     md.push_str(&format!(
@@ -1740,5 +1747,48 @@ mod tests {
 
         assert!(md.contains("`localhost:6379`"), "{md}");
         assert!(!md.contains("`127.0.0.1:6379`"), "Redis 实际写入 localhost：{md}");
+    }
+
+    /// 源码版本小节：Some 时概览表出现「源码版本」行（来源仓库、tag/分支、Boot/Java）
+    #[test]
+    fn overview_includes_source_version_when_some() {
+        let dir = vue_root();
+        let mut params = base_params();
+        params.source_version_info = Some(crate::core::SourceVersionInfo {
+            source: "github".into(),
+            tag: "v3.6.8".into(),
+            branch: String::new(),
+            sha: "fedcba9876543210".into(),
+            boot_version: "2.5.15".into(),
+            java_version: "1.8".into(),
+        });
+        let md = gen(dir.path(), "ruoyi-vue", &params);
+
+        assert!(
+            md.contains("| 源码版本 | GitHub · tag v3.6.8 · Spring Boot 2.5.15 · Java 1.8 · commit fedcba9876543210 |"),
+            "概览表应含源码版本行：{md}"
+        );
+        // 分支模式（未锁 tag）展示分支名
+        params.source_version_info = Some(crate::core::SourceVersionInfo {
+            source: "gitee".into(),
+            tag: String::new(),
+            branch: "springboot3".into(),
+            sha: String::new(),
+            boot_version: "3.5.16".into(),
+            java_version: "17".into(),
+        });
+        let md = gen(dir.path(), "ruoyi-vue", &params);
+        assert!(
+            md.contains("| 源码版本 | Gitee · 分支 springboot3 · Spring Boot 3.5.16 · Java 17 |"),
+            "分支模式应展示分支名：{md}"
+        );
+    }
+
+    /// 源码版本小节：None 时概览表不出现该行（本地项目 / 旧配置行为不变）
+    #[test]
+    fn overview_omits_source_version_when_none() {
+        let dir = vue_root();
+        let md = gen(dir.path(), "ruoyi-vue", &base_params());
+        assert!(!md.contains("源码版本"), "None 时不应出现源码版本行：{md}");
     }
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 首页：应用介绍、项目选择入口（统一委托 useProjectFlow）、日志面板。
 // 本页是向导流程的起点，选择项目后自动跳转到识别页。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useProjectStore } from '@/stores/project'
 import { useProjectFlow, type OfficialPullStage } from '@/composables/useProjectFlow'
@@ -10,7 +10,14 @@ import { HomeFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus/es/components/message/index.mjs'
 import 'element-plus/es/components/message/style/css'
 import LogPanel from '@/components/LogPanel.vue'
-import type { DownloadProgress, OfficialBootMajor, OfficialEdition, OfficialHost } from '@/types'
+import type {
+  DownloadProgress,
+  OfficialBootMajor,
+  OfficialEdition,
+  OfficialHost,
+  OfficialVersionItem,
+  SourceVersionInfo
+} from '@/types'
 
 const store = useProjectStore()
 const { rootPath } = storeToRefs(store)
@@ -24,6 +31,45 @@ const pulling = ref(false)
 const pullError = ref('')
 const pullStage = ref<OfficialPullStage>('download')
 const progress = ref<DownloadProgress>({ received: 0, total: 0 })
+
+// ===== 版本选择（按官方 tag 锁定） =====
+/** 选中 tag：空串 = 最新（跟随官方分支） */
+const officialTag = ref('')
+/** 后端返回的当前档位可用版本列表（加载失败时为空，仅剩「最新」项） */
+const officialVersions = ref<OfficialVersionItem[]>([])
+const versionsLoading = ref(false)
+/** 串行守卫：仅最后一次请求的结果生效，避免快速切换档位时旧响应覆盖新响应 */
+let versionReqId = 0
+
+/** 拉取当前「源站 × 项目类型 × Boot 档位」的官方版本列表 */
+async function loadOfficialVersions() {
+  const reqId = ++versionReqId
+  versionsLoading.value = true
+  try {
+    const resp = await api.listOfficialVersions(
+      officialEdition.value,
+      officialBoot.value,
+      officialHost.value
+    )
+    if (reqId !== versionReqId) return
+    officialVersions.value = resp.success ? resp.versions : []
+    if (!resp.success) {
+      ElMessage.warning('版本列表获取失败，已回退为最新分支')
+    }
+  } catch {
+    if (reqId !== versionReqId) return
+    officialVersions.value = []
+    ElMessage.warning('版本列表获取失败，已回退为最新分支')
+  } finally {
+    if (reqId === versionReqId) versionsLoading.value = false
+  }
+}
+
+/** 源站 / 项目类型 / Boot 档位任一变化：重置选中 tag 并重新加载版本列表 */
+watch([officialHost, officialEdition, officialBoot], () => {
+  officialTag.value = ''
+  void loadOfficialVersions()
+})
 
 onMounted(async () => {
   // 启动时记录一条日志，确认前后端联通
@@ -51,6 +97,17 @@ function openOfficialDialog() {
   pullStage.value = 'download'
   progress.value = { received: 0, total: 0 }
   officialVisible.value = true
+  // 每次打开刷新版本列表（tag 可能更新；后端有进程内缓存，重复加载很快）
+  void loadOfficialVersions()
+}
+
+/** 版本信息简短提示文案：v3.9.2（Boot 4.0.3 / Java 17） */
+function versionInfoBrief(v: SourceVersionInfo): string {
+  const target = v.tag || (v.branch ? `${v.branch} 分支` : '官方源码')
+  const stack: string[] = []
+  if (v.boot_version) stack.push(`Boot ${v.boot_version}`)
+  if (v.java_version) stack.push(`Java ${v.java_version}`)
+  return stack.length ? `${target}（${stack.join(' / ')}）` : target
 }
 
 /** 展示后端失败原因，并按内容补一句下一步（不提本机代理）。已选 Gitee 时不要提示「改用 Gitee」。 */
@@ -120,6 +177,7 @@ async function doPullOfficial() {
       host: officialHost.value,
       edition: officialEdition.value,
       bootMajor: officialBoot.value,
+      tag: officialTag.value || undefined,
       onProgress: (p) => {
         progress.value = p
       },
@@ -129,6 +187,10 @@ async function doPullOfficial() {
     })
     if (result.proceeded) {
       officialVisible.value = false
+      // 下载完成提示带版本信息（如「已拉取 v3.9.2（Boot 4.0.3 / Java 17）」）
+      if (result.versionInfo) {
+        ElMessage.success(`已拉取 ${versionInfoBrief(result.versionInfo)}`)
+      }
       return
     }
     pullError.value = formatPullError(result.message || '拉取失败', officialHost.value)
@@ -226,6 +288,29 @@ async function doPullOfficial() {
           <el-radio :value="2">2.x（JDK 8+）</el-radio>
         </el-radio-group>
       </div>
+      <div class="official-field">
+        <div class="official-label">版本</div>
+        <el-select
+          v-model="officialTag"
+          :loading="versionsLoading"
+          loading-text="正在获取版本列表…"
+          no-data-text="暂无版本，可先选最新"
+          :disabled="pulling"
+          placeholder="选择官方版本"
+          style="width: 100%"
+        >
+          <el-option label="最新（跟随官方分支）" value="" />
+          <el-option
+            v-for="v in officialVersions"
+            :key="v.tag"
+            :label="`${v.tag}（Spring Boot ${v.boot_version} · Java ${v.java_version}）`"
+            :value="v.tag"
+          />
+        </el-select>
+        <div class="official-version-hint muted">
+          版本列表来自官方 tag，已按 Spring Boot {{ officialBoot }}.x 档位过滤；选择具体 tag 可锁定该版本源码。
+        </div>
+      </div>
 
       <div v-if="pulling || progress.received > 0" class="official-progress">
         <el-progress :percentage="progressPercent" :indeterminate="pulling && !progress.total" />
@@ -286,6 +371,11 @@ async function doPullOfficial() {
   line-height: 1.6;
 }
 .official-github-hint {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.official-version-hint {
   margin-top: 8px;
   font-size: 12.5px;
   line-height: 1.6;
