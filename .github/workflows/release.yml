@@ -21,6 +21,10 @@ on:
   # 允许手动触发（用于调试，仅构建不上传 Release）
   workflow_dispatch:
 
+# GITHUB_TOKEN 需要写权限才能创建 Release 并上传安装包
+permissions:
+  contents: write
+
 # 同一 tag 重复推送时取消旧的，避免并发
 concurrency:
   group: release-${{ github.ref }}
