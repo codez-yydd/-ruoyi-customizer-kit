@@ -6,7 +6,7 @@
 #
 # 产物：
 #   Windows → .exe (NSIS) + .msi
-#   macOS   → .dmg + .app（Apple Silicon 与 Intel 各一份）
+#   macOS   → .dmg + .app（仅 Apple Silicon，Intel 版因 runner 供给不足已移除）
 #   Linux   → .deb + .AppImage + .rpm
 #
 # 说明：Tauri 无法在单一系统交叉编译出其它平台的安装包，
@@ -38,8 +38,6 @@ jobs:
         include:
           - platform: macos-15          # Apple Silicon（M1/M2/M3）
             args: '--target aarch64-apple-darwin'
-          - platform: macos-13          # Intel
-            args: '--target x86_64-apple-darwin'
           - platform: ubuntu-22.04
             args: ''
           - platform: windows-latest
@@ -58,7 +56,7 @@ jobs:
       - name: 安装 Rust 稳定版
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-15' && 'aarch64-apple-darwin' || matrix.platform == 'macos-13' && 'x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.platform == 'macos-15' && 'aarch64-apple-darwin' || '' }}
 
       - name: 安装 Linux 系统依赖
         if: matrix.platform == 'ubuntu-22.04'
