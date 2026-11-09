@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "typecheck": "vue-tsc --noEmit",
-    "build:cli": "cargo build --release --bin forge-cli"
+    "build:cli": "cargo build --release --bin forge-cli",
+    "build:mac": "APPLE_SIGNING_IDENTITY=- tauri build && sh scripts/fix-macos-sign.sh"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

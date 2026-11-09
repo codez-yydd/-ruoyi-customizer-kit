@@ -76,6 +76,9 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS：显式 ad-hoc 身份（-），让 bundler 在打 dmg 前对 .app 正确签名，
+          # 修复产物签名损坏导致“文件已损坏”的问题（Linux/Windows 构建不读取此变量）
+          APPLE_SIGNING_IDENTITY: '-'
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'RuoYi Forge ${{ github.ref_name }}'
